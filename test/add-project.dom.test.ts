@@ -102,7 +102,7 @@ describe("add project", () => {
       "Choose one you already have.",
       // The hint earns a description for the same reason the others do: the
       // label alone says what it is, not what happens when you pick it.
-      "Cloning comes with Coding mode. Open settings to switch.",
+      "Switch to Coding mode in the settings.",
     ]);
   });
 
