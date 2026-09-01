@@ -17430,8 +17430,17 @@
         const code = input ? String(input.value || "").trim() : "";
         if (!code) return;
         vscode.postMessage({ type: "submitDeviceLoginCode", provider: onbAction.dataset.provider, code: code });
-        if (input) input.disabled = true;
-        onbAction.disabled = true;
+        // Deliberately NOT disabled here. This message can be dropped: the
+        // relay client's outbox keeps queue releases and authored input across
+        // a reconnect and drops everything else, and the reconnect is not an
+        // edge case in this flow — a phone leaves for the vendor's page to get
+        // the code and comes back on a new socket, which is the ONLY way to
+        // reach this button. Disabling on the click meant a dropped code left a
+        // dead field, a waiting CLI, and no way back but reopening Connect.
+        //
+        // The host echoes `submitted: true` once it has actually written the
+        // code to the CLI, and the card disables the field on that frame. No
+        // acknowledgement, no disable — so tapping Submit again just works.
       }
       else if (act === "cancelDeviceLogin") {
         vscode.postMessage({ type: "cancelDeviceLogin", provider: onbAction.dataset.provider });

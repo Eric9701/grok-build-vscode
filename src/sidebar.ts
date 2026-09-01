@@ -4214,7 +4214,7 @@ Only continue if you trust this code.`,
         // Was a modal offering "Copy text to composer" and awaiting the click.
         // Nobody can click it on a cloud machine, so the handler hung there —
         // and the button was the only sensible answer anyway. Do it, and say so.
-        this.emit(session, { type: "restoreComposer", text });
+        this.restoreComposerFor(requester, text);
         return void this.reportRequester(
           requester,
           "info",
@@ -4260,7 +4260,7 @@ Only continue if you trust this code.`,
       const surviving = survivingUserMessagesAfterRewind(points, target);
       await this.truncateSessionCardsAfterRewind(resumeId, surviving);
       this.applyRewindToView(session, surviving);
-      this.emit(session, { type: "restoreComposer", text });
+      this.restoreComposerFor(requester, text);
       if (reportedFiles > 0) {
         this.reportRequester(
           requester,
@@ -4271,6 +4271,27 @@ Only continue if you trust this code.`,
     } catch (e: any) {
       this.reportRequester(requester, "error", `Couldn't edit that message: ${e?.message ?? e}`);
     }
+  }
+
+  /**
+   * Hand a rewound message back to the surface that ASKED for it, and only that
+   * one.
+   *
+   * `restoreComposer` APPENDS to whatever is already typed — deliberately, since
+   * silently destroying a draft is the bug Edit exists to fix. Sent through
+   * `emit` it reaches the focused desk webview and every remote holder of the
+   * session, so a phone tapping Edit would paste its message on top of an unsent
+   * draft at the computer and steal focus there. Nobody at that desk asked for
+   * it, and the appended text is the thing the usage model calls unacceptable.
+   *
+   * Reachable from a remote only since rewind/edit were widened, which is what
+   * makes it a defect this change introduced; the desk-to-phone mirror of it was
+   * always possible and is fixed by the same narrowing.
+   */
+  private restoreComposerFor(requester: RemoteRequester | undefined, text: string): void {
+    const message: HostMsg = { type: "restoreComposer", text };
+    if (requester) this.sendRemoteRequester(requester, message);
+    else this.postLocal(message);
   }
 
   /** See {@link editLastMessage} for why `session` and `requester` are explicit. */
@@ -4426,7 +4447,7 @@ Only continue if you trust this code.`,
       // off. So the QuickPick path (no bubble) restores nothing rather than
       // pasting plumbing into the composer.
       const restored = (bubbleText ?? "").trim();
-      if (restored) this.emit(session, { type: "restoreComposer", text: restored });
+      if (restored) this.restoreComposerFor(requester, restored);
       // Only speak up when something happened the chat itself doesn't show.
       // The messages vanishing and the text landing in the composer are their
       // own feedback; a toast restating them is noise. Reverted files are NOT
