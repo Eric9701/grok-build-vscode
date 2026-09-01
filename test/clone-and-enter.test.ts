@@ -65,6 +65,34 @@ describe("a clone enters the project for the tab that asked", () => {
     expect(sidebar.selectRemoteRepo).toHaveBeenCalledWith("new-client", "/projects/editor");
   });
 
+  /**
+   * The ordering the previous fix missed, and the ORDINARY one: the relay
+   * reports the old connection's departure BEFORE the replacement identifies.
+   * `deleteClient` deletes the old id's tab-token mapping, so walking
+   * id -> token -> current id finds nothing — and the clone reported success
+   * while leaving the tab where it started. Carrying the TOKEN from the start
+   * of the operation does not depend on that mapping surviving.
+   */
+  it("binds the replacement even when the old client departed first", async () => {
+    const sidebar = makeSidebar();
+    sidebar.remoteClients.ready("old-client");
+    sidebar.remoteClients.identify("old-client", "tab-1");
+    const token = sidebar.remoteClients.tabToken("old-client");
+    expect(token).toBeTruthy();
+
+    // Departure lands FIRST — the old id forgets its token entirely.
+    sidebar.remoteClients.deleteClient("old-client");
+    expect(sidebar.remoteClients.currentClient("old-client")).toBeUndefined();
+
+    // Then the replacement arrives on the same logical tab.
+    sidebar.remoteClients.ready("new-client");
+    sidebar.remoteClients.identify("new-client", "tab-1");
+
+    await sidebar.enterProjectForRequester("/projects/editor", "remote", "old-client", token);
+
+    expect(sidebar.selectRemoteRepo).toHaveBeenCalledWith("new-client", "/projects/editor");
+  });
+
   it("does nothing when the tab has genuinely departed, instead of throwing", async () => {
     const sidebar = makeSidebar();
 

@@ -6433,6 +6433,7 @@ Only continue if you trust this code.`,
     dest: string,
     origin: MsgOrigin,
     clientId?: string,
+    tabToken?: string,
   ): Promise<void> {
     if (origin !== "remote" || !clientId) return;
     // FOLLOW THE TAB ACROSS A RECONNECT. A clone runs for seconds to minutes and
@@ -6447,12 +6448,30 @@ Only continue if you trust this code.`,
     // logical tab now, and returns undefined once the tab has genuinely gone —
     // in which case there is nobody to enter the project for, and doing nothing
     // is right. The tab binds itself on its next explicit resume.
-    const current = this.remoteClients.currentClient(clientId);
-    if (!current) return;
+    // The TAB TOKEN is the durable identity; the client id is one connection.
+    // `currentClient` walks id -> token -> current id, which only works while
+    // the ORIGINAL id still remembers its token — and `deleteClient` deletes
+    // exactly that mapping. So when the relay reports the old connection's
+    // departure BEFORE the replacement identifies (an ordinary refresh, and
+    // ordinary ordering), the lookup came back empty and the clone reported
+    // success while leaving the tab on its previous project: the very symptom
+    // this method exists to close, found by the second review round.
+    //
+    // Capturing the token when the operation STARTS removes the dependency on
+    // that mapping surviving. Not a new mechanism — a better identifier.
+    const current = (tabToken && this.remoteClients.clientForTabToken(tabToken))
+      || this.remoteClients.currentClient(clientId);
+    // Ready, not merely known: `select` throws for a client with no cwd yet.
+    if (!current || !this.remoteClients.cwdIfPresent(current)) return;
     await this.selectRemoteRepo(current, dest);
   }
 
   async createProject(name: string, origin: MsgOrigin = "local", clientId?: string): Promise<void> {
+    // Read BEFORE the long-running work: the connection that asked may be gone
+    // by the time it finishes, but its logical tab is what we want to land on.
+    const requesterTab = origin === "remote" && clientId
+      ? this.remoteClients.tabToken(clientId)
+      : undefined;
     const nameError = projectNameError(name);
     if (nameError) {
       this.postProjectSetup({ error: nameError });
@@ -6482,7 +6501,7 @@ Only continue if you trust this code.`,
       return;
     }
     await this.addProjectFolder(dest);
-    await this.enterProjectForRequester(dest, origin, clientId);
+    await this.enterProjectForRequester(dest, origin, clientId, requesterTab);
     this.postProjectSetup({ done: true });
   }
 
@@ -6499,6 +6518,11 @@ Only continue if you trust this code.`,
    * for ever instead of reporting an auth failure it could offer to fix.
    */
   async cloneProject(url: string, origin: MsgOrigin = "local", clientId?: string): Promise<void> {
+    // Read BEFORE the long-running work: the connection that asked may be gone
+    // by the time it finishes, but its logical tab is what we want to land on.
+    const requesterTab = origin === "remote" && clientId
+      ? this.remoteClients.tabToken(clientId)
+      : undefined;
     const urlError = cloneUrlError(url);
     if (urlError) {
       this.postProjectSetup({ error: urlError });
@@ -6549,7 +6573,7 @@ Only continue if you trust this code.`,
       return;
     }
     await this.addProjectFolder(dest);
-    await this.enterProjectForRequester(dest, origin, clientId);
+    await this.enterProjectForRequester(dest, origin, clientId, requesterTab);
     this.postProjectSetup({ done: true });
   }
 
