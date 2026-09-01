@@ -16018,12 +16018,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private releaseRemoteClient(clientId: string): void {
     this.forgetPostedVoiceConfigured(`remote:${clientId}`);
     const current = this.remoteClients.active(clientId);
-    const preserveLogicalTab = !!current && (
-      current.needsProvider ||
-      !!current.strandedDraft ||
-      current.priming ||
-      current.queuedSends.length > 0 ||
-      current.chips.length > 0
+    const preserveLogicalTab = (
+      // A DEMOTED tab is a logical tab worth keeping, and it is the one case
+      // with no active session to prove it. `deleteClient` drops the tab's
+      // selected repo along with the latch, so an ordinary mobile network blip
+      // after a takeover would land the page on the host's default repo with a
+      // fresh session, its composer re-enabled and the old draft still in it —
+      // and the next Send would file text written for one conversation into
+      // another, in another REPOSITORY. `detachClient` keeps both for the same
+      // tab token, which is exactly what a reconnect needs.
+      this.remoteClients.requiresExplicitSession(clientId) ||
+      (!!current && (
+        current.needsProvider ||
+        !!current.strandedDraft ||
+        current.priming ||
+        current.queuedSends.length > 0 ||
+        current.chips.length > 0
+      ))
     );
     this.parkRemoteSession(clientId);
     this.dropRemoteVoice(clientId);

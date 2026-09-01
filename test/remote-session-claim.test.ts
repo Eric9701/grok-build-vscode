@@ -169,4 +169,36 @@ describe("remote session claim", () => {
     });
     expect(sidebar.pool.has(desk)).toBe(false);
   });
+
+  /**
+   * A demoted tab survives an ordinary reconnect with its repo and its latch.
+   *
+   * Found by review. `releaseRemoteClient` chose between keeping a logical tab
+   * and deleting it purely on properties of its ACTIVE session — and a demoted
+   * tab has none, which is the whole point of demotion. So `deleteClient` ran,
+   * dropping both the latch and the tab's selected repo.
+   *
+   * The sequence is ordinary on a phone: tab A holds conversation S in repo A
+   * with an unsent draft, tab B claims S, then tab A's network changes. On
+   * reconnect it would bind to the host's default repo, get `clearMessages`,
+   * have its composer re-enabled with the old draft still in it — and the next
+   * Send would file text written for one conversation into another one, in
+   * another repository.
+   */
+  it("keeps a demoted tab's repo and latch across a reconnect", () => {
+    const sidebar = makeSidebar();
+    const held = seedTab(sidebar, "tab-a", "session-a");
+    sidebar.remoteClients.identify("tab-a", "token-a");
+
+    sidebar.remoteClients.deleteActive("tab-a", held);
+    sidebar.remoteClients.markRequiresExplicitSession("tab-a", "session-a");
+    expect(sidebar.remoteClients.active("tab-a")).toBeUndefined();
+
+    sidebar.releaseRemoteClient("tab-a");
+
+    // Same tab token comes back on a new socket, as a mobile reconnect does.
+    sidebar.remoteClients.identify("tab-new", "token-a");
+    expect(sidebar.remoteClients.cwdIfPresent("tab-new")).toBe(cwd);
+    expect(sidebar.remoteClients.requiresExplicitSession("tab-new")).toBe(true);
+  });
 });
