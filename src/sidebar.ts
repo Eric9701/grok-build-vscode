@@ -15912,9 +15912,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // the small frame the client actually needs, instead of rebuilding a list
     // that has not changed.
     this.postSessionName(session);
-    // Same as the remote path: a draft parked on this conversation returns with
-    // it rather than waiting for a reload.
-    this.restorePersistedDraft(session);
+    // Same as the remote path, and for the same reason: restorePersistedDraft
+    // broadcasts, so it is not called here.
   }
 
   /**
@@ -16901,11 +16900,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // name has to be re-announced here or the header loses its rename affordance
     // until something unrelated refreshes it.
     this.postSessionName(session);
-    // A draft parked on this conversation — by a rewind whose asker had already
-    // moved on, or by a provider sign-out — comes back with it. Without this the
-    // parked text only reappeared on a reconnect, which is not what "switch back
-    // to that conversation" should require.
-    this.restorePersistedDraft(session);
+    // NOT restorePersistedDraft. It hands the draft back with session-wide
+    // `emit`, which appends it to every surface viewing the conversation — so
+    // calling it here re-created, on the switch-back, the desk-composer
+    // pollution this whole sequence removed. Parked text therefore returns on
+    // the next load of the conversation rather than the instant you switch to
+    // it. That is a narrower promise, kept, instead of a wider one that leaks.
   }
 
   private async newRemoteSession(clientId: string, notifyCatalog = true): Promise<void> {

@@ -67,9 +67,20 @@ describe("who receives a rewound message", () => {
     expect(body).toContain("this.rememberQueuedDraft(id, text)");
   });
 
-  it("hands a parked draft back when that conversation is re-focused", () => {
+  /**
+   * And the re-focus paths deliberately do NOT hand it back.
+   *
+   * `restorePersistedDraft` delivers with session-wide `emit`, so calling it
+   * from a re-focus appends the parked text to every surface viewing the
+   * conversation — recreating, at the moment you switch back, exactly the
+   * desk-composer pollution this sequence removed. Four review rounds went into
+   * who receives this text; the settled answer is that parked text returns on
+   * the conversation's next LOAD, not the instant it is re-focused. A narrower
+   * promise, kept.
+   */
+  it("does not hand a parked draft back on re-focus, because that path broadcasts", () => {
     for (const signature of ["private focusRemoteSession(", "private focusSession("]) {
-      expect(methodBody(signature), signature).toContain("this.restorePersistedDraft(session)");
+      expect(methodBody(signature), signature).not.toContain("this.restorePersistedDraft(session)");
     }
   });
 
