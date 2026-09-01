@@ -736,6 +736,11 @@ describe("context popover respects the app purpose", () => {
     const pop = openDonut(h);
     const text = pop.textContent || "";
 
+    // VISIBILITY FIRST. The lines that position and reveal this popover are the
+    // last thing the renderer does, so an early return skipped them and the
+    // donut did nothing at all in the default mode — while an assertion on
+    // textContent alone passed happily against the hidden element.
+    expect((pop as HTMLElement).hidden).toBe(false);
     // What a person writing a document actually asked the donut.
     expect(text).toContain("Context used");
     expect(text).toContain("Compact conversation");
@@ -750,8 +755,10 @@ describe("context popover respects the app purpose", () => {
     const h = bootWebview();
     dispatch(h.window, { type: "initialState", appPurpose: "coding", capabilities: {} } as never);
 
-    const text = openDonut(h).textContent || "";
+    const pop = openDonut(h);
+    const text = pop.textContent || "";
 
+    expect((pop as HTMLElement).hidden).toBe(false);
     expect(text).toContain("Context used");
     expect(text).toContain("In this window");
     expect(text).toContain("System");

@@ -28,6 +28,7 @@ function makeSidebar(): any {
 describe("a clone enters the project for the tab that asked", () => {
   it("binds the requesting remote client to the newly cloned project", async () => {
     const sidebar = makeSidebar();
+    sidebar.remoteClients.ready("client-1");
 
     await sidebar.enterProjectForRequester("/projects/editor", "remote", "client-1");
 
@@ -39,6 +40,37 @@ describe("a clone enters the project for the tab that asked", () => {
 
     await sidebar.enterProjectForRequester("/projects/editor", "local");
 
+    expect(sidebar.selectRemoteRepo).not.toHaveBeenCalled();
+  });
+
+  /**
+   * A clone runs for seconds to minutes. A phone changing network in that
+   * window is ordinary, and on reconnect the tab arrives with a NEW client id
+   * while the old one is dropped — and `select()` throws for an id it does not
+   * know. Binding the id we were called with therefore turned a SUCCESSFUL
+   * clone into a reported failure with no `done` frame, a form left spinning,
+   * and the tab still on its old project: every symptom this method exists to
+   * prevent. Found by review.
+   */
+  it("binds the tab's CURRENT connection when it reconnected mid-clone", async () => {
+    const sidebar = makeSidebar();
+    sidebar.remoteClients.ready("old-client");
+    sidebar.remoteClients.identify("old-client", "tab-1");
+    // The reconnect: same tab token, new relay id.
+    sidebar.remoteClients.ready("new-client");
+    sidebar.remoteClients.identify("new-client", "tab-1");
+
+    await sidebar.enterProjectForRequester("/projects/editor", "remote", "old-client");
+
+    expect(sidebar.selectRemoteRepo).toHaveBeenCalledWith("new-client", "/projects/editor");
+  });
+
+  it("does nothing when the tab has genuinely departed, instead of throwing", async () => {
+    const sidebar = makeSidebar();
+
+    await expect(
+      sidebar.enterProjectForRequester("/projects/editor", "remote", "never-seen"),
+    ).resolves.toBeUndefined();
     expect(sidebar.selectRemoteRepo).not.toHaveBeenCalled();
   });
 

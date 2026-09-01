@@ -6435,7 +6435,21 @@ Only continue if you trust this code.`,
     clientId?: string,
   ): Promise<void> {
     if (origin !== "remote" || !clientId) return;
-    await this.selectRemoteRepo(clientId, dest);
+    // FOLLOW THE TAB ACROSS A RECONNECT. A clone runs for seconds to minutes and
+    // a phone changing network in that window is ordinary, not exotic. When it
+    // reconnects, `identify()` moves the tab's state to a NEW client id and
+    // drops the old one — and `select()` THROWS for an id it does not know. So
+    // binding the id we were called with would report a successful clone as a
+    // failure, skip the `done` frame, leave the form spinning, and leave the tab
+    // on its old project: every symptom this method exists to prevent.
+    //
+    // `currentClient` resolves an old id to whatever connection owns that
+    // logical tab now, and returns undefined once the tab has genuinely gone —
+    // in which case there is nobody to enter the project for, and doing nothing
+    // is right. The tab binds itself on its next explicit resume.
+    const current = this.remoteClients.currentClient(clientId);
+    if (!current) return;
+    await this.selectRemoteRepo(current, dest);
   }
 
   async createProject(name: string, origin: MsgOrigin = "local", clientId?: string): Promise<void> {
