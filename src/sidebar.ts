@@ -6484,6 +6484,10 @@ Only continue if you trust this code.`,
     // host routes it through planRunCommandInTerminal, which keeps the window
     // open so the outcome stays readable).
     if (action === "auth") {
+      // Reached only from the LOCAL webview. `setupGithubCli` is host-local in
+      // remote-policy.ts, so a remote's click is dropped before it arrives —
+      // which is why the honest message for a remote lives in the client, not
+      // here. A branch here would be unreachable code pretending to be a fix.
       const term = this.host.createTerminal({ name: "GitHub sign-in" });
       term.show();
       term.sendText(githubSignInCommand(process.platform));

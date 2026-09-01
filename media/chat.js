@@ -6099,10 +6099,33 @@
       onCancel: closeAddProjectForm,
       // Host-local, and the form stays open behind it: signing in happens in a
       // terminal on the desk, and the user comes back here to try again.
-      onFix: (fix) => vscode.postMessage({
-        type: "setupGithubCli",
-        action: fix === "install-gh" ? "install" : "auth",
-      }),
+      //
+      // `setupGithubCli` is host-local in remote-policy.ts, so from a browser
+      // the click is DROPPED at the gate and the host never sees it — the
+      // button did nothing and said nothing, on a cloud machine and on a phone
+      // driving a laptop alike (owner, 2026-09-01). The honest answer has to be
+      // given here, because nothing downstream will ever be asked.
+      onFix: (fix) => {
+        if (IS_REMOTE) {
+          const cloud = IS_CLOUD_HOST;
+          if (addProjectFormApi) {
+            addProjectFormApi.update({
+              error: cloud
+                // No computer to walk to, so no advice that ends at one.
+                ? "Signing in to GitHub needs a terminal, and a cloud machine has none. "
+                  + "Public repositories clone as they are; private ones need this, and it is coming."
+                // A desk host HAS a terminal, and the person owns the machine
+                // it is on — so this one is advice, not a dead end.
+                : "Sign in to GitHub on the computer running this workspace — a terminal opens there — then try again here.",
+            });
+          }
+          return;
+        }
+        vscode.postMessage({
+          type: "setupGithubCli",
+          action: fix === "install-gh" ? "install" : "auth",
+        });
+      },
     });
     if (!api) return;
     const scrim = document.createElement("div");
@@ -8588,9 +8611,16 @@
             `<button class="onb-copy" type="button" title="Copy" data-cmd="${escapeHtml(device.code)}">${ICON.copy}</button>` +
           `</div>`
         : (!paste ? `<p class="onb-desc">Open the link to finish signing in.</p>` : "");
+      // Paste-code is a SEQUENCE, and the card now reads in that order: what
+      // you are about to do, the link that does it, then the field for what it
+      // gives you back. The field used to sit ABOVE the link, so the first
+      // thing on screen was somewhere to paste a code you had no way to have
+      // yet (owner, 2026-09-01).
+      const pasteIntro = paste && !device.submitted
+        ? `<p class="onb-desc">Open the sign-in page, sign in, then paste the code it shows you:</p>`
+        : "";
       const pasteEntry = paste && !device.submitted
-        ? `<p class="onb-desc">Open the link, sign in, then paste the code the page shows you:</p>` +
-          `<div class="onb-cmd onb-code-entry">` +
+        ? `<div class="onb-cmd onb-code-entry">` +
             `<input class="onb-code-input" type="text" inputmode="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste code" aria-label="Paste sign-in code">` +
             `<button class="onb-action" type="button" data-act="submitDeviceLoginCode" data-provider="${escapeHtml(provider)}">Submit</button>` +
           `</div>`
@@ -8603,8 +8633,10 @@
         // (owner, with the screenshot, 2026-08-31).
         (device.note ? `<p class="onb-desc onb-note">${onbRich(device.note)}</p>` : "") +
         codeChip +
-        pasteEntry +
+        pasteIntro +
         `<a class="onb-action" href="${escapeHtml(device.url)}" target="_blank" rel="noopener noreferrer">Open the sign-in page</a>` +
+        // AFTER the link: you cannot have a code until you have been there.
+        pasteEntry +
         // The setting to check, beside the code it gates — not on a screen
         // before it that cost an extra click to get past.
         (device.preflight && Array.isArray(device.preflight.steps) && device.preflight.steps.length
