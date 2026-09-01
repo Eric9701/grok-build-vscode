@@ -1531,6 +1531,7 @@
         type: "resumeSession",
         id: s.id,
         cwd: s.cwd || repo.cwd,
+        claim: true,
       });
     };
 

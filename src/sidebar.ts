@@ -247,13 +247,13 @@ import {
 } from "./plan-review";
 import { isPrimerText } from "./grok-primer";
 import { AsyncSerialQueue } from "./async-serial";
-import { HOST_CAPABILITIES, HostMsg, INTERRUPTED_SEND_CODE, WebviewMsg } from "./protocol";
+import { HOST_CAPABILITIES, HostMsg, INTERRUPTED_SEND_CODE, SESSION_SUPERSEDED_CODE, WebviewMsg } from "./protocol";
 import { withoutArchiveFields } from "./project-discovery";
 import { RemoteUplink } from "./remote-uplink";
 import { RemoteClientState, serializesRemoteSessionTransition } from "./remote-client-state";
 import { RemotePcmIngress, acceptRemotePcm } from "./remote-voice";
 import { SessionRequestState } from "./session-request-state";
-import { allowFromRemote, capabilitiesForRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
+import { allowFromRemote, capabilitiesForRemote, allowRemoteRepoTarget, bracketRemoteSnapshot, mayDeliverRemoteHostMsg, remoteRequiresBoundSession, repoScopeFor, sessionCwdBelongsToRepo, sessionForRequest, shouldAdoptDeskSession, transformHostMsgForRemote, type MediaInlineDeps, type MsgOrigin, type RemoteTier } from "./remote-policy";
 import {
   listRemoteProjectDir,
   projectFileContentForWire,
@@ -569,7 +569,7 @@ interface SessionLoadReservation {
 }
 
 type RemoteResumeTarget =
-  | { kind: "conflict"; selectedCwd: string }
+  | { kind: "conflict"; selectedCwd: string; ownerId: string; session: Session }
   | { kind: "repo-mismatch"; selectedCwd: string }
   | { kind: "live"; selectedCwd: string; session: Session }
   | { kind: "disk"; selectedCwd: string; actualCwd: string; provider: AcpProvider }
@@ -6930,7 +6930,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Re-selecting a repo whose conversation is already live must replay its
       // buffer. focusRemoteSession needs no CLI; openRemoteSession would mint
       // onboarding over a clientless live member. Another tab's live session
-      // still goes through openRemoteSession, which refuses the steal.
+      // still goes through openRemoteSession without a claim, which refuses
+      // the steal — selecting a repo is not an explicit conversation claim.
       if (liveSession && !ownedByOther) this.focusRemoteSession(clientId, liveSession, false);
       else await this.openRemoteSession(clientId, newest.id, newest.cwd, false);
     } else {
@@ -9604,6 +9605,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const cwd = this.remoteClients.cwd(clientId);
     const active = this.remoteClients.active(clientId);
     if (active) return active;
+    if (this.remoteClients.requiresExplicitSession(clientId)) {
+      throw new Error(`Remote client ${clientId} has no session`);
+    }
     // A tab arriving with nothing of its own — "Continue remotely", or a first
     // visit — CONTINUES WHAT THE DESK IS DOING. That is the feature's whole
     // promise, and desk↔remote co-attach is what finally makes it possible:
@@ -9632,11 +9636,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private async onMessage(msg: WebviewMsg, origin: MsgOrigin, clientId?: string): Promise<void> {
-    const session = origin === "remote" && clientId
-      ? msg.type === "selectRepo"
-        ? this.remoteClients.active(clientId) ?? this.focused
-        : this.remoteSessionFor(clientId)
-      : this.focused;
+    const remoteBound = origin === "remote" && clientId
+      ? this.remoteClients.active(clientId)
+      : undefined;
+    if (
+      origin === "remote" &&
+      clientId &&
+      remoteRequiresBoundSession(msg.type) &&
+      !remoteBound
+    ) {
+      this.refuseUnboundRemoteSession(clientId);
+      return;
+    }
+    const session = remoteBound ?? this.focused;
     const requester = origin === "remote" && clientId
       ? this.captureRemoteRequester(clientId)
       : undefined;
@@ -10641,7 +10653,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         if (origin === "remote" && clientId) {
           this.sendRemoteClient(clientId, this.buildSessionsList(messageCwd, {
           offset: msg.offset, limit: msg.limit, query: msg.query, providerCursor: msg.providerCursor,
-          }, session.activeSessionId));
+          }, this.remoteActiveSessionId(clientId)));
         } else {
         this.postSessionsList({ offset: msg.offset, limit: msg.limit, query: msg.query, providerCursor: msg.providerCursor });
         }
@@ -10677,7 +10689,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       case "resumeSession":
         if (origin === "remote" && clientId) {
-          await this.openRemoteSession(clientId, msg.id, msg.cwd);
+          await this.openRemoteSession(clientId, msg.id, msg.cwd, true, msg.claim === true);
         }
         else await this.openSession(msg.id, msg.cwd);
         break;
@@ -15836,7 +15848,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const session = this.remoteClients.active(clientId);
     if (session?.activeSessionId) return session.activeSessionId;
     if (!session) return null;
-    for (const [id, reservation] of this.sessionLoadReservations) {
+    const reservations = this.sessionLoadReservations;
+    if (!reservations) return null;
+    for (const [id, reservation] of reservations) {
       if (reservation.session === session && this.isSessionLoadReserved(id)) return id;
     }
     return null;
@@ -16933,9 +16947,71 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.sendRemoteSessionList(session, ownerTabToken);
   }
 
-  private refuseRemoteResume(clientId: string, id: string, text: string, selectedCwd: string): void {
-    this.sendRemoteClient(clientId, { type: "error", text, resumeFailed: { id } });
+  private refuseRemoteResume(
+    clientId: string,
+    id: string,
+    text: string,
+    selectedCwd: string,
+    code?: typeof SESSION_SUPERSEDED_CODE,
+  ): void {
+    this.sendRemoteClient(clientId, {
+      type: "error",
+      text,
+      resumeFailed: { id },
+      ...(code ? { code } : {}),
+    });
     this.sendRemoteClient(clientId, this.buildSessionsList(selectedCwd, undefined, this.remoteActiveSessionId(clientId)));
+  }
+
+  private refuseUnboundRemoteSession(clientId: string): void {
+    const id = this.remoteClients.supersededSessionId(clientId);
+    this.host.appendLine(`[remote] refused session-bound message (tab has no active conversation)`);
+    this.sendRemoteClient(clientId, {
+      type: "error",
+      text: "This conversation is open in another tab. Continue here to take it back.",
+      ...(id ? { resumeFailed: { id } } : {}),
+      code: SESSION_SUPERSEDED_CODE,
+    });
+  }
+
+  /**
+   * Hand a live conversation from one remote tab to another. Same Session
+   * object — no cold-load, no second ACP process. The desk `focused` pointer
+   * is left alone so a claim of a desk-visible session co-attaches.
+   *
+   * Ownership moves synchronously: no await between deleteActive and setActive.
+   */
+  private transferRemoteResume(
+    winnerId: string,
+    target: Extract<RemoteResumeTarget, { kind: "conflict" }>,
+    notifyCatalog: boolean,
+  ): void {
+    const { ownerId: loserId, session, selectedCwd } = target;
+    const id = session.activeSessionId;
+    if (!id || this.remoteClients.active(loserId) !== session || loserId === winnerId) {
+      this.parkRemoteSession(winnerId, session);
+      this.dropRemoteVoice(winnerId);
+      this.focusRemoteSession(winnerId, session, notifyCatalog);
+      return;
+    }
+    this.remoteClients.deleteActive(loserId, session);
+    this.remoteClients.markRequiresExplicitSession(loserId, id);
+    this.pool.add(session);
+    this.parkRemoteSession(winnerId, session);
+    this.dropRemoteVoice(winnerId);
+    this.dropRemoteVoice(loserId);
+    this.focusRemoteSession(winnerId, session, notifyCatalog);
+    this.notifyRemoteSessionSuperseded(loserId, id, this.remoteClients.cwdIfPresent(loserId) ?? selectedCwd);
+  }
+
+  private notifyRemoteSessionSuperseded(clientId: string, id: string, selectedCwd: string): void {
+    this.sendRemoteClient(clientId, {
+      type: "error",
+      text: "This conversation is now open in another tab. Continue here to take it back.",
+      resumeFailed: { id },
+      code: SESSION_SUPERSEDED_CODE,
+    });
+    this.sendRemoteClient(clientId, this.buildSessionsList(selectedCwd, undefined, undefined));
   }
 
   /**
@@ -16992,7 +17068,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const conflictingOwner = this.remoteClients.clients().find((ownerId) =>
       ownerId !== clientId && this.remoteClients.active(ownerId)?.activeSessionId === id
     );
-    if (conflictingOwner) return { kind: "conflict", selectedCwd };
+    if (conflictingOwner) {
+      const session = this.remoteClients.active(conflictingOwner);
+      if (session) return { kind: "conflict", selectedCwd, ownerId: conflictingOwner, session };
+    }
     for (const session of this.pool) {
       if (session.activeSessionId === id && session.client) {
         if (!sessionCwdBelongsToRepo(this.sessionCwd(session), allowedCwds, pathsEqual)) {
@@ -17027,14 +17106,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     id: string,
     sessionCwd?: string,
     notifyCatalog = true,
+    explicitClaim = false,
   ): Promise<void> {
     // Same reason the local open owns its clock: a phone tapping a conversation
     // waits through the reservation, the repo adoption and the metadata reads
     // before `startSession` is reached, and a clock made down there reports
     // `resolve 0ms` however long that took.
     const clock = new OpenClock();
-    const claim = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
-    if (!claim) {
+    const load = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
+    if (!load) {
       const selectedCwd = this.remoteClients.cwd(clientId);
       this.host.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
       this.refuseRemoteResume(
@@ -17045,19 +17125,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       );
       return;
     }
-    if (claim.joined) {
+    if (load.joined) {
       this.host.appendLine(`[remote] joined in-flight session load for the same logical tab`);
-      await claim.reservation.completion;
+      await load.reservation.completion;
       return;
     }
     let failure: unknown;
     try {
-      await this.openRemoteSessionReserved(clientId, id, claim.reservation, sessionCwd, notifyCatalog, clock);
+      await this.openRemoteSessionReserved(
+        clientId, id, load.reservation, sessionCwd, notifyCatalog, clock, explicitClaim,
+      );
     } catch (error) {
       failure = error;
       throw error;
     } finally {
-      this.releaseSessionLoad(id, claim.reservation, failure);
+      this.releaseSessionLoad(id, load.reservation, failure);
     }
     const opened = this.remoteClients.active(clientId);
     if (opened) this.sweepEmptySessions(this.sessionCwd(opened));
@@ -17097,6 +17179,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     sessionCwd?: string,
     notifyCatalog = true,
     clock?: OpenClock,
+    explicitClaim = false,
   ): Promise<void> {
     // A remote may name a session that lives in a DIFFERENT repo of the catalog
     // it was shown — the projects rail lists every repo's sessions at once, so
@@ -17123,19 +17206,34 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (held?.token !== reservation.token) return;
       target = this.findRemoteResumeTarget(clientId, id, sessionCwd);
     }
-    // Tabs stay mutually exclusive: each browser tab is its own conversation,
-    // and the duplicate-tab theft guard builds on that. The VS Code view is
-    // NOT a rival tab — a session open (or parked) at the desk is joined, not
-    // refused: emit() fans every frame of a session to the focused webview and
+    // Remote holders are mutually exclusive. The newest tab that EXPLICITLY
+    // claims a conversation wins; a reconnect restore (no claim bit) still
+    // refuses, so a thawing background tab cannot steal it back. The VS Code
+    // view is NOT a rival tab — a session open (or parked) at the desk is
+    // joined, not refused: emit() fans every frame to the focused webview and
     // to each remote holder, so the desk and the phone stay in sync.
     if (target.kind === "conflict") {
-      this.host.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
-      this.refuseRemoteResume(
-        clientId,
-        id,
-        "Could not restore this conversation because it is already open in another tab.",
-        target.selectedCwd,
-      );
+      const stillHeld = this.remoteClients.active(target.ownerId) === target.session
+        && target.ownerId !== clientId;
+      if (stillHeld && explicitClaim) {
+        this.host.appendLine(`[remote] transferred resumeSession from ${target.ownerId} to ${clientId}`);
+        this.transferRemoteResume(clientId, target, notifyCatalog);
+        return;
+      }
+      if (stillHeld) {
+        this.host.appendLine(`[remote] dropped resumeSession (session is open in another tab)`);
+        this.refuseRemoteResume(
+          clientId,
+          id,
+          "Could not restore this conversation because it is already open in another tab.",
+          target.selectedCwd,
+          SESSION_SUPERSEDED_CODE,
+        );
+        return;
+      }
+      this.parkRemoteSession(clientId, target.session);
+      this.dropRemoteVoice(clientId);
+      this.focusRemoteSession(clientId, target.session, notifyCatalog);
       return;
     }
     if (target.kind === "repo-mismatch") {
@@ -17838,12 +17936,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         return;
       }
       this.remoteClients.ready(clientId);
+      if (remoteRequiresBoundSession(m.type) && !this.remoteClients.active(clientId)) {
+        this.refuseUnboundRemoteSession(clientId);
+        return;
+      }
       const requester = this.captureRemoteRequester(clientId);
       const transition = async (currentClientId: string) => {
         if (m.type === "newSession") {
           await this.newRemoteSession(currentClientId);
         } else if (m.type === "resumeSession") {
-          await this.openRemoteSession(currentClientId, m.id, m.cwd);
+          await this.openRemoteSession(currentClientId, m.id, m.cwd, true, m.claim === true);
         } else if (m.type === "selectRepo") {
           await this.selectRemoteRepo(currentClientId, m.cwd);
         }
@@ -17894,6 +17996,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // Empty default cwd (no desktop project yet) is not a bound repo. The
     // snapshot still goes out unbound; adopting/starting here would throw.
     if (!this.remoteClients.cwdIfPresent(clientId)) return;
+    // A tab that lost this conversation to another tab's claim must not
+    // adopt the desk session or mint a blank one on reconnect. The snapshot
+    // below stays unbound; an automatic restore (no claim bit) then lands
+    // in the taken-over state instead of stealing the conversation back.
+    if (this.remoteClients.requiresExplicitSession(clientId) && !this.remoteClients.active(clientId)) {
+      return;
+    }
     const session = this.remoteSessionFor(clientId);
     if (session.client && !session.needsProvider) {
       this.restorePersistedDraft(session);
@@ -18235,7 +18344,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // was away comes back unbound rather than resuming inside it.
     const authorized = this.remoteAuthorizedSessionCwds();
     const listCwd = authorizedListCwd(cwd, authorized, pathsEqual);
-    const session = cwd ? this.remoteSessionFor(clientId) : this.remoteClients.active(clientId);
+    const demoted = this.remoteClients.requiresExplicitSession(clientId)
+      && !this.remoteClients.active(clientId);
+    const session = demoted
+      ? undefined
+      : cwd
+        ? this.remoteSessionFor(clientId)
+        : this.remoteClients.active(clientId);
     // Catalog is already open-folder-filtered on desktop; still the sole source.
     const entries = this.localRepoCatalogEntries();
     // Never put a closed cwd on the wire (choke point rejects it); empty = unbound.
@@ -18259,7 +18374,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // nobody was listening.
     snap.push(this.welcomeTipsMessage());
     snap.push(this.projectSetupMessage());
-    snap.push({ type: "clearMessages" });
+    // A demoted tab already has a frozen transcript. clearMessages here would
+    // wipe it on a same-page reconnect (mobile thaw). A rebuilt page starts
+    // empty, so skipping the clear is a no-op there.
+    if (!demoted) snap.push({ type: "clearMessages" });
     // Conversation buffer only when the bound session still lives under an
     // authorized cwd (revoke disposes doomed sessions; this is the belt).
     if (session && sessionCwdOk && !session.replaying) {
@@ -18298,6 +18416,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         sessionCwdOk ? this.remoteActiveSessionId(clientId) : null,
       ),
     );
+    if (demoted) {
+      const supersededId = this.remoteClients.supersededSessionId(clientId);
+      snap.push({
+        type: "error",
+        text: "This conversation is now open in another tab. Continue here to take it back.",
+        ...(supersededId ? { resumeFailed: { id: supersededId } } : {}),
+        code: SESSION_SUPERSEDED_CODE,
+      });
+    }
     if (session && sessionCwdOk && session.activeSessionId) {
       snap.push({
         type: "sessionName",

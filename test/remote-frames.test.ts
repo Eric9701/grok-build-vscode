@@ -410,6 +410,31 @@ describe("parseRelayFrame", () => {
     expect(parseRelayFrame(wrap({ type: "ready", tabToken: "short" }))).toBeNull();
     expect(parseRelayFrame(wrap({ type: "ready", tabToken: "0123456789abcdef01234567" }))).not.toBeNull();
   });
+
+  it("accepts resumeSession.claim only as a boolean and keeps only true", () => {
+    const wrap = (msg: unknown) => JSON.stringify({ t: "msg", clientId: "c1", msg });
+    const claimed = parseRelayFrame(wrap({
+      type: "resumeSession", id: "019f-session_1", cwd: "/work/repo", claim: true,
+    }));
+    expect(claimed?.t).toBe("msg");
+    if (claimed?.t === "msg") {
+      expect(claimed.msg).toEqual({
+        type: "resumeSession", id: "019f-session_1", cwd: "/work/repo", claim: true,
+      });
+    }
+    const omitted = parseRelayFrame(wrap({
+      type: "resumeSession", id: "019f-session_1", cwd: "/work/repo", claim: false,
+    }));
+    expect(omitted?.t).toBe("msg");
+    if (omitted?.t === "msg") {
+      expect(omitted.msg).toEqual({
+        type: "resumeSession", id: "019f-session_1", cwd: "/work/repo",
+      });
+    }
+    expect(parseRelayFrame(wrap({
+      type: "resumeSession", id: "019f-session_1", claim: "yes",
+    }))).toBeNull();
+  });
 });
 
 describe("url helpers", () => {

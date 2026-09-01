@@ -3,6 +3,8 @@ import {
   INBOUND_DISPOSITION,
   OUTBOUND_DISPOSITION,
   OUTBOUND_PROJECT_AUTH,
+  REMOTE_REQUIRES_BOUND_SESSION,
+  remoteRequiresBoundSession,
   allowFromRemote,
   allowRemoteRepoTarget,
   bracketRemoteSnapshot,
@@ -33,6 +35,16 @@ describe("remote-policy classification tables", () => {
   // guards the compiled-JS path the same way protocol.test.ts does.
   it("classifies every WebviewMsg type (no drift behind the protocol)", () => {
     expect(sorted(Object.keys(INBOUND_DISPOSITION))).toEqual(sorted(WEBVIEW_MESSAGE_TYPES));
+  });
+
+  it("classifies every WebviewMsg type for bound-session enforcement", () => {
+    expect(sorted(Object.keys(REMOTE_REQUIRES_BOUND_SESSION))).toEqual(sorted(WEBVIEW_MESSAGE_TYPES));
+    expect(remoteRequiresBoundSession("send")).toBe(true);
+    expect(remoteRequiresBoundSession("permissionAnswer")).toBe(true);
+    expect(remoteRequiresBoundSession("resumeSession")).toBe(false);
+    expect(remoteRequiresBoundSession("newSession")).toBe(false);
+    expect(remoteRequiresBoundSession("selectRepo")).toBe(false);
+    expect(remoteRequiresBoundSession("listSessions")).toBe(false);
   });
 
   it("classifies every HostMsg type", () => {

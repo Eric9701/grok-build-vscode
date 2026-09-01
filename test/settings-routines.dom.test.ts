@@ -280,7 +280,7 @@ describe("opening a run", () => {
     click(root.querySelector(".settings-routine-toggle"));
     click(root.querySelector(".settings-routine-open"));
     expect(posted.find((m) => m.type === "resumeSession")).toEqual({
-      type: "resumeSession", id: "s-2", cwd: "C:/repo",
+      type: "resumeSession", id: "s-2", cwd: "C:/repo", claim: true,
     });
   });
 
@@ -525,7 +525,7 @@ describe("a run remembers its own project", () => {
     click(root.querySelector(".settings-routine-toggle"));
     click(root.querySelector(".settings-routine-open"));
     expect(posted.find((m) => m.type === "resumeSession")).toEqual({
-      type: "resumeSession", id: "s-2", cwd: "C:/repo",
+      type: "resumeSession", id: "s-2", cwd: "C:/repo", claim: true,
     });
   });
 

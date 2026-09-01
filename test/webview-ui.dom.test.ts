@@ -394,7 +394,7 @@ describe("session rows (regression: only the label was clickable)", () => {
     const meta = doc.querySelector(".history-row .history-row-meta") as HTMLElement;
     click(window, meta); // a non-label part of the row
 
-    expect(posted).toContainEqual({ type: "resumeSession", id: "s1" });
+    expect(posted).toContainEqual({ type: "resumeSession", id: "s1", cwd: undefined, claim: true });
   });
 
   it("delete button opens the in-page confirm; confirming posts deleteSession, no resume", async () => {
@@ -503,7 +503,7 @@ describe("session rows (regression: only the label was clickable)", () => {
     click(window, rows[1] as HTMLElement);
 
     expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
-      { type: "resumeSession", id: "s2", cwd: undefined },
+      { type: "resumeSession", id: "s2", cwd: undefined, claim: true },
     ]);
     expect(doc.getElementById("session-name-label")!.textContent).toBe("Refactor parser");
     expect((doc.querySelector(".msg.user") as HTMLElement).hidden).toBe(true);
@@ -4006,6 +4006,7 @@ describe("remote tab session reconnect", () => {
       type: "resumeSession",
       id: "rejected",
       cwd: "/work/repo-b",
+      claim: true,
     });
     expect(JSON.parse(window.sessionStorage.getItem("grok.remote.tabSession:default")!))
       .toMatchObject({ id: "current", repoCwd: "/work/repo-b" });

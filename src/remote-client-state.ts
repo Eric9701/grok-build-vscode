@@ -13,7 +13,15 @@ export class RemoteClientState<T, C = never> {
   private readonly tailsByClient = new Map<string, Promise<void>>();
   private readonly tabTokenByClient = new Map<string, string>();
   private readonly clientByTabToken = new Map<string, string>();
-  private readonly detachedByTabToken = new Map<string, { cwd: string; active?: T; metadata?: C }>();
+  private readonly explicitSessionByClient = new Set<string>();
+  private readonly supersededSessionIdByClient = new Map<string, string>();
+  private readonly detachedByTabToken = new Map<string, {
+    cwd: string;
+    active?: T;
+    metadata?: C;
+    requiresExplicitSession?: boolean;
+    supersededSessionId?: string;
+  }>();
 
   constructor(
     private readonly defaultCwd: string,
@@ -49,6 +57,7 @@ export class RemoteClientState<T, C = never> {
         this.cwdByClient.set(clientId, detached.cwd);
         if (detached.active !== undefined) this.activeByClient.set(clientId, detached.active);
         if (detached.metadata !== undefined) this.metadataByClient.set(clientId, detached.metadata);
+        this.restoreExplicitSession(clientId, detached.requiresExplicitSession, detached.supersededSessionId);
       }
       return undefined;
     }
@@ -56,12 +65,16 @@ export class RemoteClientState<T, C = never> {
     const cwd = this.cwdByClient.get(priorClientId);
     const active = this.activeByClient.get(priorClientId);
     const metadata = this.metadataByClient.get(priorClientId);
+    const requiresExplicitSession = this.explicitSessionByClient.has(priorClientId);
+    const supersededSessionId = this.supersededSessionIdByClient.get(priorClientId);
     this.cwdByClient.delete(priorClientId);
     this.activeByClient.delete(priorClientId);
     this.metadataByClient.delete(priorClientId);
+    this.clearRequiresExplicitSession(priorClientId);
     if (cwd) this.cwdByClient.set(clientId, cwd);
     if (active !== undefined) this.activeByClient.set(clientId, active);
     if (metadata !== undefined) this.metadataByClient.set(clientId, metadata);
+    this.restoreExplicitSession(clientId, requiresExplicitSession, supersededSessionId);
     return priorClientId;
   }
 
@@ -143,6 +156,45 @@ export class RemoteClientState<T, C = never> {
       throw new Error(`Remote client ${clientId} is not ready`);
     }
     this.activeByClient.set(clientId, value);
+    this.clearRequiresExplicitSession(clientId);
+  }
+
+  /**
+   * Mark a tab that lost its conversation to another tab's explicit claim.
+   * Survives socket replacement (`identify` / `detachClient`) so a thawing
+   * background tab cannot adopt the desk session or mint a blank one.
+   */
+  markRequiresExplicitSession(clientId: string, sessionId?: string): void {
+    if (!this.cwdByClient.has(clientId)) return;
+    this.explicitSessionByClient.add(clientId);
+    if (sessionId) this.supersededSessionIdByClient.set(clientId, sessionId);
+  }
+
+  requiresExplicitSession(clientId: string): boolean {
+    return this.explicitSessionByClient.has(clientId);
+  }
+
+  supersededSessionId(clientId: string): string | undefined {
+    return this.supersededSessionIdByClient.get(clientId);
+  }
+
+  clearRequiresExplicitSession(clientId: string): void {
+    this.explicitSessionByClient.delete(clientId);
+    this.supersededSessionIdByClient.delete(clientId);
+  }
+
+  private restoreExplicitSession(
+    clientId: string,
+    requiresExplicitSession?: boolean,
+    supersededSessionId?: string,
+  ): void {
+    if (!requiresExplicitSession) {
+      this.clearRequiresExplicitSession(clientId);
+      return;
+    }
+    this.explicitSessionByClient.add(clientId);
+    if (supersededSessionId) this.supersededSessionIdByClient.set(clientId, supersededSessionId);
+    else this.supersededSessionIdByClient.delete(clientId);
   }
 
   active(clientId: string): T | undefined {
@@ -264,6 +316,7 @@ export class RemoteClientState<T, C = never> {
     this.cwdByClient.delete(clientId);
     this.activeByClient.delete(clientId);
     this.metadataByClient.delete(clientId);
+    this.clearRequiresExplicitSession(clientId);
     this.tailsByClient.delete(clientId);
     this.tailsByClient.delete(`client:${clientId}`);
     const token = this.tabTokenByClient.get(clientId);
@@ -281,7 +334,13 @@ export class RemoteClientState<T, C = never> {
     const active = this.activeByClient.get(clientId);
     const metadata = this.metadataByClient.get(clientId);
     if (token && cwd && this.clientByTabToken.get(token) === clientId) {
-      this.detachedByTabToken.set(token, { cwd, active, metadata });
+      this.detachedByTabToken.set(token, {
+        cwd,
+        active,
+        metadata,
+        requiresExplicitSession: this.explicitSessionByClient.has(clientId),
+        supersededSessionId: this.supersededSessionIdByClient.get(clientId),
+      });
     }
     this.deleteClient(clientId);
   }
@@ -293,6 +352,8 @@ export class RemoteClientState<T, C = never> {
     this.tailsByClient.clear();
     this.tabTokenByClient.clear();
     this.clientByTabToken.clear();
+    this.explicitSessionByClient.clear();
+    this.supersededSessionIdByClient.clear();
     this.detachedByTabToken.clear();
   }
 }

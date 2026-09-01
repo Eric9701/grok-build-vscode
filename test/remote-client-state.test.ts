@@ -99,6 +99,35 @@ describe("RemoteClientState", () => {
     expect(state.metadata("replacement")).toBe(preferences);
   });
 
+  it("carries a demoted tab's explicit-session latch across reconnect and detach", () => {
+    const state = new RemoteClientState<{ id: string }>("/work/a", norm);
+    state.identify("old-client", "stable-tab-token");
+    state.ready("old-client");
+    state.setActive("old-client", { id: "held" });
+    state.deleteActive("old-client");
+    state.markRequiresExplicitSession("old-client", "held");
+
+    expect(state.requiresExplicitSession("old-client")).toBe(true);
+    expect(state.supersededSessionId("old-client")).toBe("held");
+
+    expect(state.identify("replacement", "stable-tab-token")).toBe("old-client");
+    expect(state.requiresExplicitSession("replacement")).toBe(true);
+    expect(state.supersededSessionId("replacement")).toBe("held");
+    expect(state.requiresExplicitSession("old-client")).toBe(false);
+
+    state.setActive("replacement", { id: "other" });
+    expect(state.requiresExplicitSession("replacement")).toBe(false);
+    expect(state.supersededSessionId("replacement")).toBeUndefined();
+
+    state.deleteActive("replacement");
+    state.markRequiresExplicitSession("replacement", "held");
+    state.detachClient("replacement");
+    state.ready("later");
+    expect(state.identify("later", "stable-tab-token")).toBeUndefined();
+    expect(state.requiresExplicitSession("later")).toBe(true);
+    expect(state.supersededSessionId("later")).toBe("held");
+  });
+
   it("removes a departed client from cwd groups", () => {
     const state = new RemoteClientState<object>("/work/a", norm);
     state.ready("tab-a");

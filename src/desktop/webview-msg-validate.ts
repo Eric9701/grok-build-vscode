@@ -306,6 +306,7 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "resumeSession":
       if (!isString(raw.id)) return null;
       if (!opt(raw.cwd, isString)) return null;
+      if (!opt(raw.claim, isBoolean)) return null;
       break;
     case "renameSession":
       if (!isString(raw.id) || !isString(raw.name)) return null;

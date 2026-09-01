@@ -99,6 +99,18 @@ export const HOST_CAPABILITIES = {
 /** Machine-readable `error.code` for a send abandoned after its userMessage echo. */
 export const INTERRUPTED_SEND_CODE = "interrupted-send" as const;
 
+/**
+ * Machine-readable `error.code` when a remote tab lost a conversation to an
+ * explicit claim from another tab, or when a non-claim resume found that
+ * conversation already held. Additive: older clients ignore `code` and still
+ * see `resumeFailed`.
+ */
+export const SESSION_SUPERSEDED_CODE = "session-superseded" as const;
+
+export type HostErrorCode =
+  | typeof INTERRUPTED_SEND_CODE
+  | typeof SESSION_SUPERSEDED_CODE;
+
 /** Host-kind affordances merged into `initialState.capabilities` at post time. */
 export type HostUiCapabilities = {
   uploadFile: boolean;
@@ -607,7 +619,9 @@ export type HostMsg =
   // the browser outbox can fail closed. Older clients ignore the extra field.
   // code is additive too — a harness must not match user-facing `text`.
   // "interrupted-send" is a send abandoned after its userMessage echo.
-  | { type: "error"; text: string; resumeFailed?: { id: string }; code?: typeof INTERRUPTED_SEND_CODE }
+  // "session-superseded" is a tab that lost (or failed to restore) a
+  // conversation another tab now holds — see resumeSession.claim.
+  | { type: "error"; text: string; resumeFailed?: { id: string }; code?: HostErrorCode }
   | { type: "hostNotice"; level: "info" | "warning"; text: string }
   | { type: "xaiNotification"; update?: unknown }
   // Persisted xAI lifecycle (method _x.ai/session/update): subagent spawn/finish
@@ -951,7 +965,13 @@ export type WebviewMsg =
   | { type: "setRepoColor"; cwd: string; color: string }
   // cwd is required to reopen a worktree-isolated session (sessions are keyed
   // by cwd on disk). Omitted → host resolves from meta / workspace root.
-  | { type: "resumeSession"; id: string; cwd?: string }
+  //
+  // `claim` is additive: only an explicit user action (rail row, history pick,
+  // pinned row, Continue here) sets it. A reconnect restore MUST omit it —
+  // without that distinction a thawing background tab steals the conversation
+  // back from the tab in the user's hand. Absent/false = today's refusal when
+  // another tab already holds the session.
+  | { type: "resumeSession"; id: string; cwd?: string; claim?: boolean }
   // cwd names the PROJECT the row belongs to, so a client listing several of
   // them (the browser rail) can act on a conversation without first switching
   // to its repo. Optional and additive: omitted → the host authorizes against

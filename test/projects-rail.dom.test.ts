@@ -539,7 +539,7 @@ describe("projects rail", () => {
     expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
       // The session's OWN cwd, not the repo row's — a worktree session lives in a
       // deeper checkout and the host resolves sessions by cwd.
-      { type: "resumeSession", id: "b1", cwd: "/work/beta/sub" },
+      { type: "resumeSession", id: "b1", cwd: "/work/beta/sub", claim: true },
     ]);
   });
 
@@ -762,7 +762,7 @@ describe("projects rail", () => {
       dispatch(window, pinnedFrame([pinned("b1", "/work/beta/sub", "beta thing", 20)]));
       click(window, doc.querySelector(".rail-pinned .rail-session") as HTMLElement);
       expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
-        { type: "resumeSession", id: "b1", cwd: "/work/beta/sub" },
+        { type: "resumeSession", id: "b1", cwd: "/work/beta/sub", claim: true },
       ]);
     });
 
@@ -902,7 +902,7 @@ describe("projects rail", () => {
 
     first.dispatchEvent(new (window as any).KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
-      { type: "resumeSession", id: "a1", cwd: "/work/alpha" },
+      { type: "resumeSession", id: "a1", cwd: "/work/alpha", claim: true },
     ]);
   });
 
@@ -2076,7 +2076,7 @@ describe("rail transition (optimistic highlight)", () => {
 
     // Before sessionName / sessions — highlight moved, host only got resume.
     expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
-      { type: "resumeSession", id: "a2", cwd: "/work/alpha" },
+      { type: "resumeSession", id: "a2", cwd: "/work/alpha", claim: true },
     ]);
     expect(activeName(doc, "alpha")).toBe("alpha two");
     expect(welcomeStatus(doc)).toBe("Loading conversation");
@@ -2239,7 +2239,7 @@ describe("rail transition (optimistic highlight)", () => {
 
     click(window, rows[1]);
     expect(posted.filter((p) => p.type === "resumeSession")).toEqual([
-      { type: "resumeSession", id: "live-b", cwd: "/work/alpha" },
+      { type: "resumeSession", id: "live-b", cwd: "/work/alpha", claim: true },
     ]);
   });
 

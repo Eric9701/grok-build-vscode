@@ -282,11 +282,20 @@ function parseRemoteWebviewMsg(msg: unknown): WebviewMsg | null {
         (value.cwd === undefined || isRemoteCwd(value.cwd))
         ? msg as WebviewMsg
         : null;
-    case "resumeSession":
-      return isRemoteSessionId(value.id) &&
-        (value.cwd === undefined || isRemoteCwd(value.cwd))
-        ? msg as WebviewMsg
-        : null;
+    case "resumeSession": {
+      if (!isRemoteSessionId(value.id)) return null;
+      if (value.cwd !== undefined && !isRemoteCwd(value.cwd)) return null;
+      if (value.claim !== undefined && typeof value.claim !== "boolean") return null;
+      // Reconstruct so a future field cannot ride this newly-extended payload
+      // the way `send` used to. `claim: true` is the only value that changes
+      // host behaviour; false/absent is today's refusal.
+      return {
+        type: "resumeSession",
+        id: value.id,
+        ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}),
+        ...(value.claim === true ? { claim: true } : {}),
+      };
+    }
     case "renameSession":
     case "deleteSession":
       // cwd is optional and, when present, must look like a repo path. The host

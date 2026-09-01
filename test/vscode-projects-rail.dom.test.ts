@@ -187,7 +187,7 @@ describe("VS Code projects rail renderer", () => {
     rowEl.click();
 
     expect(posted).toEqual([
-      { type: "resumeSession", id: "g1", cwd: "/work/gamma" },
+      { type: "resumeSession", id: "g1", cwd: "/work/gamma", claim: true },
     ]);
     expect(posted.some((p) => p.type === "selectRepo")).toBe(false);
   });
@@ -206,7 +206,7 @@ describe("VS Code projects rail renderer", () => {
     posted.length = 0;
     projectRows[1].click();
     expect(posted).toEqual([
-      { type: "resumeSession", id: "live-b", cwd: "/work/alpha" },
+      { type: "resumeSession", id: "live-b", cwd: "/work/alpha", claim: true },
     ]);
   });
 
