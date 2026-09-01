@@ -778,6 +778,12 @@
           }));
         }
         root.appendChild(list);
+        // A full-width target under the list, not only the small "+" beside the
+        // group title. The owner's reason, and it is about where the eye goes:
+        // with one project or none the rail is mostly empty space, and the only
+        // way to add another is a 28px glyph in a header. Same control, said
+        // where there is room to say it.
+        if (state.canAddProject && !q) root.appendChild(addProjectWideButton());
       }
       shown = true;
     }
@@ -813,18 +819,34 @@
       // An empty rail that only says "No projects yet" is a dead end on the one
       // screen where the user has nothing else to click — and with no group
       // heads rendered, the "+" above has nowhere to be.
-      if (!q && state.canAddProject) {
-        const add = document.createElement("button");
-        add.type = "button";
-        add.className = "rail-empty-action";
-        add.textContent = "Add a project";
-        add.onclick = () => openAddProjectMenu(add);
-        note.appendChild(add);
-      }
+      if (!q && state.canAddProject) note.appendChild(addProjectWideButton());
       root.appendChild(note);
     }
 
     requestAnimationFrame(() => root.classList.remove("rail-rebuilding"));
+  }
+
+  /**
+   * "+ Add project", full width, at button height.
+   *
+   * ONE builder for both places it appears — under the project list and in the
+   * empty rail — because two spellings of the same control is how the two drift
+   * into different wording, which has happened here before with the clone hint.
+   * It replaces the empty state's text link: a link and a button offering the
+   * same action in the same rail is a second mechanism, not a second affordance.
+   */
+  function addProjectWideButton() {
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "rail-add-project-wide";
+    const plus = document.createElement("span");
+    plus.className = "rail-add-project-wide-plus";
+    plus.setAttribute("aria-hidden", "true");
+    plus.textContent = "+";
+    add.appendChild(plus);
+    add.appendChild(document.createTextNode("Add project"));
+    add.onclick = () => openAddProjectMenu(add);
+    return add;
   }
 
   function staticGroupHead(title) {

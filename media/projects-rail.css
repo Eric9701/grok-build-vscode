@@ -167,12 +167,55 @@ html, body {
   top: 50%;
   transform: translateY(-50%);
   z-index: 1;
-  width: 22px;
-  height: 22px;
+  /* 28x28 with a 20px glyph, matching the file panel's .gfp-icon-button and the
+     house rule stated in chat.css: "min 28x28 (36 under (hover: none) and
+     (pointer: coarse))". This was 22x22 with a 13px glyph — visibly smaller
+     than the explorer's control right beside it, and below the touch floor. */
+  width: 28px;
+  height: 28px;
 }
-.rail-add-project svg { width: 13px; height: 13px; }
-/* The empty rail's only control — a link, not a button: there is no chrome
-   around it to belong to. */
+.rail-add-project svg { width: 20px; height: 20px; }
+
+/* The rail had NO touch sizing of any kind, which is why its controls stayed
+   desk-sized on a phone while the rest of the app grew. */
+@media (hover: none), (pointer: coarse) {
+  .rail-add-project { width: 36px; height: 36px; right: 6px; }
+}
+/* "+ Add project" — the full-width control under the project list, and the
+   empty rail's only control.
+
+   Button height rather than a link, because it is the primary action on this
+   surface and the rail is mostly empty space when you have one project or
+   none. Secondary button colours, not primary: it should read as available,
+   not as the thing you came here to press. */
+.rail-add-project-wide {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: calc(100% - 16px);
+  margin: 6px 8px 2px;
+  padding: 6px 12px;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: var(--vscode-button-secondaryForeground, var(--vscode-foreground, CanvasText));
+  background: var(--vscode-button-secondaryBackground, rgba(128, 128, 128, 0.2));
+}
+.rail-add-project-wide:hover {
+  background: var(--vscode-button-secondaryHoverBackground, rgba(128, 128, 128, 0.3));
+}
+.rail-add-project-wide-plus { font-size: 14px; line-height: 1; opacity: 0.9; }
+/* The same 36px touch floor the rest of the app uses. */
+@media (hover: none), (pointer: coarse) {
+  .rail-add-project-wide { min-height: 44px; font-size: 13.5px; }
+}
+
+/* SUPERSEDED by .rail-add-project-wide, which the empty rail now uses too.
+   Kept only because other rail notes may still reference the class. */
 .rail-empty-action {
   display: block;
   margin-top: 6px;

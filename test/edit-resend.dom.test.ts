@@ -267,6 +267,9 @@ describe("truncateMessages removes only the tail (#56/P2-9)", () => {
 
   it("clears the discarded last-turn usage while keeping the surviving aggregate", () => {
     const { window, doc } = bootWebview();
+    // Usage rows live in the coding-mode half of the context popover; knowledge
+    // work stops at the number and Compact.
+    dispatch(window, { type: "initialState", appPurpose: "coding", capabilities: {} } as never);
     dispatch(window, {
       type: "usage",
       turn: { inputTokens: 300, costUsdTicks: 30_000_000 },

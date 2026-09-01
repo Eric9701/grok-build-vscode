@@ -6618,7 +6618,7 @@ Only continue if you trust this code.`,
           this.host.appendLine(`[github] device login completed after ${elapsed}s`);
           send({
             status: "done",
-            message: "Signed in to GitHub. Clone again.",
+            message: "Signed in to GitHub. Try to clone again.",
           });
           return;
         }

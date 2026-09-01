@@ -144,9 +144,27 @@ describe("projects rail", () => {
     dispatch(window, { type: "repos", entries: [], selectedCwd: "", activeCwd: "" });
     expect(rail(doc).textContent).toContain("No projects yet");
     expect(rail(doc).textContent).not.toContain("Loading…");
-    const add = doc.querySelector(".rail-empty-action") as HTMLButtonElement;
+    // The wide button is also present under a NON-empty list, which is the case
+    // the owner raised: with one project the rail is mostly empty space and a
+    // 28px "+" in the group header is easy to miss and hard to hit on a phone.
+    dispatch(window, {
+      type: "repos",
+      entries: [{ cwd: "/w/one", name: "one", sessions: [] }],
+      selectedCwd: "/w/one",
+      activeCwd: "/w/one",
+    } as never);
+    const wide = doc.querySelector(".rail-add-project-wide") as HTMLButtonElement;
+    expect(wide).toBeTruthy();
+    expect(wide.textContent).toContain("Add project");
+    // And it is the same control, not a second mechanism: the old text link is gone.
+    expect(doc.querySelector(".rail-empty-action")).toBeNull();
+    dispatch(window, { type: "repos", entries: [], selectedCwd: "", activeCwd: "" });
+    const add = doc.querySelector(".rail-add-project-wide") as HTMLButtonElement;
     expect(add).toBeTruthy();
-    expect(add.textContent).toBe("Add a project");
+    // One control for both places it appears — under the project list and
+      // here. A link and a button offering the same action in one rail is a
+      // second mechanism, not a second affordance.
+      expect(add.textContent).toContain("Add project");
     posted.length = 0;
     add.click();
     expect(posted).toEqual([{ type: "addProjectFolder" }]);

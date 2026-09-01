@@ -744,9 +744,12 @@ describe("VS Code projects rail renderer", () => {
         activeCwd: "",
         canAddProject: true,
       });
-      const link = doc.querySelector(".rail-empty-action") as HTMLButtonElement;
+      const link = doc.querySelector(".rail-add-project-wide") as HTMLButtonElement;
       expect(link).toBeTruthy();
-      expect(link.textContent).toBe("Add a project");
+      // One control for both places it appears — under the project list and
+      // here. A link and a button offering the same action in one rail is a
+      // second mechanism, not a second affordance.
+      expect(link.textContent).toContain("Add project");
       posted.length = 0;
       link.click();
       expect(posted).toEqual([{ type: "addProjectFolder" }]);

@@ -700,3 +700,60 @@ describe("continue-in-a-new-chat picker is visible from the session menu", () =>
     expect(body).not.toContain("popover-back");
   });
 });
+
+
+/**
+ * The context donut in knowledge work.
+ *
+ * Owner, 2026-09-01: "In the knowledge work mode after clicking donut I would
+ * also hide all details, just x/y and compact conversation?"
+ *
+ * This is not a new rule — the gear already describes the mode as "Hides
+ * worktrees, thinking traces, and tool details", and the breakdown (system
+ * prompt, reasoning overhead, tool definitions, per-turn cost) is exactly that
+ * class. The popover was simply missed when the rule was applied.
+ */
+describe("context popover respects the app purpose", () => {
+  const openDonut = (h: Harness) => {
+    dispatch(h.window, { type: "contextUsage", used: 16017, window: 512000 } as never);
+    dispatch(h.window, {
+      type: "contextUsage",
+      used: 16017,
+      window: 512000,
+      systemPromptTokens: 1039,
+      toolDefinitionsTokens: 812,
+      messageTokens: 12166,
+      freeTokens: 495983,
+    } as never);
+    click(h.window, h.doc.getElementById("donut")!);
+    return h.doc.getElementById("context-popover")!;
+  };
+
+  it("shows the number and Compact, and nothing else, in knowledge work", () => {
+    const h = bootWebview();
+    dispatch(h.window, { type: "initialState", appPurpose: "knowledge", capabilities: {} } as never);
+
+    const pop = openDonut(h);
+    const text = pop.textContent || "";
+
+    // What a person writing a document actually asked the donut.
+    expect(text).toContain("Context used");
+    expect(text).toContain("Compact conversation");
+    // The technical account, all of it, absent.
+    expect(text).not.toContain("In this window");
+    expect(text).not.toContain("System");
+    expect(text).not.toContain("Reasoning/overhead");
+    expect(text).not.toContain("Session total");
+  });
+
+  it("still shows the full breakdown in coding mode", () => {
+    const h = bootWebview();
+    dispatch(h.window, { type: "initialState", appPurpose: "coding", capabilities: {} } as never);
+
+    const text = openDonut(h).textContent || "";
+
+    expect(text).toContain("Context used");
+    expect(text).toContain("In this window");
+    expect(text).toContain("System");
+  });
+});

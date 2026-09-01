@@ -181,7 +181,12 @@ describe("add project", () => {
     openMenu(h);
     click(h.window, [...h.doc.querySelectorAll(".rail-menu-item")][0]);
     dispatch(h.window, { type: "projectSetup", root: "~/Grok Build", busy: "clone" });
-    expect(submit(h).textContent).toBe("Cloning…");
+    // Label plus the shared .blink-dots, not a static "…": a frozen ellipsis
+    // read as a stuck button (owner, 2026-09-01). textContent flattens the
+    // three dot spans, so assert the parts rather than a single string.
+    expect(submit(h).textContent).toContain("Cloning");
+    expect(submit(h).querySelector(".blink-dots")).toBeTruthy();
+    expect(submit(h).querySelectorAll(".blink-dots span")).toHaveLength(3);
     expect(submit(h).disabled).toBe(true);
     expect(input(h).disabled).toBe(true);
   });
