@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { SESSION_SUPERSEDED_CODE } from "../src/protocol";
 import { bootWebview, click, dispatch } from "./webview-harness";
@@ -78,6 +81,29 @@ describe("remote session claim (client)", () => {
       const el = doc.getElementById(id) as HTMLButtonElement | HTMLTextAreaElement | null;
       expect(el && el.disabled, id).toBe(true);
     }
+
+    // The microphone is the one control whose absence is dangerous rather than
+    // merely inconvenient. The frozen card hides the composer, and the mic
+    // button lives there, so a capture already running — or one still waiting
+    // on the browser's permission prompt, which resumes and installs itself
+    // afterwards — would keep recording with nothing on screen to stop it and
+    // only a 120-second timer to end it. Found by review; both halves (voice
+    // admitted without a bound session, and the composer hidden) were
+    // introduced by this work.
+    //
+    // A source-shape guard, and honest about it: the capture lives behind
+    // getUserMedia and cannot be driven in happy-dom, so this proves the
+    // takeover path reaches the cancel, not that a real stream stops.
+    const chatSource = readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "media", "chat.js"),
+      "utf8",
+    );
+    const enter = chatSource.slice(
+      chatSource.indexOf("function enterSessionSuperseded("),
+      chatSource.indexOf("function clearSessionSuperseded("),
+    );
+    expect(enter).toContain("remoteMicStart.cancelled = true");
+    expect(enter).toContain("stopBrowserMic(true)");
 
     posted.length = 0;
     click(window, banner!.querySelector("button") as HTMLElement);

@@ -11059,6 +11059,26 @@
   function enterSessionSuperseded(id, cwd) {
     if (!id) return;
     state.sessionSuperseded = { id, cwd: cwd || sessionSupersededCwd(id) };
+    // STOP THE MICROPHONE FIRST, and treat a takeover as a cancel.
+    //
+    // The frozen card hides the composer, and the mic button lives in it — so
+    // the only in-page way to stop a capture goes away with it. A start already
+    // waiting on the browser's permission prompt is worse: it resumes after the
+    // takeover, checks only its own `cancelled` flag, installs the capture and
+    // starts streaming. The tab would then be recording with no visible control
+    // and nothing but the 120-second timer to end it.
+    //
+    // Both halves of that were introduced here — admitting voice without a
+    // bound session, and hiding the composer — so both are closed here.
+    if (IS_REMOTE) {
+      if (remoteMicStart) remoteMicStart.cancelled = true;
+      if (remoteMic) stopBrowserMic(true);
+      else if (remoteMicStart) remoteMicStart = null;
+      state.mic = "idle";
+      clearVoiceInsertion();
+      state.voiceLive = false;
+      renderMic();
+    }
     renderSessionSupersededBanner();
   }
 
