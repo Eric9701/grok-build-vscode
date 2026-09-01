@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { GrokSidebar } from "../src/sidebar";
+import { Session } from "../src/session";
 
 /**
  * Re-focusing a LIVE conversation must say which agent it belongs to.
@@ -47,6 +49,36 @@ describe("the identity frame on a live re-focus", () => {
     // A re-focus is not a new conversation: startSession passes `!resumeId`,
     // so the catalog must be built the same way here.
     expect(body).toContain("client.currentModelId, false");
+  });
+
+  /**
+   * Behavioural, not source-shape — and the reason this file needed one.
+   *
+   * `modelsForSession` maps over the model array unconditionally, and a session
+   * can hold a sessionId before its models arrive: a phone JOINING a
+   * conversation the desk already holds is exactly that. So the frame builder
+   * threw, AFTER `focusRemoteSession` had already sent `clearMessages` — the
+   * client was left wiped with an error instead of a transcript, and the frame
+   * sequence CI reported was `repos,clearMessages,error`.
+   *
+   * Ten integration tests caught it and the unit suite did not, because the
+   * guards above only assert the shape of the call. This asserts it runs.
+   */
+  it("builds a frame for a session whose models have not arrived yet", () => {
+    const sidebar = Object.create(GrokSidebar.prototype) as any;
+    const session = new Session();
+    session.provider = "grok";
+    // A real client mid-join: it has an id, and no availableModels.
+    session.client = { sessionId: "session-1" } as any;
+
+    const frame = sidebar.sessionIdentityFrame(session);
+
+    expect(frame).toMatchObject({
+      type: "session",
+      sessionId: "session-1",
+      provider: "grok",
+    });
+    expect(frame.models).toEqual([]);
   });
 
   it("is sent to the browser client before the transcript replay", () => {

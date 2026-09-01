@@ -2367,7 +2367,14 @@ export class GrokSidebar {
     return {
       type: "session",
       sessionId: client.sessionId,
-      models: this.modelsForSession(session, client.availableModels, client.currentModelId, false),
+      // `?? []` is load-bearing. A session can have a sessionId before its
+      // model list arrives — a phone JOINING a conversation the desk already
+      // holds is the ordinary case — and `modelsForSession` maps over this
+      // array unconditionally. Without the fallback it threw here, after
+      // `clearMessages` had already gone out, so the client was left cleared
+      // with an error instead of a transcript. Ten integration tests said so
+      // and I had not run them.
+      models: this.modelsForSession(session, client.availableModels ?? [], client.currentModelId, false),
       currentModelId: client.currentModelId,
       worktree: !!session.worktree,
       provider: session.provider,
