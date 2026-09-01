@@ -6461,8 +6461,13 @@ Only continue if you trust this code.`,
     // that mapping surviving. Not a new mechanism — a better identifier.
     const current = (tabToken && this.remoteClients.clientForTabToken(tabToken))
       || this.remoteClients.currentClient(clientId);
-    // Ready, not merely known: `select` throws for a client with no cwd yet.
-    if (!current || !this.remoteClients.cwdIfPresent(current)) return;
+    // Registered, not "has a non-empty cwd" — and the difference is a user's
+    // FIRST project. `ready()` stores `defaultCwd`, which is "" when the host
+    // has no project open, and `select` gates on the key being PRESENT, not on
+    // it being truthy. Testing truthiness here skipped the bind for exactly the
+    // person who had nothing to bind to yet, then reported done. Found by the
+    // third review round; it was my own guard that introduced it.
+    if (!current || this.remoteClients.cwdIfPresent(current) === undefined) return;
     await this.selectRemoteRepo(current, dest);
   }
 

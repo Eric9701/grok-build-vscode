@@ -93,6 +93,25 @@ describe("a clone enters the project for the tab that asked", () => {
     expect(sidebar.selectRemoteRepo).toHaveBeenCalledWith("new-client", "/projects/editor");
   });
 
+  /**
+   * The FIRST project, which is the case that matters most and the one a
+   * readiness check gets wrong. With no project open the host's default cwd is
+   * "", so `ready()` registers the tab with an empty string — present in the
+   * map, but falsy. `select` gates on presence, so it would have worked;
+   * a truthiness guard skipped the bind and reported done, leaving a brand new
+   * user's very first clone unopened.
+   */
+  it("binds a tab that has no project yet, whose cwd is the empty string", async () => {
+    const sidebar = makeSidebar();
+    sidebar.remoteClients = new RemoteClientState<Session>("");
+    sidebar.remoteClients.ready("client-1");
+    expect(sidebar.remoteClients.cwdIfPresent("client-1")).toBe("");
+
+    await sidebar.enterProjectForRequester("/projects/editor", "remote", "client-1");
+
+    expect(sidebar.selectRemoteRepo).toHaveBeenCalledWith("client-1", "/projects/editor");
+  });
+
   it("does nothing when the tab has genuinely departed, instead of throwing", async () => {
     const sidebar = makeSidebar();
 
