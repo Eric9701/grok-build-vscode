@@ -109,7 +109,7 @@ import {
   noRemoteSignInMessage,
   deviceLoginUnavailable,
 } from "./device-login";
-import { runDeviceLogin, type DeviceLoginHandle } from "./device-login-run";
+import { probeClaudeAuthStatus, runDeviceLogin, type DeviceLoginHandle } from "./device-login-run";
 import {
   GITHUB_CLI_DOWNLOAD,
   classifyCloneFailure,
@@ -1870,7 +1870,12 @@ export class GrokSidebar {
     let settled = false;
     const handle = runDeviceLogin(cliPath, plan.args, {
       onPrompt: (prompt) => {
-        send({ status: "waiting", url: prompt.url, code: prompt.code });
+        send({
+          status: "waiting",
+          url: prompt.url,
+          code: prompt.code,
+          ...(prompt.needsCode ? { needsCode: true } : {}),
+        });
       },
       onDone: (result) => {
         settled = true;
@@ -1909,7 +1914,7 @@ export class GrokSidebar {
           message: deviceLoginFailureText(provider, result.failure, displayName),
         });
       },
-    });
+    }, undefined, undefined, { needsCode: !!plan.needsCode });
     if (!settled) {
       entry.handle = handle;
       this.deviceLogins.set(provider, entry as typeof entry & { handle: DeviceLoginHandle });
@@ -1965,7 +1970,9 @@ export class GrokSidebar {
     const delays = [0, 2_000, 5_000, 10_000, 20_000];
     for (const delay of delays) {
       if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-      if (await this.reprobeProviderCredentials(provider)) {
+      if (provider === "claude"
+        ? await this.deviceLoginCredentialReady(provider)
+        : await this.reprobeProviderCredentials(provider)) {
         this.host.appendLine(`[${provider}] device login: credential verified`);
         // Promote on evidence, exactly as the Providers refresh does. The probe
         // just proved the account works; without this the persisted `connected`
@@ -2011,6 +2018,27 @@ export class GrokSidebar {
       status: "failed",
       message: `${displayName} approved the sign-in, but no usable credential landed on this machine. Try connecting again.`,
     });
+  }
+
+  /**
+   * Whether this host can treat the sign-in as landed.
+   *
+   * Grok and Codex still go through the ACP probe. Claude's file is in the
+   * keychain (or `~/.claude/`), so presence-of-auth.json cannot speak for it —
+   * `claude auth status` `{ loggedIn: true }` is the authority. An unreadable
+   * status falls back to the ACP probe rather than failing closed on a CLI
+   * that printed something we have not seen.
+   */
+  private async deviceLoginCredentialReady(provider: AcpProvider): Promise<boolean> {
+    if (provider === "claude") {
+      const cliPath = this.locateProvider("claude");
+      if (!cliPath) return false;
+      const loggedIn = await probeClaudeAuthStatus(cliPath);
+      if (loggedIn === true) return true;
+      if (loggedIn === false) return false;
+      return this.reprobeProviderCredentials(provider);
+    }
+    return this.reprobeProviderCredentials(provider);
   }
 
   /** Does the provider's own credential file exist? Deliberately shallow —
@@ -10392,6 +10420,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           provider,
           launched: true,
         });
+        break;
+      }
+      case "submitDeviceLoginCode": {
+        const provider: AcpProvider = isAcpProvider(msg.provider) ? msg.provider : "grok";
+        const running = this.deviceLogins.get(provider);
+        if (!running) break;
+        const code = typeof msg.code === "string" ? msg.code.trim() : "";
+        if (!code) break;
+        // Re-bind the tapper the same way a re-tap does: they left for the
+        // vendor's page and came back under a new socket.
+        if (clientId) {
+          running.clientId = clientId;
+          running.tabToken = this.remoteClients.tabToken(clientId) ?? running.tabToken;
+        }
+        running.handle.submitCode(code);
+        if (running.last && running.last.status === "waiting") {
+          running.send({ ...running.last, submitted: true });
+        }
         break;
       }
       case "cancelDeviceLogin": {

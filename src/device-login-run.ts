@@ -18,6 +18,7 @@ import {
   deviceLoginEnv,
   DEVICE_LOGIN_PROMPT_TIMEOUT_MS,
   DEVICE_LOGIN_TIMEOUT_MS,
+  parseClaudeAuthStatus,
   parseDeviceLoginPrompt,
   type DeviceLoginFailure,
   type DeviceLoginPrompt,
@@ -46,6 +47,15 @@ export interface DeviceLoginHandle {
   /** Stop the child and settle as cancelled. Safe to call twice, and safe to
    *  call after the run already finished. */
   cancel(): void;
+  /** Write a paste-code to stdin and a newline. No-op when this run does not
+   *  need one, after a code was already written, or after the run settled.
+   *  The string is the vendor's user-facing code, not a credential. */
+  submitCode(code: string): void;
+}
+
+export interface DeviceLoginRunOptions {
+  /** Open stdin and accept {@link DeviceLoginHandle.submitCode}. */
+  needsCode?: boolean;
 }
 
 /** Enough to hold any banner a CLI prints before the URL. */
@@ -58,18 +68,25 @@ const TAIL_LIMIT = 128 * 1024;
  *  socket read that a term signal does not interrupt promptly. */
 const KILL_GRACE_MS = 2_000;
 
+const idleHandle = (): DeviceLoginHandle => ({ cancel: () => {}, submitCode: () => {} });
+
 export function runDeviceLogin(
   cliPath: string,
   args: readonly string[],
   callbacks: DeviceLoginCallbacks,
-  io: DeviceLoginIo = REAL_IO,
-  env: NodeJS.ProcessEnv = process.env,
+  io?: DeviceLoginIo,
+  env?: NodeJS.ProcessEnv,
+  opts: DeviceLoginRunOptions = {},
 ): DeviceLoginHandle {
+  const spawnIo = io ?? REAL_IO;
+  const runEnv = env ?? process.env;
+  const needsCode = !!opts.needsCode;
   let head = "";
   let tail = "";
   let sawPrompt = false;
   let settled = false;
   let cancelled = false;
+  let submitted = false;
   let promptTimer: ReturnType<typeof setTimeout> | undefined;
   let runTimer: ReturnType<typeof setTimeout> | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -92,18 +109,19 @@ export function runDeviceLogin(
 
   let child: ReturnType<typeof nodeSpawn>;
   try {
-    child = io.spawn(cliPath, [...args], {
-      // stdin closed, deliberately. These flows must not be waiting on input:
-      // if one is, that is the thing we want to find out, and a child holding
+    child = spawnIo.spawn(cliPath, [...args], {
+      // Device-code flows (Grok, Codex) must not wait on input: a child holding
       // an open stdin it will never read from looks identical to a child that
-      // is working.
-      stdio: ["ignore", "pipe", "pipe"],
-      env: deviceLoginEnv(env),
+      // is working. Paste-code (Claude `auth login`) is the other shape — the
+      // person brings a code back and we write it to stdin. Only that plan
+      // opens the pipe.
+      stdio: [needsCode ? "pipe" : "ignore", "pipe", "pipe"],
+      env: deviceLoginEnv(runEnv, { needsCode }),
       windowsHide: true,
     });
   } catch (error) {
     settle({ ok: false, failure: "failed", output: String((error as Error)?.message ?? error) });
-    return { cancel: () => {} };
+    return idleHandle();
   }
 
   const stop = () => {
@@ -120,11 +138,17 @@ export function runDeviceLogin(
     if (!sawPrompt && head.length < HEAD_LIMIT) head += text;
     tail = (tail + text).slice(-TAIL_LIMIT);
     if (sawPrompt) return;
-    const prompt = parseDeviceLoginPrompt(head);
-    if (!prompt) return;
+    const parsed = parseDeviceLoginPrompt(head);
+    if (!parsed) return;
     sawPrompt = true;
     if (promptTimer) clearTimeout(promptTimer);
     promptTimer = undefined;
+    // needsCode is the plan's, not the parser's. A paste-code URL can carry
+    // `code=true` as a flag; that is not a chip to show, and inferring the
+    // flow from a missing printed code would flip on the next CLI change.
+    const prompt: DeviceLoginPrompt = needsCode
+      ? { url: parsed.url, needsCode: true }
+      : parsed;
     callbacks.onPrompt(prompt);
   };
 
@@ -152,9 +176,8 @@ export function runDeviceLogin(
   });
 
   // A CLI whose sign-in wants a real terminal does not fail — it waits, with
-  // nothing on either stream, for a keypress that cannot arrive. Measured:
-  // `claude setup-token` produced zero bytes in 18 seconds of piped stdio.
-  // Without this the phone would spin for the full fifteen minutes.
+  // nothing on either stream, for a keypress that cannot arrive. Without this
+  // the phone would spin for the full fifteen minutes.
   promptTimer = setTimeout(() => {
     if (sawPrompt || settled) return;
     stop();
@@ -178,5 +201,66 @@ export function runDeviceLogin(
       // the panel spinning, and the user has already said they are done.
       settle({ ok: false, cancelled: true, output: tail });
     },
+    submitCode: (code: string) => {
+      if (settled || submitted || !needsCode) return;
+      const text = code.trim();
+      if (!text) return;
+      const stdin = child.stdin;
+      if (!stdin || typeof stdin.write !== "function") return;
+      submitted = true;
+      try { stdin.write(`${text}\n`); } catch { /* already gone */ }
+    },
   };
+}
+
+/** How long `claude auth status` may sit before we treat the output as unreadable. */
+const AUTH_STATUS_TIMEOUT_MS = 15_000;
+
+/**
+ * Whether Anthropic's CLI reports a usable login. `loggedIn: true` is the
+ * authority; the JSON is not logged, because a future CLI might put a token
+ * next to the flag.
+ */
+export function probeClaudeAuthStatus(
+  cliPath: string,
+  io?: DeviceLoginIo,
+  env?: NodeJS.ProcessEnv,
+): Promise<boolean | undefined> {
+  const spawnIo = io ?? REAL_IO;
+  const runEnv = env ?? process.env;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (value: boolean | undefined) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    let out = "";
+    let child: ReturnType<typeof nodeSpawn>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      child = spawnIo.spawn(cliPath, ["auth", "status"], {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: deviceLoginEnv(runEnv),
+        windowsHide: true,
+      });
+    } catch {
+      done(undefined);
+      return;
+    }
+    const finish = (value: boolean | undefined) => {
+      if (timer) clearTimeout(timer);
+      done(value);
+    };
+    const absorb = (chunk: unknown) => { out += String(chunk); };
+    child.stdout?.on("data", absorb);
+    child.stderr?.on("data", absorb);
+    child.on("error", () => finish(undefined));
+    child.on("close", () => finish(parseClaudeAuthStatus(out)));
+    timer = setTimeout(() => {
+      try { child.kill(); } catch { /* already gone */ }
+      finish(parseClaudeAuthStatus(out));
+    }, AUTH_STATUS_TIMEOUT_MS);
+    timer.unref?.();
+  });
 }

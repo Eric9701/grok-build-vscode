@@ -129,11 +129,8 @@ describe("telling somebody before they fail", () => {
     expect(deviceLoginPreflight("claude", { isCloud: true })).toBeUndefined();
   });
 
-  it("stops sending cloud users to a computer that does not exist", () => {
-    // At a desk, Claude's answer is "connect it at your computer". In a cloud
-    // environment there IS no computer, so that sentence is a dead end dressed
-    // as advice — the image carries a pty for exactly this reason.
-    expect(deviceLoginUnavailable("claude")).toMatch(/at your computer/i);
+  it("no longer withholds Claude: paste-code works on a pipe, cloud included", () => {
+    expect(deviceLoginUnavailable("claude")).toBeUndefined();
     expect(deviceLoginUnavailable("claude", { isCloud: true })).toBeUndefined();
   });
 });

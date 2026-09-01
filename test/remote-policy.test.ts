@@ -756,9 +756,12 @@ describe("allowFromRemote tier gating", () => {
   it("lets a remote start a sign-in, but only at full", () => {
     expect(allowFromRemote("runGrokLogin", "full")).toBe(true);
     expect(allowFromRemote("cancelDeviceLogin", "full")).toBe(true);
+    expect(allowFromRemote("submitDeviceLoginCode", "full")).toBe(true);
+    expect(INBOUND_DISPOSITION.submitDeviceLoginCode).toBe("full");
     for (const tier of ["read-only", "propose"] as const) {
       expect(allowFromRemote("runGrokLogin", tier)).toBe(false);
       expect(allowFromRemote("cancelDeviceLogin", tier)).toBe(false);
+      expect(allowFromRemote("submitDeviceLoginCode", tier)).toBe(false);
     }
   });
 

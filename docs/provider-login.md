@@ -46,11 +46,14 @@ Not every agent can do this, and the app tells you which:
 |---|---|---|
 | Grok Build | yes | `grok login --device-auth` prints a URL and a code and polls |
 | Codex | if your CLI and account allow it | needs `--device-auth` in your build **and** "Allow device code login" on the account |
-| Claude Code | no — connect it at your computer | `claude setup-token` is a terminal UI; with piped input it prints nothing at all |
+| Claude Code | yes | `claude auth login` prints a URL on a plain pipe; you paste the code Anthropic shows you back into the page |
 
 The app does not decide this from a version number. It runs the command and
 reports what came back, so a CLI that gains the flow starts working with no
-update here.
+update here. Two shapes, not one: Grok and Codex are **device-code** (the CLI
+polls); Claude Code is **paste-code** (the page writes the code to the CLI's
+stdin). The plan names that shape (`needsCode`); it is not inferred from a
+missing printed code.
 
 ## Signing in without a browser on that machine
 
@@ -97,22 +100,31 @@ then there are three fallbacks:
 - `printenv OPENAI_API_KEY | codex login --with-api-key`;
 - `CODEX_HOME` to relocate the whole directory.
 
-### Claude Code — a long-lived token
+### Claude Code — paste-code
 
 ```bash
-claude setup-token
+claude auth login
 ```
 
-Prints a URL, waits for the OAuth flow to finish, and stores a token valid for
-about a year. Requires a Claude subscription. Present in `claude 2.1.246`. The
-token can also be supplied as `CLAUDE_CODE_OAUTH_TOKEN`.
+The default (`--claudeai`, a Claude subscription). Measured on a real cloud
+machine, claude 2.1.251, through a **plain pipe** — no pty, no `script`, no
+native module:
 
-**It needs a real terminal.** Measured on 2026-08-26: run with its input and
-output piped rather than attached to a terminal, `claude setup-token` printed
-**zero bytes on both streams** across 18 seconds while happily creating its
-config directory. It is a terminal UI, not a print-and-poll flow. That is why it
-is the one agent Grok Build cannot connect for you from a phone, and why a
-hosted environment would need a pty rather than pipes to drive it.
+```
+Opening browser to sign in…
+If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=…&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=…&code_challenge=…&state=…
+Paste code here if prompted >
+```
+
+Exactly one URL, no ANSI, no redraw. Its `redirect_uri` is
+`platform.claude.com/oauth/code/callback` — the paste-code flow: open that URL
+anywhere, sign in, Anthropic shows a code, write the code back to the CLI's
+stdin. `claude auth status` prints JSON (`{"loggedIn": true, …}`); that is the
+success signal, not the process exit code.
+
+`claude setup-token` is a different command: an Ink TUI that printed **zero
+bytes** on a pipe (measured 2026-08-26 on 2.1.246). Grok Build does not use it.
+The ACP adapter never takes a credential from us — Anthropic's CLI stores it.
 
 Claude Code additionally accepts `ANTHROPIC_API_KEY` for anyone with API access,
 which is billed separately from a subscription.
@@ -157,12 +169,13 @@ permission prompts, schedule routines, browse and edit project files. It can now
 also **connect an agent**, for the agents whose CLI offers a device-code flow
 (see the table above).
 
-What a phone still cannot do is sign an agent **out**, or connect Claude Code.
+What a phone still cannot do is sign an agent **out** (except on a cloud
+machine, where the remote is the only surface). Connecting Claude Code from
+the browser is the paste-code flow above; there is no computer to walk to.
 
-If you are setting up a machine you will only ever reach remotely, it is still
-worth signing the agents in **before** you walk away from it — Claude in
-particular has no remote path, and a machine with nothing connected is a machine
-you may not be able to finish setting up from the road.
+If you are setting up a machine you will only ever reach remotely, connecting
+from the browser is enough for all three agents. A token still never leaves
+the machine the CLI runs on.
 
 ## Where the credentials live
 

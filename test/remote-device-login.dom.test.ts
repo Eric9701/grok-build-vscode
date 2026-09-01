@@ -60,6 +60,17 @@ describe("a phone with nothing connected", () => {
     expect(actions(h)).toEqual(["Connect Grok Build", "Connect Codex", "Connect Claude Code"]);
   });
 
+  it("offers Claude on a cloud machine instead of a dead-end note", () => {
+    const h = boot({ remote: true, caps: { remoteAgentSignIn: true, remoteAgentSignOut: true } });
+    dispatch(h.window, { type: "onboarding", state: "connect-agent", platform: "linux" });
+    expect(text(h)).not.toMatch(/not available yet/i);
+    expect(actions(h)).toEqual([
+      "Connect Grok Build (recommended)",
+      "Connect Codex",
+      "Connect Claude Code",
+    ]);
+  });
+
   it("posts the same message the desk posts — one capability, not two", () => {
     const h = boot({ remote: true });
     onboarding(h, {});
@@ -108,6 +119,59 @@ describe("while the flow runs", () => {
     onboarding(h, { device: { status: "waiting", url: "https://x.test/d" } });
     expect(onb(h).querySelector("a.onb-action")).toBeTruthy();
     expect(onb(h).querySelector(".onb-cmd")).toBeNull();
+  });
+
+  it("shows a paste field when the host says the flow needs a code, not a read-only chip", () => {
+    const h = boot({ remote: true });
+    dispatch(h.window, {
+      type: "onboarding",
+      state: "claude-login",
+      provider: "claude",
+      device: {
+        status: "waiting",
+        url: "https://claude.com/cai/oauth/authorize?code=true&client_id=x",
+        needsCode: true,
+      },
+    });
+    expect(onb(h).querySelector(".onb-code-input")).toBeTruthy();
+    expect(onb(h).querySelector(".onb-cmd code")).toBeNull();
+    expect(text(h)).not.toMatch(/finishes on its own/i);
+    const input = onb(h).querySelector(".onb-code-input") as HTMLInputElement;
+    input.value = "paste-me-now";
+    h.posted.length = 0;
+    click(h.window, byAct(h, "submitDeviceLoginCode")!);
+    expect(h.posted).toEqual([{ type: "submitDeviceLoginCode", provider: "claude", code: "paste-me-now" }]);
+  });
+
+  it("hides the paste field after the code is sent", () => {
+    const h = boot({ remote: true });
+    dispatch(h.window, {
+      type: "onboarding",
+      state: "claude-login",
+      provider: "claude",
+      device: {
+        status: "waiting",
+        url: "https://claude.com/cai/oauth/authorize",
+        needsCode: true,
+        submitted: true,
+      },
+    });
+    expect(onb(h).querySelector(".onb-code-input")).toBeNull();
+    expect(byAct(h, "submitDeviceLoginCode")).toBeNull();
+    expect(text(h)).toMatch(/finishes on its own/i);
+  });
+
+  it("does not submit a blank paste", () => {
+    const h = boot({ remote: true });
+    dispatch(h.window, {
+      type: "onboarding",
+      state: "claude-login",
+      provider: "claude",
+      device: { status: "waiting", url: "https://claude.com/cai/oauth/authorize", needsCode: true },
+    });
+    h.posted.length = 0;
+    click(h.window, byAct(h, "submitDeviceLoginCode")!);
+    expect(h.posted).toEqual([]);
   });
 
   it("cancels the flow rather than the whole panel", () => {

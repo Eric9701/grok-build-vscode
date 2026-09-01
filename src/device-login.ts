@@ -12,18 +12,17 @@
  * wait. So the remote path runs the CLI with pipes and renders what it printed
  * into the transcript, and the desk path is untouched.
  *
- * WHAT WAS MEASURED, 2026-08-26, because two of the three surprised us:
+ * WHAT WAS MEASURED, because two of the three surprised us:
  *
  *   grok 1.0.5    `grok login --device-auth`   works on pipes. Prints the URL
  *                 and the code to STDERR (not stdout), keeps polling, exits 0
- *                 when the browser approves.
- *   claude 2.1.246 `claude setup-token`        prints NOTHING to a pipe. It is
- *                 an Ink TUI and wants a real terminal; 18 s of piped stdio
- *                 produced zero bytes on both streams while it happily created
- *                 its config dir. Driving it needs a pty, and a pty means a
- *                 native dependency this repo has deliberately avoided (see
- *                 keep-awake.ts, which picked three OS binaries over one
- *                 native module for exactly this reason).
+ *                 when the browser approves. Device-code: we display, it polls.
+ *   claude 2.1.251 `claude auth login`         works on a plain pipe — no pty.
+ *                 Prints one URL (paste-code `redirect_uri` on
+ *                 platform.claude.com) and waits on stdin for the code the
+ *                 person copies from Anthropic's page. `claude setup-token`
+ *                 is a different command (an Ink TUI); it is not this flow.
+ *                 Success is `claude auth status` → `{ loggedIn: true }`.
  *   codex 0.149.0 `codex login --device-auth`  the flag does not exist in this
  *                 build. OpenAI documents it, and it is additionally gated on
  *                 an account setting ("Allow device code login") that a
@@ -31,10 +30,9 @@
  *
  * So this module does NOT hardcode "grok works, the others don't". It asks the
  * CLI and believes the answer: {@link deviceLoginPlan} says which command to
- * try, the runner tries it, and {@link classifyDeviceLoginFailure} turns
- * whatever came back into something a person can act on. A codex that grows
- * the flag starts working with no change here, and a claude that stops needing
- * a TTY does too — capability detection, never version numbers.
+ * try and whether the person must paste a code back, the runner tries it, and
+ * {@link classifyDeviceLoginFailure} turns whatever came back into something a
+ * person can act on. Capability detection, never version numbers.
  */
 import type { AcpProvider } from "./acp-backend";
 
@@ -46,43 +44,41 @@ export const DEVICE_LOGIN_TIMEOUT_MS = 15 * 60 * 1000;
 /** How long to wait for the URL before concluding the CLI is not going to
  *  print one. Generous: it covers a cold binary and a slow first HTTPS round
  *  trip, and the cost of being wrong is telling someone "no" who could have
- *  had a yes. `claude setup-token` produced nothing in 18 s, so 25 separates
- *  the two cases with room to spare. */
+ *  had a yes. A TUI that prints nothing on a pipe is still the thing this
+ *  separates from a slow-but-working print, so 25 s leaves room. */
 export const DEVICE_LOGIN_PROMPT_TIMEOUT_MS = 25_000;
 
 export interface DeviceLoginPlan {
   /** Argv after the CLI path. */
   args: string[];
+  /** The person must paste a code back into the CLI's stdin. Grok and Codex
+   *  print a code and poll on their own; Claude's paste-code flow does not.
+   *  Explicit on the plan, not inferred from a missing printed code. */
+  needsCode?: boolean;
 }
 
 /**
  * The headless login command to try for a provider, or undefined when we know
  * of none to try.
  *
- * Claude is the undefined one and it is a measurement, not a policy: its
- * headless command exists and is documented, it simply cannot be driven
- * through a pipe. Recorded as a reason string rather than silence so the panel
- * can say which of "there is no such flow" and "the flow needs a terminal" is
- * true — those lead a person to different next actions.
+ * The plan is the argv and the flow shape. Claude is paste-code (`needsCode`);
+ * Grok and Codex are device-code (the CLI polls). A provider without a command
+ * we know to try stays undefined, and {@link deviceLoginUnavailable} /
+ * {@link noRemoteSignInMessage} explain that to the panel.
  */
 export function deviceLoginPlan(provider: AcpProvider): DeviceLoginPlan | undefined {
   if (provider === "grok") return { args: ["login", "--device-auth"] };
   if (provider === "codex") return { args: ["login", "--device-auth"] };
+  if (provider === "claude") return { args: ["auth", "login"], needsCode: true };
   return undefined;
 }
 
 /** Why a provider has no remote sign-in, in a sentence a person can act on. */
 export function deviceLoginUnavailable(
-  provider: AcpProvider,
-  opts: { isCloud?: boolean } = {},
+  _provider: AcpProvider,
+  _opts: { isCloud?: boolean } = {},
 ): string | undefined {
-  if (provider !== "claude") return undefined;
-  // In a CLOUD environment there is no computer to walk to, so the desk
-  // fallback is not advice — it is a dead end dressed as advice. The image
-  // carries a pty for exactly this, which is why the answer differs.
-  if (opts.isCloud) return undefined;
-  return "Claude's sign-in needs a real terminal, so it has to be done at your computer. "
-    + "Open Grok Build there and connect Claude, and this device picks it up straight away.";
+  return undefined;
 }
 
 /**
@@ -90,17 +86,14 @@ export function deviceLoginUnavailable(
  *
  * Split out of the sidebar so it is testable, and because its cloud branch is
  * the whole point: "connect it at your computer" is good advice at a desk and a
- * DEAD END in a cloud environment, where there is no computer to walk to. The
- * sidebar's inline fallback used to hand back exactly the advice that
- * {@link deviceLoginUnavailable} withholds on cloud for that reason.
+ * DEAD END in a cloud environment, where there is no computer to walk to.
  */
 export function noRemoteSignInMessage(
   displayName: string,
   opts: { isCloud?: boolean } = {},
 ): string {
   if (opts.isCloud) {
-    return `${displayName} isn't available on cloud machines yet — we're working on adding it. `
-      + "Grok and Codex both sign in right here.";
+    return `${displayName} has no sign-in that works from here yet.`;
   }
   return `${displayName} has no sign-in that works without a terminal. Connect it at your computer.`;
 }
@@ -189,6 +182,8 @@ export function stripAnsi(text: string): string {
 export interface DeviceLoginPrompt {
   url: string;
   code?: string;
+  /** Set from the plan, never inferred from a missing printed code. */
+  needsCode?: boolean;
 }
 
 // Trailing punctuation is not part of a URL when the CLI wrapped it in prose.
@@ -214,9 +209,45 @@ export function parseDeviceLoginPrompt(raw: string): DeviceLoginPrompt | undefin
   const url = text.match(URL_RE)?.[0];
   if (!url) return undefined;
   const trimmed = url.replace(/[.,;:]+$/, "");
-  const fromUrl = trimmed.match(/[?&](?:user_)?code=([^&#\s]+)/i)?.[1];
-  const code = fromUrl ? decodeURIComponent(fromUrl) : text.match(BARE_CODE_RE)?.[1];
+  const fromUrl = codeFromLoginUrl(trimmed);
+  const code = fromUrl ?? text.match(BARE_CODE_RE)?.[1];
   return code ? { url: trimmed, code } : { url: trimmed };
+}
+
+/** Device-code query params only. `code=true` on Claude's authorize URL is a
+ *  boolean flag for the paste-code flow, not a user code to display. */
+function codeFromLoginUrl(url: string): string | undefined {
+  const user = url.match(/[?&]user_code=([^&#\s]+)/i)?.[1];
+  if (user) return decodeURIComponent(user);
+  const raw = url.match(/[?&]code=([^&#\s]+)/i)?.[1];
+  if (!raw) return undefined;
+  const decoded = decodeURIComponent(raw);
+  return BARE_CODE_RE.test(decoded) ? decoded : undefined;
+}
+
+/**
+ * `claude auth status` JSON. `loggedIn: true` is the success signal for a
+ * paste-code sign-in; an exit code alone has been unreliable across CLIs here.
+ * Returns undefined when the output is not that JSON, so a caller can fall
+ * back rather than invent a verdict.
+ */
+export function parseClaudeAuthStatus(raw: string): boolean | undefined {
+  const text = stripAnsi(raw).trim();
+  const read = (value: string): boolean | undefined => {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      if (parsed && typeof parsed === "object" && typeof (parsed as { loggedIn?: unknown }).loggedIn === "boolean") {
+        return (parsed as { loggedIn: boolean }).loggedIn;
+      }
+    } catch {
+      /* not JSON */
+    }
+    return undefined;
+  };
+  const direct = read(text);
+  if (direct !== undefined) return direct;
+  const blob = text.match(/\{[\s\S]*\}/);
+  return blob ? read(blob[0]) : undefined;
 }
 
 export type DeviceLoginFailure =
@@ -283,10 +314,12 @@ export function deviceLoginFailureText(
  * interactive blocks forever on a read that will never return, and the symptom
  * is not an error — it is a spinner on someone's phone until the timeout.
  */
-export function deviceLoginEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return {
+export function deviceLoginEnv(
+  base: NodeJS.ProcessEnv,
+  opts: { needsCode?: boolean } = {},
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
     ...base,
-    CI: "1",
     TERM: "dumb",
     NO_COLOR: "1",
     // Nothing may open a browser on the host: the whole point is that the
@@ -295,4 +328,8 @@ export function deviceLoginEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     BROWSER: "none",
     GIT_TERMINAL_PROMPT: "0",
   };
+  // Paste-code must wait on stdin. `CI=1` is how a CLI decides nobody is
+  // here to answer; leaving it set would skip the prompt this flow needs.
+  if (!opts.needsCode) env.CI = "1";
+  return env;
 }

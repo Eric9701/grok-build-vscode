@@ -1310,6 +1310,13 @@ describe("webview message schema validation", () => {
     expect(parseWebviewMsg({ type: "setMode", modeId: "plan" })?.type).toBe("setMode");
     expect(parseWebviewMsg({ type: "runGrokLogin", provider: "codex" })?.type)
       .toBe("runGrokLogin");
+    expect(parseWebviewMsg({ type: "submitDeviceLoginCode", provider: "claude", code: "abc" })?.type)
+      .toBe("submitDeviceLoginCode");
+    expect(parseWebviewMsg({ type: "submitDeviceLoginCode", code: "abc" })?.type)
+      .toBe("submitDeviceLoginCode");
+    expect(parseWebviewMsg({ type: "submitDeviceLoginCode", provider: "claude" })).toBeNull();
+    expect(parseWebviewMsg({ type: "cancelDeviceLogin", provider: "claude" })?.type)
+      .toBe("cancelDeviceLogin");
     expect(parseWebviewMsg({ type: "installCodex" })?.type).toBe("installCodex");
     expect(parseWebviewMsg({ type: "cancelCodexInstall" })?.type).toBe("cancelCodexInstall");
     expect(parseWebviewMsg({ type: "restartToUpdate" })).toEqual({ type: "restartToUpdate" });

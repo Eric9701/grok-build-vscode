@@ -575,11 +575,17 @@ export type HostMsg =
       launched?: boolean;
       device?: {
         /** starting: spawned, nothing printed yet. waiting: URL and code are on
-         *  screen and the CLI is polling. done/failed: terminal. unavailable:
-         *  this provider has no flow that works without a terminal. */
+         *  screen and the CLI is polling (or, with needsCode, waiting for a
+         *  paste). done/failed: terminal. unavailable: this provider has no
+         *  flow that works without a terminal. */
         status: "starting" | "waiting" | "verifying" | "done" | "failed" | "unavailable";
         url?: string;
         code?: string;
+        /** Paste-code flow: the person must type a code into the card. Set from
+         *  the plan, not inferred from a missing printed code. Additive. */
+        needsCode?: boolean;
+        /** The paste was written to the CLI; the card can stop offering input. */
+        submitted?: boolean;
         /** Said to the person, not logged — a failure or an explanation. */
         message?: string;
         /**
@@ -906,6 +912,10 @@ export type WebviewMsg =
   // Stop a headless sign-in the host is running. Only reachable while one is in
   // flight, and it kills a child process this same user started moments ago.
   | { type: "cancelDeviceLogin"; provider?: "grok" | "codex" | "claude" }
+  // Paste-code half of a headless sign-in: the person typed the vendor's code
+  // into the card and we write it to the CLI's stdin. Additive — an older host
+  // simply has no handler, and an older client never posts it.
+  | { type: "submitDeviceLoginCode"; provider?: "grok" | "codex" | "claude"; code: string }
   | { type: "logout"; provider?: "grok" | "codex" | "claude" }
   | { type: "checkGrokUpdate" }
   | { type: "updateGrok" }
@@ -1105,7 +1115,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, setThumbsFeedback: true, summarizeSpeech: true, requestImageFull: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
   questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, runInstallCmd: true, runGrokLogin: true,
-  cancelDeviceLogin: true,
+  cancelDeviceLogin: true, submitDeviceLoginCode: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, recheckConnection: true, refreshProviders: true, retryProviderSession: true,
   listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,
   setRepoArchived: true, setRepoColor: true,

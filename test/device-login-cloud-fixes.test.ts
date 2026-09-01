@@ -36,9 +36,11 @@ describe("device login: announce only what is verified", () => {
     // auth.json. "done" therefore belongs exclusively to confirmDeviceLogin.
     expect(start).not.toContain('status: "done"');
     expect(start).toContain("this.confirmDeviceLogin(");
+    expect(start).toContain("needsCode: !!plan.needsCode");
 
     const confirm = methodBody("private async confirmDeviceLoginInner(");
     expect(confirm).toContain("reprobeProviderCredentials(");
+    expect(confirm).toContain("deviceLoginCredentialReady(");
     expect(confirm).toContain('status: "done"');
     expect(confirm.indexOf("reprobeProviderCredentials(")).toBeLessThan(
       confirm.indexOf('status: "done"'),
@@ -157,13 +159,12 @@ describe("the verdict never blames a credential that landed", () => {
 });
 
 describe("a cloud machine tells the truth about its agents up front", () => {
-  it("gives Claude its answer with no Connect button, and recommends Grok", () => {
+  it("offers Claude Connect on a cloud machine, and recommends Grok", () => {
     const { container } = mountSettings(remoteEnv());
-    const claude = container.querySelector('[data-id="providerClaudeCloud"]');
+    expect(container.querySelector('[data-id="providerClaudeCloud"]')).toBeNull();
+    const claude = container.querySelector('[data-id="providerClaudeRemote"]');
     expect(claude).toBeTruthy();
-    expect(claude!.textContent).toContain("working on adding it");
-    expect(claude!.querySelector(".settings-action")).toBeNull();
-    expect(container.querySelector('[data-id="providerClaudeRemote"]')).toBeNull();
+    expect([...claude!.querySelectorAll("button")].map((b) => b.textContent)).toContain("Connect");
     const grok = container.querySelector('[data-id="providerGrokRemote"]');
     expect(grok!.textContent).toContain("Recommended");
   });
@@ -441,6 +442,16 @@ describe("a sign-in must not be paused underneath", () => {
     const cancelBlock = sidebar.slice(sidebar.indexOf('case "cancelDeviceLogin"'), sidebar.indexOf('case "recheckConnection"'));
     expect(cancelBlock).toContain("running.handle.cancel()");
     expect(cancelBlock).not.toContain("DeviceLoginWork");
+  });
+
+  it("writes a pasted code to the in-flight handle and never logs it", () => {
+    const at = sidebar.indexOf('case "submitDeviceLoginCode"');
+    expect(at).toBeGreaterThan(-1);
+    const body = sidebar.slice(at, sidebar.indexOf('case "cancelDeviceLogin"'));
+    expect(body).toContain("this.deviceLogins.get(provider)");
+    expect(body).toContain("running.handle.submitCode(code)");
+    expect(body).toContain("running.clientId = clientId");
+    expect(body).not.toContain("appendLine");
   });
 });
 

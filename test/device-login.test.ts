@@ -3,10 +3,11 @@
  *
  * The fixtures here are not invented. `GROK_REAL` is the exact bytes
  * `grok login --device-auth` wrote to stderr on 2026-08-26, escape codes
- * included, and the claude case is the one that produced nothing at all. Both
- * behaviours drove the design, so both are pinned: a change that makes the
- * parser stricter has to keep reading the real thing, and a change that makes
- * the runner more patient has to keep noticing a CLI that will never speak.
+ * included, and `CLAUDE_REAL` is the exact bytes `claude auth login` wrote to
+ * a plain pipe on 2.1.251. Both behaviours drove the design, so both are
+ * pinned: a change that makes the parser stricter has to keep reading the
+ * real thing, and a change that makes the runner more patient has to keep
+ * noticing a CLI that will never speak.
  */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
@@ -19,10 +20,11 @@ import {
   deviceLoginUnavailable,
   noRemoteSignInMessage,
   DEVICE_LOGIN_PROMPT_TIMEOUT_MS,
+  parseClaudeAuthStatus,
   parseDeviceLoginPrompt,
   stripAnsi,
 } from "../src/device-login";
-import { runDeviceLogin, type DeviceLoginIo } from "../src/device-login-run";
+import { probeClaudeAuthStatus, runDeviceLogin, type DeviceLoginIo } from "../src/device-login-run";
 
 const ESC = String.fromCharCode(27);
 
@@ -40,6 +42,13 @@ const GROK_REAL = [
   `${ESC}[90mOnly continue with a code you requested. Don't share it with anyone.${ESC}[0m`,
   "",
   "Waiting for authorization...",
+].join("\n");
+
+/** Verbatim from `claude auth login`, piped stdio, claude 2.1.251. */
+const CLAUDE_REAL = [
+  "Opening browser to sign in…",
+  "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=…&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=…&code_challenge=…&state=…",
+  "Paste code here if prompted > ",
 ].join("\n");
 
 describe("reading what the CLI printed", () => {
@@ -75,6 +84,12 @@ describe("reading what the CLI printed", () => {
     expect(parseDeviceLoginPrompt(text)).toEqual({ url: "https://x.test/device" });
   });
 
+  it("finds the URL in real claude auth login output, and does not take code=true as a chip", () => {
+    expect(parseDeviceLoginPrompt(CLAUDE_REAL)).toEqual({
+      url: "https://claude.com/cai/oauth/authorize?code=true&client_id=…&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=…&code_challenge=…&state=…",
+    });
+  });
+
   it("is undefined until a URL exists — a code with nowhere to type it is not a prompt", () => {
     expect(parseDeviceLoginPrompt("your code is WDJB-MJHT")).toBeUndefined();
     expect(parseDeviceLoginPrompt("")).toBeUndefined();
@@ -107,16 +122,17 @@ describe("which providers have a headless flow", () => {
     expect(deviceLoginPlan("codex")).toEqual({ args: ["login", "--device-auth"] });
   });
 
-  it("offers none for claude, and says why rather than going quiet", () => {
-    expect(deviceLoginPlan("claude")).toBeUndefined();
-    const why = deviceLoginUnavailable("claude");
-    expect(why).toMatch(/terminal/i);
-    expect(why).toMatch(/computer/i);
+  it("offers paste-code for claude, named on the plan rather than inferred", () => {
+    expect(deviceLoginPlan("claude")).toEqual({ args: ["auth", "login"], needsCode: true });
+    expect(deviceLoginPlan("grok")?.needsCode).toBeUndefined();
+    expect(deviceLoginPlan("codex")?.needsCode).toBeUndefined();
   });
 
-  it("has nothing to explain for the providers that work", () => {
+  it("has nothing to explain for the providers that work, including claude", () => {
     expect(deviceLoginUnavailable("grok")).toBeUndefined();
     expect(deviceLoginUnavailable("codex")).toBeUndefined();
+    expect(deviceLoginUnavailable("claude")).toBeUndefined();
+    expect(deviceLoginUnavailable("claude", { isCloud: true })).toBeUndefined();
   });
 });
 
@@ -162,12 +178,34 @@ describe("the environment a headless login runs in", () => {
   it("refuses to open a browser on an unattended desk", () => {
     expect(deviceLoginEnv({}).BROWSER).toBe("none");
   });
+
+  it("does not set CI when the flow must wait for a pasted code", () => {
+    const env = deviceLoginEnv({ PATH: "/usr/bin" }, { needsCode: true });
+    expect(env.CI).toBeUndefined();
+    expect(env.BROWSER).toBe("none");
+  });
+});
+
+describe("reading claude auth status", () => {
+  it("treats loggedIn true as signed in", () => {
+    expect(parseClaudeAuthStatus('{"loggedIn": true, "authMethod": "claudeai"}')).toBe(true);
+  });
+
+  it("treats loggedIn false as not signed in", () => {
+    expect(parseClaudeAuthStatus('{"loggedIn": false, "authMethod": "none"}')).toBe(false);
+  });
+
+  it("is undefined when the output is not that JSON", () => {
+    expect(parseClaudeAuthStatus("not json")).toBeUndefined();
+    expect(parseClaudeAuthStatus("{}")).toBeUndefined();
+  });
 });
 
 /** A child process that tests can drive. */
 class FakeChild extends EventEmitter {
   stdout = new EventEmitter();
   stderr = new EventEmitter();
+  stdin = { writes: [] as string[], write(chunk: string) { this.writes.push(String(chunk)); return true; } };
   killed: string[] = [];
   kill(signal?: string) {
     this.killed.push(signal ?? "SIGTERM");
@@ -223,6 +261,40 @@ describe("running one", () => {
     const options = calls[0][2] as { stdio: string[]; windowsHide: boolean };
     expect(options.stdio).toEqual(["ignore", "pipe", "pipe"]);
     expect(options.windowsHide).toBe(true);
+  });
+
+  it("opens stdin only for a paste-code plan, stamps needsCode, and writes the code plus a newline", () => {
+    const { io, child, calls } = fakeIo();
+    const onPrompt = vi.fn();
+    const handle = runDeviceLogin(
+      "/bin/claude",
+      ["auth", "login"],
+      { onPrompt, onDone: vi.fn() },
+      io,
+      {},
+      { needsCode: true },
+    );
+    const options = calls[0][2] as { stdio: string[]; env: NodeJS.ProcessEnv };
+    expect(options.stdio).toEqual(["pipe", "pipe", "pipe"]);
+    expect(options.env.CI).toBeUndefined();
+
+    child.stdout.emit("data", CLAUDE_REAL);
+    expect(onPrompt).toHaveBeenCalledWith({
+      url: "https://claude.com/cai/oauth/authorize?code=true&client_id=…&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=…&code_challenge=…&state=…",
+      needsCode: true,
+    });
+
+    handle.submitCode("  paste-me-now  ");
+    expect(child.stdin.writes).toEqual(["paste-me-now\n"]);
+    handle.submitCode("second-try");
+    expect(child.stdin.writes).toHaveLength(1);
+  });
+
+  it("does not write an empty paste", () => {
+    const { io, child } = fakeIo();
+    const handle = runDeviceLogin("/bin/claude", [], { onPrompt: vi.fn(), onDone: vi.fn() }, io, {}, { needsCode: true });
+    handle.submitCode("   ");
+    expect(child.stdin.writes).toEqual([]);
   });
 
   it("gives up on a CLI that never speaks, rather than spinning for fifteen minutes", () => {
@@ -299,25 +371,38 @@ describe("running one", () => {
     const handle = runDeviceLogin("/nope", [], { onPrompt: vi.fn(), onDone }, io, {});
     expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ ok: false, failure: "failed" }));
     expect(() => handle.cancel()).not.toThrow();
+    expect(() => handle.submitCode("x")).not.toThrow();
+  });
+});
+
+describe("claude auth status over the spawn seam", () => {
+  it("treats loggedIn true as success", async () => {
+    const { io, child } = fakeIo();
+    const pending = probeClaudeAuthStatus("/bin/claude", io, {});
+    child.stdout.emit("data", '{"loggedIn": true, "authMethod": "claudeai"}\n');
+    child.emit("close", 0);
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it("treats loggedIn false as not signed in", async () => {
+    const { io, child } = fakeIo();
+    const pending = probeClaudeAuthStatus("/bin/claude", io, {});
+    child.stdout.emit("data", '{"loggedIn": false, "authMethod": "none"}\n');
+    child.emit("close", 0);
+    await expect(pending).resolves.toBe(false);
   });
 });
 
 describe("what we say when a provider cannot be signed in from here", () => {
   it("does not send a cloud environment to a computer that does not exist", () => {
-    // The desk sentence is good advice at a desk and a dead end on a rented
-    // Linux box, which is exactly why deviceLoginUnavailable withholds its own
-    // desk sentence when isCloud. The sidebar's fallback used to hand the same
-    // advice straight back, so a cloud user was told to walk to a machine that
-    // is not there (owner, 2026-08-30).
-    const desk = noRemoteSignInMessage("Claude");
+    const desk = noRemoteSignInMessage("SomeAgent");
     expect(desk).toContain("at your computer");
 
-    const cloud = noRemoteSignInMessage("Claude", { isCloud: true });
+    const cloud = noRemoteSignInMessage("SomeAgent", { isCloud: true });
     expect(cloud).not.toContain("at your computer");
-    expect(cloud).toContain("cloud machines");
-    expect(cloud).toContain("working on adding it");
-    // Says what DOES work, so it is a next step rather than a refusal.
-    expect(cloud).toMatch(/Grok and Codex/);
+    expect(cloud).toContain("from here");
+    expect(cloud).not.toMatch(/Claude/);
+    expect(cloud).not.toContain("working on adding it");
   });
 });
 

@@ -370,6 +370,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // Stops a flow this same remote started. Refusing it would leave the only
   // party who can see the panel unable to close it.
   cancelDeviceLogin: "full",
+  // The paste that finishes the same flow. Refusing it would leave the only
+  // party who can see the card unable to finish.
+  submitDeviceLoginCode: "full",
   // host-local: native pickers/editors/config/mic on the dev box
   // Replacing the CLI binary belongs here, not in "full" (2026-08-11). The
   // binaries live on the desk machine and only the desk can replace them, so a
