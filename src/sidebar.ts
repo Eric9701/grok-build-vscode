@@ -6409,7 +6409,36 @@ Only continue if you trust this code.`,
    * something a knowledge-work user just named "Q3 Positioning" would be us
    * deciding they are writing software.
    */
-  async createProject(name: string): Promise<void> {
+  /**
+   * Finish "add a project" for the surface that ASKED for it.
+   *
+   * `addProjectFolder` registers the project with the HOST — on desktop it adds
+   * and activates a workspace folder. That is the whole job at a desk, where the
+   * person who clicked is looking at the window that just changed. It is only
+   * half the job for a browser tab: a remote client carries its OWN selected
+   * repository (`RemoteClientState`), and nothing here was touching it.
+   *
+   * So the owner cloned a private repository onto a cloud machine, watched it
+   * appear, and then found an empty file explorer and a New Session that did
+   * nothing visible — because his tab was still bound to the project he started
+   * from, and both of those follow the TAB's repository, not the host's. One
+   * cause, two symptoms that look unrelated.
+   *
+   * "Done" has to mean usable from the surface that asked. Host-owned: this
+   * reuses the same `selectRemoteRepo` an explicit tap goes through, including
+   * its archived/targetable checks, so it grants a remote nothing it could not
+   * already ask for.
+   */
+  private async enterProjectForRequester(
+    dest: string,
+    origin: MsgOrigin,
+    clientId?: string,
+  ): Promise<void> {
+    if (origin !== "remote" || !clientId) return;
+    await this.selectRemoteRepo(clientId, dest);
+  }
+
+  async createProject(name: string, origin: MsgOrigin = "local", clientId?: string): Promise<void> {
     const nameError = projectNameError(name);
     if (nameError) {
       this.postProjectSetup({ error: nameError });
@@ -6439,6 +6468,7 @@ Only continue if you trust this code.`,
       return;
     }
     await this.addProjectFolder(dest);
+    await this.enterProjectForRequester(dest, origin, clientId);
     this.postProjectSetup({ done: true });
   }
 
@@ -6454,7 +6484,7 @@ Only continue if you trust this code.`,
    * username prompt against a terminal that does not exist, and the form waits
    * for ever instead of reporting an auth failure it could offer to fix.
    */
-  async cloneProject(url: string): Promise<void> {
+  async cloneProject(url: string, origin: MsgOrigin = "local", clientId?: string): Promise<void> {
     const urlError = cloneUrlError(url);
     if (urlError) {
       this.postProjectSetup({ error: urlError });
@@ -6505,6 +6535,7 @@ Only continue if you trust this code.`,
       return;
     }
     await this.addProjectFolder(dest);
+    await this.enterProjectForRequester(dest, origin, clientId);
     this.postProjectSetup({ done: true });
   }
 
@@ -10480,10 +10511,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.removeProjectFolder(msg.cwd);
         break;
       case "createProject":
-        await this.createProject(msg.name);
+        await this.createProject(msg.name, origin, clientId);
         break;
       case "cloneProject":
-        await this.cloneProject(msg.url);
+        await this.cloneProject(msg.url, origin, clientId);
         break;
       case "setupGithubCli":
         await this.setupGithubCli(
