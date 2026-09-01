@@ -583,9 +583,15 @@ export const REMOTE_REQUIRES_BOUND_SESSION: Record<WebviewMsg["type"], boolean> 
   pickFile: true,
   voiceStart: true,
   voiceStop: true,
-  remoteVoiceStart: true,
-  remoteVoiceChunk: true,
-  remoteVoiceStop: true,
+  // Remote voice owns its OWN admission check, per client rather than per
+  // session, and refusing a chunk from a client with no live capture is the
+  // thing it exists to do — visibly, with a `voiceError` the person can see.
+  // Refusing these here instead would swap that visible rejection for a silent
+  // one, which is how a phone ends up holding a dead microphone button with no
+  // explanation. Voice is not session-bound in the first place.
+  remoteVoiceStart: false,
+  remoteVoiceChunk: false,
+  remoteVoiceStop: false,
   setShowThinking: false,
   setExpandCommandOutputs: false,
   setSteerByDefault: false,

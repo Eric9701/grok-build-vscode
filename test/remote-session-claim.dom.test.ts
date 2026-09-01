@@ -54,12 +54,30 @@ describe("remote session claim (client)", () => {
     });
 
     expect(doc.querySelector(".msg.user")?.textContent).toContain("keep this turn");
-    expect(doc.querySelector(".msg.error")?.getAttribute("data-error-code")).toBe(SESSION_SUPERSEDED_CODE);
     expect(doc.body.classList.contains("session-superseded")).toBe(true);
-    const input = doc.getElementById("input") as HTMLTextAreaElement;
-    expect(input.disabled).toBe(true);
+
+    // The card is the ONLY message. It used to also print the host's sentence
+    // into the transcript in red, so the same thing was said twice — once
+    // calmly where the composer had been and once as a failure above it, which
+    // reads as two separate things going wrong (owner, 2026-09-01).
+    expect(doc.querySelector(`.msg.error[data-error-code="${SESSION_SUPERSEDED_CODE}"]`)).toBeNull();
+
     const banner = doc.getElementById("session-superseded-banner");
-    expect(banner?.textContent).toContain("Continue here");
+    expect(banner?.querySelector(".session-superseded-title")?.textContent)
+      .toContain("moved to another tab");
+    // Leads with the reassurance, because that is the first thing a person
+    // wants to know when their composer has vanished.
+    expect(banner?.querySelector(".session-superseded-body")?.textContent)
+      .toContain("Nothing was lost");
+    expect(banner?.querySelector(".session-superseded-btn")?.textContent).toBe("Continue here");
+
+    // EVERY composer control, not just the textarea: a frozen conversation that
+    // still offers Send or the mode picker is offering actions the host
+    // refuses, and `disabled` is what makes them unclickable rather than faded.
+    for (const id of ["input", "send-btn", "add-btn", "gear-btn", "mode-btn", "mic-btn"]) {
+      const el = doc.getElementById(id) as HTMLButtonElement | HTMLTextAreaElement | null;
+      expect(el && el.disabled, id).toBe(true);
+    }
 
     posted.length = 0;
     click(window, banner!.querySelector("button") as HTMLElement);
