@@ -59,6 +59,11 @@ rows("ignored", "ACP update", "hook_run_started", "ACCEPTED pre-existing gap (ba
 rows("ignored", "ACP update", "last_turn_summary", "ACCEPTED pre-existing gap (backlog: Grok 1.0.41 kinds): an end-of-turn summary notification; nothing shows it.");
 rows("ignored", "ACP update", "background_tasks", "ACCEPTED pre-existing gap (backlog: Grok 1.0.41 kinds): a snapshot list of the session's background tasks; the per-task task_backgrounded / task_completed events already drive the cards.");
 meta("ignored", "bareName qualifiedName pluginName workflowPath workflowSource feedbackTraceOffer x.ai/memoryMode", "ACCEPTED pre-existing gap (backlog: Grok 1.0.41 kinds): extra labels on tool, workflow and session events; the fields the renderer reads are unchanged.");
+// New by grok 1.0.52 (seen in the 4.14.2 release test:live, 2026-10-13). Backlog: "Grok 1.0.52 metadata nothing reads".
+meta("ignored", "contextWindows", "ACCEPTED pre-existing gap (backlog: Grok 1.0.52 metadata): a model's selectable context sizes (e.g. [256000, 500000]); the meter keeps using totalContextTokens, the CLI's default size. Selecting a size is PR #205.");
+meta("ignored", "requestTrimmedTokens", "ACCEPTED pre-existing gap (backlog: Grok 1.0.52 metadata): tokens the CLI trimmed from a request, beside totalTokens on session updates; the meter reads totalTokens.");
+meta("ignored", "x.ai/memoryNotesWritable", "ACCEPTED pre-existing gap (backlog: Grok 1.0.52 metadata): whether the CLI's memory notes are writable for the session; no host surface for memory notes.");
+meta("ignored", "x.ai/requestingSessionId", "ACCEPTED pre-existing gap (backlog: Grok 1.0.52 metadata): the session that raised a permission request; approval already answers on the request's own session, the card does not name a requesting child.");
 rows("handled", "ACP update", "workflow_updated", "src/run-progress.ts parseRunProgressUpdate / src/sidebar.ts xaiNotification: workflow phase/status/result snapshots drive cards.");
 rows("handled", "ACP update", "subagent_spawned subagent_finished turn_completed", "src/sidebar.ts subagentLifecycle/xaiNotification / media/chat.js: child lifecycle and replayed turn completion.");
 rows("handled", "ACP update", "model_changed", "src/acp.ts handleServerRequest: synchronizes current model and effective effort.");

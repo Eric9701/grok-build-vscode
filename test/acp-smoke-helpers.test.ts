@@ -213,6 +213,13 @@ describe("live smoke catalog selection", () => {
     expect(() => lowestSmokeEffort(model("a", []))).toThrow(/no effort menu/);
   });
 
+  it("an effort override must be advertised, and replaces the lowest", () => {
+    expect(lowestSmokeEffort(model("a", ["none", "low", "high"]), "low")).toBe("low");
+    expect(() => lowestSmokeEffort(model("a", ["none", "low"]), "ultra")).toThrow(/not advertised/);
+    expect(lowestSmokeEffort(model("a"), "low")).toBeUndefined();
+    expect(selectSmokeEffort(liveCatalogs.muse.session, liveCatalogs.muse.session.models.availableModels[0], "low")).toEqual({ effort: "low" });
+  });
+
   it("uses the providers' actual catalog normalizers", () => {
     const codex = new CodexBackend().normalizeSessionResponse(catalog([
       model("future-mini[high]"), model("future-mini[low]"),

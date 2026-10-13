@@ -157,7 +157,8 @@ export async function runRenderSmoke(provider, evidenceParent, cliOverride, sele
       await chooseModel(live.models.find(m => m.modelId === selection.modelId));
       const switched = await waitPage(async () => { const s = status(); return s?.modelId === selection.modelId && await settled() && s; }, `${provider} desktop model acknowledgement`, rpcMs);
       const model = switched.models.find(m => m.modelId === selection.modelId);
-      selection.effort = selectSmokeEffort(switched, { _meta: { reasoningEfforts: model.reasoningEfforts } }).effort;
+      selection.effort = selectSmokeEffort(switched, { _meta: { reasoningEfforts: model.reasoningEfforts } },
+        process.env[`ACP_SMOKE_${provider.toUpperCase()}_EFFORT`]).effort;
       if (selection.effort && switched.effort !== selection.effort) {
         await picker();
         const effort = page.locator("#gear-popover .effort-strip-stop");

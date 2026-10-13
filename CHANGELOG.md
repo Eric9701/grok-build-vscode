@@ -1,5 +1,19 @@
 # Changelog
 
+## 4.14.2 — 2026-10-13
+
+**Disconnect an agent without signing its CLI out, and a context meter that remembers a compaction.**
+
+### Changed
+
+- **Settings → Providers → Disconnect (#203).** On your own machine, the button for a connected agent now turns it off in this app and leaves its CLI signed in, so Connect brings it back without signing in again. It asks first only while that agent is replying. To sign a CLI out, for example to switch accounts, use **Grok: Log Out** in VS Code or the CLI's own logout command. On a cloud environment the button still reads **Sign out** and clears the CLI's sign-in, because nothing else on that machine will.
+
+### Fixed
+
+- **The context meter after `/compact` (#195).** In Codex and Claude Code conversations the meter drops to the compacted size when the compaction finishes and keeps it after a reload; before, it stayed at the old figure until the next turn. A Grok conversation no longer shows its pre-compact figure first when it reopens.
+- **Quotes, dividers and more heading levels render (#198).** `>` quote lines (nested ones too), `---` dividers, headings underlined with `===` or `---`, and `#####` / `######` headings render in replies, plans and workflow output and in the desktop file preview, instead of showing their raw characters. Thanks to [@wayneadams](https://github.com/wayneadams) and [@zfzfg](https://github.com/zfzfg) ([#201](https://github.com/phuryn/grok-build-vscode/pull/201)).
+- **Linux: "OS secure storage is unavailable" says why (#209).** In Grok Build Desktop the error now names the password store Electron picked and your `XDG_CURRENT_DESKTOP`, and suggests starting the app with `--password-store=gnome-libsecret` (GNOME) or `--password-store=kwallet6` / `kwallet5` (KDE).
+
 ## 4.14.1 — 2026-09-29
 
 **See what a starting conversation is waiting for, and read a workflow as a process.**

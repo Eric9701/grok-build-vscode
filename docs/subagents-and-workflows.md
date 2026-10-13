@@ -32,7 +32,7 @@ re-measures it.
 |---|---|---|
 | Grok | 1.0.41 | native (`grok agent stdio`) |
 | Codex | codex-cli 0.157.0 | `@agentclientprotocol/codex-acp` 1.11.0 |
-| Claude Code | 2.1.283 | `@agentclientprotocol/claude-agent-acp` 0.76.0 |
+| Claude Code | 2.1.296 | `@agentclientprotocol/claude-agent-acp` 0.76.0 |
 | Muse Code | 1.4.0 | the bundled adapter in `adapters/muse/`, on `@muse-code/sdk` 1.3.0 |
 
 ### What the extension asks for at `initialize`

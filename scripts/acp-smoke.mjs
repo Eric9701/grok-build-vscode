@@ -8,7 +8,8 @@
 //
 // Run: npm run smoke:acp [-- --provider=codex|claude|muse]
 // Optional: CODEX_CLI_PATH / CLAUDE_CLI_PATH / MUSE_CLI_PATH (existing user CLI),
-// ACP_SMOKE_<PROVIDER>_MODEL (must be advertised),
+// ACP_SMOKE_<PROVIDER>_MODEL (must be advertised), ACP_SMOKE_<PROVIDER>_EFFORT
+// (must be advertised; default the lowest),
 // ACP_SMOKE_RPC_TIMEOUT_MS (90000), ACP_SMOKE_TURN_TIMEOUT_MS (180000),
 // ACP_SMOKE_WORKFLOW_TIMEOUT_MS (300000), ACP_SMOKE_DELIVERY_TIMEOUT_MS (60000).
 // Evidence: .verification/acp-smoke/<unique run>/ (never overwritten).
@@ -86,8 +87,8 @@ export function selectGrokLaneModel(session, override, composerOnly = false) {
 }
 
 /** Use the POST-switch menu: Claude removes effort entirely when Haiku is selected. */
-export function selectSmokeEffort(response, model) {
-  if (!Array.isArray(response?.configOptions)) return { effort: lowestSmokeEffort(model) };
+export function selectSmokeEffort(response, model, override) {
+  if (!Array.isArray(response?.configOptions)) return { effort: lowestSmokeEffort(model, override) };
   const options = response.configOptions.filter(o => o.category === "thought_level" || ["effort", "reasoning_effort"].includes(o.id));
   assert(options.length <= 1, "ambiguous reasoning config options");
   if (!options.length) return { effort: undefined };
@@ -95,7 +96,7 @@ export function selectSmokeEffort(response, model) {
   assert(nonempty(option.id), "reasoning config option lacks id");
   const values = (option.options ?? []).flatMap(o => o.options ?? [o]).filter(o => o.value !== "default");
   if (!values.length) return { effort: undefined };
-  return { effort: lowestSmokeEffort({ _meta: { reasoningEfforts: values } }), configId: option.id };
+  return { effort: lowestSmokeEffort({ _meta: { reasoningEfforts: values } }, override), configId: option.id };
 }
 
 export function desktopSmokeCatalog(status) {
@@ -114,11 +115,21 @@ export function smokeScenario(argv, allowed) {
   return scenario;
 }
 
-export function lowestSmokeEffort(model) {
+/**
+ * The lowest advertised effort, unless ACP_SMOKE_<PROVIDER>_EFFORT names one.
+ * The override exists because "lowest" is not always admissible everywhere:
+ * Muse began refusing effort `none` for workflow children (which inherit the
+ * parent's route), so its workflow scenario could not run at the lowest effort.
+ */
+export function lowestSmokeEffort(model, override) {
   const offered = (model?._meta?.reasoningEfforts ?? []).map(e => typeof e === "string" ? e : e?.value).filter(nonempty);
   if (!offered.length) {
     assert(!model?._meta?.supportsReasoningEffort, "model supports effort but advertises no effort menu");
     return undefined;
+  }
+  if (override) {
+    assert(offered.includes(override), `effort override is not advertised: ${override} (offered: ${offered.join(", ")})`);
+    return override;
   }
   const effort = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].find(e => offered.includes(e));
   assert(effort, `unrecognized effort menu: ${offered.join(", ")}`);
@@ -751,7 +762,8 @@ async function main() {
         const call = backend.setModel(sessionId, selection.modelId);
         const response = await peer.request(call.method, call.params);
         assert(backend.modelSetSucceeded(response), "model selection rejected");
-        const choice = selectSmokeEffort(response, sessionResponse.models.availableModels.find(m => m.modelId === selection.modelId));
+        const choice = selectSmokeEffort(response, sessionResponse.models.availableModels.find(m => m.modelId === selection.modelId),
+          process.env[`ACP_SMOKE_${provider.toUpperCase()}_EFFORT`]);
         selection.effort = choice.effort;
         if (selection.effort) {
           const effort = choice.configId ? { method: "session/set_config_option", params: { sessionId, configId: choice.configId, value: choice.effort } }
