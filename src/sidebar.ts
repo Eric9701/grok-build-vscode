@@ -18887,6 +18887,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       || message.type === "permissionRequest")) this.pendingTurnDiffCaptures.delete(session.turnToken);
     if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     if (message.type === "clearMessages") session.buffer = [];
+    // `openPicker` is the transient half of this frame (see TRANSIENT_TYPES):
+    // the person just changed the model or typed `/context-window`. Only the
+    // selection is state worth replaying.
+    else if (message.type === "contextWindowSelection" && message.openPicker) session.buffer.push({ type: message.type, selection: message.selection });
     else if (!GrokSidebar.TRANSIENT_TYPES.has(message.type)) session.buffer.push(message);
     if (message.type === "runProgress") this.cloudHostUpdate?.considerApply();
     if (message.type === "userMessage" && !message.steer) {

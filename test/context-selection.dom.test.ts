@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
-import { bootWebview, click, dispatch } from "./webview-harness";
+import { describe, expect, it, vi } from "vitest";
+import { bootWebview, click, dispatch, type Harness } from "./webview-harness";
+import { GrokSidebar } from "../src/sidebar";
+import { Session, sessionUiSnapshot } from "../src/session";
+import { RemoteClientState } from "../src/remote-client-state";
+import { bracketRemoteSnapshot } from "../src/remote-policy";
 
 const selection = { sessionId: "s", modelId: "grok-4.7", generation: 2, sizes: [256000, 500000], defaultSize: 256000, selectedSize: 256000, available: true, changing: false };
 function setup() {
@@ -101,5 +105,43 @@ describe("context-window controls", () => {
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, stale: true }, openPicker: true });
     expect(h.doc.querySelector(".context-window-choice.active")!.textContent).toContain("256");
     expect(h.doc.getElementById("gear-popover")!.textContent).toContain("native state needs a refresh");
+  });
+});
+
+describe("context-window picker opening is one-shot", () => {
+  const gear = (h: Harness) => h.doc.getElementById("gear-popover")!;
+  it("opens where the model was changed, but a switch back, reload or phone rebuild only restores the selection", () => {
+    const desk = bootWebview(), phone = bootWebview({ remote: true });
+    const confirmed = { ...selection, generation: 3, selectedSize: 500000 };
+    const session = new Session(); session.cwd = "/repo"; session.provider = "grok";
+    session.client = { provider: "grok", currentModelId: "grok-4.7", contextWindowSelection: confirmed } as any;
+    const sidebar = Object.create(GrokSidebar.prototype) as any;
+    sidebar.focused = session;
+    sidebar.remoteClients = new RemoteClientState("/repo");
+    sidebar.remoteClients.ready("phone"); sidebar.remoteClients.setActive("phone", session);
+    sidebar.view = { webview: { postMessage: (m: unknown) => dispatch(desk.window, m) } };
+    sidebar.localizeHistoryMessage = (m: unknown) => m; sidebar.mirrorToProjectsRail = () => {};
+    sidebar.sessionCwd = (s: Session) => s.cwd; sidebar.authorizedSessionCwds = () => ["/repo"];
+    sidebar.host = { appendLine: vi.fn() };
+    sidebar.sendRemoteClient = (_id: string, m: unknown) => dispatch(phone.window, m);
+
+    sidebar.emit(session, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [{ modelId: "grok-4.7", name: "Grok 4.7", contextWindowSizes: selection.sizes }] });
+    sidebar.emit(session, { type: "modelChanged", modelId: "grok-4.7" });
+    sidebar.emit(session, { type: "contextWindowSelection", selection: confirmed, openPicker: true });
+    for (const h of [desk, phone]) expect(gear(h).hidden).toBe(false);
+    click(desk.window, desk.doc.getElementById("messages")!);
+    expect(gear(desk).hidden).toBe(true);
+
+    // focusSession / rehydrateWebviewFromFocused, then focusRemoteSession / a phone reconnect.
+    const deskReplay = [{ type: "clearMessages" }, { type: "historyReplay", active: true }, ...session.buffer, { type: "historyReplay", active: false }, ...sessionUiSnapshot(session, "agent")];
+    const phoneReplay = [{ type: "clearMessages" }, ...bracketRemoteSnapshot(session.buffer), ...sessionUiSnapshot(session, "agent")];
+    const reloaded = bootWebview(), phoneAgain = bootWebview({ remote: true });
+    for (const m of deskReplay) { dispatch(desk.window, m); dispatch(reloaded.window, m); }
+    for (const m of phoneReplay) dispatch(phoneAgain.window, m);
+    for (const h of [desk, reloaded, phoneAgain]) {
+      expect(gear(h).hidden).toBe(true);
+      click(h.window, h.doc.getElementById("donut")!);
+      expect(h.doc.querySelector("#context-popover .context-window-choice.active")!.textContent).toContain("500,000");
+    }
   });
 });
