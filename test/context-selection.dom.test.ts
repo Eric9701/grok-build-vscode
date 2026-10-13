@@ -108,6 +108,36 @@ describe("context-window controls", () => {
   });
 });
 
+describe("dictation during a context-window change", () => {
+  const changing = { ...selection, generation: 3, changing: true };
+  const sends = (h: Harness) => h.posted.filter((m) => m.type === "send" || m.type === "queueSend" || m.type === "steerSend");
+  it("keeps the dictated words in the composer and sends them with the next utterance once the change settles", () => {
+    const h = setup();
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "Draft:";
+    input.setSelectionRange(6, 6);
+    dispatch(h.window, { type: "contextWindowSelection", selection: changing });
+    dispatch(h.window, { type: "voicePartial", text: "keep these words" });
+    dispatch(h.window, { type: "voiceSubmit", text: "keep these words" });
+    expect(input.value).toBe("Draft: keep these words");
+    expect(sends(h)).toEqual([]);
+    dispatch(h.window, { type: "voicePartial", text: "and more" });
+    expect(input.value).toBe("Draft: keep these words and more");
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...changing, changing: false, selectedSize: 500000 } });
+    dispatch(h.window, { type: "voiceSubmit", text: "and more" });
+    expect(sends(h)).toEqual([{ type: "send", text: "Draft: keep these words and more" }]);
+    expect(input.value).toBe("");
+  });
+  it("keeps a phone's send-phrase utterance in the composer", () => {
+    const h = bootWebview({ remote: true });
+    dispatch(h.window, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [] });
+    dispatch(h.window, { type: "contextWindowSelection", selection: changing });
+    dispatch(h.window, { type: "voiceSubmit", text: "keep these words" });
+    expect((h.doc.getElementById("input") as HTMLTextAreaElement).value).toBe("keep these words");
+    expect(sends(h)).toEqual([]);
+  });
+});
+
 describe("context-window picker opening is one-shot", () => {
   const gear = (h: Harness) => h.doc.getElementById("gear-popover")!;
   it("opens where the model was changed, but a switch back, reload or phone rebuild only restores the selection", () => {

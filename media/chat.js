@@ -18689,7 +18689,6 @@
       vscode.postMessage({ type: "send", text: (text || "").trim(), bare: true });
       return;
     }
-    if (state.contextWindowSelection?.changing) return;
     const t = (text || "").trim();
     if (!t) return;
     state.busy = true;
@@ -20616,13 +20615,18 @@
           ? composeVoiceInsertion(state.voiceBefore, msg.text || "", state.voiceAfter).value
           : (msg.text || "");
         const t = composed.trim();
-        state.voiceBefore = "";
+        // A context-window change refuses sends, and it is not a busy turn,
+        // so nothing below would send or queue these words. Keep them in the
+        // composer, as a typed send meeting the same lock does; the next
+        // utterance continues after them.
+        const hold = !!t && !state.busy && !!state.contextWindowSelection?.changing;
+        state.voiceBefore = hold ? composed : "";
         state.voiceAfter = "";
         state.voiceInsertionActive = true;
         state.voiceLive = false;
-        input.value = "";
+        input.value = hold ? composed : "";
         renderInputHighlight();
-        if (t) {
+        if (t && !hold) {
           // Speech is the composer's other door, and no click precedes it:
           // this arrives as a host message, so nothing bubbles into
           // `closePopovers` to commit what the picker is showing -- and
