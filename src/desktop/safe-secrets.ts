@@ -17,13 +17,50 @@ export interface SafeStorageLike {
   isEncryptionAvailable(): boolean;
   encryptString(plainText: string): Buffer;
   decryptString(encrypted: Buffer): string;
+  /** Linux only in Electron: the password store it picked. */
+  getSelectedStorageBackend?(): string;
+}
+
+const ENCRYPTION_UNAVAILABLE =
+  "OS secure storage is unavailable. Device credentials cannot be stored safely on this machine.";
+
+/** Where the Linux diagnosis looks (tests inject; production reads the process). */
+export interface EncryptionDiagnosticsEnv {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * What a Linux user needs to act on "secure storage is unavailable" (#209),
+ * as a sentence to append; empty elsewhere.
+ *
+ * Electron picks its password store from the desktop it detects. When it does
+ * not recognise one it can settle on `basic_text`, which counts as unavailable
+ * even with gnome-keyring running and unlocked — so the backend it chose and
+ * the desktop it saw are the diagnosis. This only REPORTS: forcing a backend
+ * would break KDE and orphan ciphertext stored under the other one, and there
+ * is deliberately no plaintext fallback.
+ */
+export function secureStorageDiagnosis(
+  safeStorage: SafeStorageLike,
+  where: EncryptionDiagnosticsEnv = {},
+): string {
+  if ((where.platform ?? process.platform) !== "linux") return "";
+  let backend = "unknown";
+  try {
+    backend = safeStorage.getSelectedStorageBackend?.() || backend;
+  } catch {
+    /* only a diagnostic */
+  }
+  const desktop = (where.env ?? process.env).XDG_CURRENT_DESKTOP || "unset";
+  return ` Electron chose the "${backend}" password store (XDG_CURRENT_DESKTOP=${desktop}).`
+    + " Starting the app with --password-store=gnome-libsecret (GNOME)"
+    + " or --password-store=kwallet6 / kwallet5 (KDE) may help.";
 }
 
 export class EncryptionUnavailableError extends Error {
   readonly code = "ENCRYPTION_UNAVAILABLE" as const;
-  constructor(
-    message = "OS secure storage is unavailable. Device credentials cannot be stored safely on this machine.",
-  ) {
+  constructor(message = ENCRYPTION_UNAVAILABLE) {
     super(message);
     this.name = "EncryptionUnavailableError";
   }
@@ -131,9 +168,9 @@ function writeFile(filePath: string, data: SecretsFile): void {
   writeFileAtomic(filePath, JSON.stringify(data, null, 2));
 }
 
-function requireEncryption(safeStorage: SafeStorageLike): void {
+function requireEncryption(safeStorage: SafeStorageLike, where: EncryptionDiagnosticsEnv): void {
   if (!safeStorage.isEncryptionAvailable()) {
-    throw new EncryptionUnavailableError();
+    throw new EncryptionUnavailableError(ENCRYPTION_UNAVAILABLE + secureStorageDiagnosis(safeStorage, where));
   }
 }
 
@@ -144,14 +181,16 @@ function requireEncryption(safeStorage: SafeStorageLike): void {
 export function createSafeStorageSecrets(
   filePath: string,
   safeStorage: SafeStorageLike,
+  where: EncryptionDiagnosticsEnv = {},
 ): HostSecrets {
+  const requireEncryptionHere = () => requireEncryption(safeStorage, where);
   return {
     async get(key: string) {
       const data = readFile(filePath);
       const b64 = data.entries[key];
       if (typeof b64 !== "string") return undefined;
       // Stored ciphertext needs the OS key to decrypt — refuse if unavailable.
-      requireEncryption(safeStorage);
+      requireEncryptionHere();
       try {
         return safeStorage.decryptString(Buffer.from(b64, "base64"));
       } catch (e) {
@@ -161,7 +200,7 @@ export function createSafeStorageSecrets(
       }
     },
     async store(key: string, value: string) {
-      requireEncryption(safeStorage);
+      requireEncryptionHere();
       const data = readFile(filePath);
       const encrypted = safeStorage.encryptString(value);
       data.entries[key] = encrypted.toString("base64");

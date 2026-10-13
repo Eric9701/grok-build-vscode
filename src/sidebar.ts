@@ -21765,7 +21765,11 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.reportHandoffEvent("remote_link_completed", {});
       void this.host.showInformationMessage("Remote device linked — this workspace is now reachable from the web client.");
     } catch (e) {
-      void this.host.showErrorMessage(`Remote link failed: ${(e as Error)?.message ?? String(e)}`);
+      // Logged as well as shown: a dialog is gone once dismissed, and the
+      // secure-storage failure carries its Linux diagnosis in this text (#209).
+      const text = `Remote link failed: ${(e as Error)?.message ?? String(e)}`;
+      this.host.appendLine(`[remote] ${text}`);
+      void this.host.showErrorMessage(text);
     }
   }
 

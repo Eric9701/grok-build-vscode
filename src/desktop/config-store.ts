@@ -16,8 +16,8 @@ import type {
   HostConfigurationChangeEvent,
   HostDisposable,
 } from "../host";
-import type { SafeStorageLike } from "./safe-secrets";
-import { writeFileAtomic } from "./safe-secrets";
+import type { EncryptionDiagnosticsEnv, SafeStorageLike } from "./safe-secrets";
+import { secureStorageDiagnosis, writeFileAtomic } from "./safe-secrets";
 
 /** Defaults for keys the sidebar actually reads (mirrors package.json contributes). */
 export const CONFIG_DEFAULTS: Readonly<Record<string, unknown>> = {
@@ -78,6 +78,7 @@ export class SensitiveConfigStore {
   constructor(
     private readonly filePath: string,
     private readonly safeStorage: SafeStorageLike,
+    private readonly diagnostics: EncryptionDiagnosticsEnv = {},
   ) {
     this.load();
   }
@@ -117,7 +118,8 @@ export class SensitiveConfigStore {
 
   private persist(): void {
     if (!this.safeStorage.isEncryptionAvailable()) {
-      throw new Error("OS secure storage is unavailable; cannot store credentials");
+      throw new Error("OS secure storage is unavailable; cannot store credentials."
+        + secureStorageDiagnosis(this.safeStorage, this.diagnostics));
     }
     const entries: Record<string, string> = {};
     for (const [k, plain] of Object.entries(this.cache)) {
