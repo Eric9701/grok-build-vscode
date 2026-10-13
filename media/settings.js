@@ -343,7 +343,7 @@
       return flow.message;
     }
     const provider = providerOf(s, id);
-    const base = providerDescription(provider);
+    const base = providerDescription(provider, true);
     // On a cloud machine the three agents are NOT equal offers — Grok is the
     // native one (owner, 2026-08-31).
     if (id === "grok" && hostIsCloud(env) && !(provider && provider.connected)) {
@@ -368,13 +368,25 @@
     const connected = provider.connected === true;
     const needsLogin = connected && provider.needsLogin === true;
     if (needsLogin) return "Sign in again";
-    return connected ? "Sign out" : "Connect";
+    if (!connected) return "Connect";
+    // The host says what its button does (#203). A cloud environment, and any
+    // host older than the flag, clears the CLI's credentials — and keeps the
+    // word that says so.
+    return provider.keepsCliSignIn === true ? "Disconnect" : "Sign out";
   }
 
-  function providerDescription(provider) {
+  const PROVIDER_CLI_NAMES = { grok: "Grok", codex: "Codex", claude: "Claude Code", muse: "Muse" };
+
+  /** `remote`: a remote row has no Disconnect button to explain (desk hosts
+   *  keep `logout` host-local), so it keeps the plain sentence. */
+  function providerDescription(provider, remote) {
     const connected = provider.connected === true;
     const needsLogin = connected && provider.needsLogin === true;
     if (needsLogin) return "This account is connected but needs to sign in again before it can be used.";
+    if (connected && provider.keepsCliSignIn === true && !remote) {
+      const cli = PROVIDER_CLI_NAMES[provider.id] || "agent";
+      return "This account is connected on this machine. Disconnect turns it off here; the " + cli + " CLI stays signed in.";
+    }
     if (connected) return "This account is connected on this machine.";
     return "Connect this account to use it for new conversations.";
   }

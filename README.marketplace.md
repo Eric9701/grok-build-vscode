@@ -330,7 +330,7 @@ VS Code commands (not Grok slash commands):
 | `Grok: Expand All Tool Details (This Session)` | Open every tool group, command IN/OUT box, and edit inline diff, and keep new ones open — this session only |
 | `Grok: Collapse All Tool Details (This Session)` | Collapse them all, and keep new ones collapsed — this session only |
 | `Grok: Show Logs` | Open the Grok output channel (ACP messages, errors) |
-| `Grok: Log Out` | Sign out of the Grok CLI (`grok logout`) and return to the sign-in screen |
+| `Grok: Log Out` | Sign an agent's CLI out on this machine (`grok logout`, `codex logout`, `claude auth logout`) — the way to switch accounts. **Settings → Providers → Disconnect** only turns an agent off here and leaves its CLI signed in |
 
 | Key | Action |
 |---|---|

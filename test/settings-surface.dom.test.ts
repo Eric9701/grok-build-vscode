@@ -2373,6 +2373,69 @@ describe("Muse settings parity", () => {
 
 });
 
+// #203: "please do not hard bind the login/logout between grok vscode extension
+// and Codex CLI." The host decides what its button does and says so on every
+// provider entry; the page only reads it. That is what keeps a phone — always
+// newer than the host — from labelling Disconnect for a host that clears the
+// CLI's credentials.
+describe("the account button says what it does on each surface (#203)", () => {
+  const deskRow = (id: string) => `[data-id="provider${id}"]`;
+  const desks = [
+    { name: "desktop", env: { isDesktop: true, isRemote: false } },
+    { name: "VS Code settings tab", env: { isDesktop: false, isRemote: false } },
+  ];
+
+  it.each(desks)("reads Disconnect on $name and says the CLI stays signed in", ({ env }) => {
+    const h = mountAt("providers", { env, snapshot: { providers: [
+      { id: "grok", connected: true, keepsCliSignIn: true },
+      { id: "codex", connected: true, keepsCliSignIn: true },
+      { id: "claude", connected: true, keepsCliSignIn: true },
+      { id: "muse", connected: true, keepsCliSignIn: true },
+    ] } });
+    for (const [row, cli] of [["Grok", "Grok"], ["Codex", "Codex"], ["Claude", "Claude Code"], ["Muse", "Muse"]]) {
+      const action = h.root.querySelector<HTMLButtonElement>(`${deskRow(row)} .settings-action`)!;
+      expect(action.textContent).toBe("Disconnect");
+      expect(h.root.querySelector(deskRow(row))!.textContent).toContain(`the ${cli} CLI stays signed in`);
+    }
+    h.root.querySelector<HTMLButtonElement>(`${deskRow("Codex")} .settings-action`)!.click();
+    // The same message as ever: the host, not the page, decides what it does.
+    expect(h.posted).toContainEqual({ type: "logout", provider: "codex" });
+  });
+
+  it.each(desks)("keeps Sign out on $name for a host that clears the CLI's credentials", ({ env }) => {
+    const h = mountAt("providers", { env, snapshot: { providers: [{ id: "codex", connected: true }] } });
+    expect(h.root.querySelector(`${deskRow("Codex")} .settings-action`)!.textContent).toBe("Sign out");
+    expect(h.root.querySelector(deskRow("Codex"))!.textContent).not.toContain("stays signed in");
+  });
+
+  it("keeps Sign out on a remote attached to a cloud environment", () => {
+    const h = mountAt("providers", {
+      env: { isRemote: true, hostCaps: { remoteAgentSignIn: true, remoteAgentSignOut: true } },
+      snapshot: { providers: [{ id: "codex", connected: true }] },
+    });
+    const action = h.root.querySelector<HTMLButtonElement>('[data-id="providerCodexRemote"] button')!;
+    expect(action.textContent).toBe("Sign out");
+    action.click();
+    expect(h.posted).toContainEqual({ type: "logout", provider: "codex" });
+  });
+
+  it("offers a remote attached to a desk no button and no Disconnect sentence", () => {
+    const h = mountAt("providers", {
+      env: { isRemote: true, hostCaps: { remoteAgentSignIn: true } },
+      snapshot: { providers: [{ id: "codex", connected: true, keepsCliSignIn: true }] },
+    });
+    const row = h.root.querySelector('[data-id="providerCodexStatus"]')!;
+    expect(row.querySelector("button")).toBeNull();
+    expect(row.textContent).toContain("This account is connected on this machine.");
+    expect(row.textContent).not.toContain("Disconnect");
+  });
+
+  it("does not offer Disconnect for an account that needs to sign in again", () => {
+    const h = mountAt("providers", { snapshot: { providers: [{ id: "codex", connected: true, needsLogin: true, keepsCliSignIn: true }] } });
+    expect(h.root.querySelector(`${deskRow("Codex")} .settings-action`)!.textContent).toBe("Sign in again");
+  });
+});
+
 describe("CLI update actions", () => {
   const providers = [
     { id: "codex", connected: true, cliVersion: "0.149.0", latestCliVersion: "0.153.4",

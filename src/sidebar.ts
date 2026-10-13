@@ -2633,21 +2633,26 @@ export class GrokSidebar {
     const claudeConnected = connected.claude === true && located.claude === true;
     const museConnected = connected.muse === true && located.muse === true;
     this.lastProviderConnected = { grok: grokConnected, codex: codexConnected, claude: claudeConnected };
+    // What the account button does on THIS host, so no page labels it
+    // Disconnect for a host that would clear the CLI's credentials (`logout`).
+    const button = isCloudEnvironment() ? {} : { keepsCliSignIn: true as const };
     return {
       type: "providerState",
       providers: [
-        { id: "muse", connected: museConnected,
+        { id: "muse", connected: museConnected, ...button,
           ...(museConnected && versions.muse ? { cliVersion: versions.muse } : {}),
           ...(needsLogin.muse ? { needsLogin: true } : {}) },
         {
           id: "grok",
           connected: grokConnected,
+          ...button,
           ...(grokConnected && versions.grok ? { cliVersion: versions.grok } : {}),
           ...(grokConnected && needsLogin.grok ? { needsLogin: true } : {}),
         },
         {
           id: "codex",
           connected: codexConnected,
+          ...button,
           ...(this.providerCliUpdates?.codex ? { cliUpdate: this.providerCliUpdates.codex } : {}),
           ...(codexConnected && needsLogin.codex ? { needsLogin: true } : {}),
           ...(codexConnected && versions.codex ? { cliVersion: versions.codex } : {}),
@@ -2661,6 +2666,7 @@ export class GrokSidebar {
         {
           id: "claude",
           connected: claudeConnected,
+          ...button,
           ...(this.providerCliUpdates?.claude ? { cliUpdate: this.providerCliUpdates.claude } : {}),
           ...(claudeConnected && needsLogin.claude ? { needsLogin: true } : {}),
           ...(claudeConnected && versions.claude ? { cliVersion: versions.claude } : {}),
@@ -8615,14 +8621,25 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /**
-   * Sign out of the Grok CLI (`grok logout` — clears `~/.grok/auth.json`). The
-   * CLI owns auth, so we shell out to it, tear down the live session, and drop
-   * the webview back to the auth-required onboarding state. Resolves issue #13.
+   * The account button in Settings, and `Grok: Log Out`.
+   *
+   * At a desk the button DISCONNECTS: this provider is turned off here and its
+   * conversations reset, and the CLI's own sign-in is left alone, because the
+   * same CLI is the user's to use in a terminal or another editor and the next
+   * Connect adopts it without a login (#203). The CLI's credentials are cleared
+   * only where that is the point — on a cloud environment, a rented machine
+   * nobody else will sign out of, and for `signOutCli`, which is how a desk
+   * switches accounts (`signOutAgentCli`). Deciding here, not in the client,
+   * keeps the message a remote sends unchanged for every host version.
    */
   async logout(
     provider: AcpProvider = "grok",
-    opts: { fromRemote?: boolean; report?: (text: string) => void } = {},
+    opts: { fromRemote?: boolean; report?: (text: string) => void; signOutCli?: boolean } = {},
   ): Promise<void> {
+    if (!opts.signOutCli && !isCloudEnvironment()) {
+      await this.disconnectProvider(provider, opts.report);
+      return;
+    }
     // Every failure below goes through here. A cloud environment has nobody at
     // its desk: a modal blocks on an answer that never comes, and an error
     // dialog is simply never seen — so the remote closed Settings believing it
@@ -8716,6 +8733,51 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     await this.finishProviderLogout("grok", opts.report);
   }
 
+  /**
+   * Turn a provider off here without touching its CLI. Connect brings back
+   * everything this takes away except a reply still being written, so that is
+   * the only case worth a question.
+   */
+  private async disconnectProvider(provider: AcpProvider, report?: (text: string) => void): Promise<void> {
+    const live = new Set<Session | undefined>([
+      this.focused,
+      ...this.pool,
+      ...this.remoteClients.clients().map((clientId) => this.remoteClients.active(clientId)),
+    ]);
+    const working = [...live].filter((s) => s?.provider === provider && turnIsInFlight(s)).length;
+    if (working) {
+      const name = providerDisplayName(provider);
+      const choice = await this.host.showWarningMessage(
+        `Disconnect ${name}? ${working > 1 ? `${working} replies` : "A reply"} in progress will stop. The ${name} CLI stays signed in.`,
+        { modal: true },
+        "Disconnect",
+      );
+      if (choice !== "Disconnect") return;
+    }
+    await this.finishProviderLogout(provider, report);
+  }
+
+  /**
+   * `Grok: Log Out` — where a desk clears an agent CLI's own credentials, which
+   * is how it switches accounts now that Settings only disconnects (#203).
+   * Grok is always offered, as this command always did; another agent only
+   * while connected, because the extension does not run an unconnected agent's
+   * binary.
+   */
+  async signOutAgentCli(): Promise<void> {
+    const offered: AcpProvider[] = ["grok", ...this.connectedProviders().filter((id) => id !== "grok")];
+    let provider: AcpProvider = "grok";
+    if (offered.length > 1) {
+      const pick = await this.host.showQuickPick(
+        offered.map((id) => ({ label: providerDisplayName(id), id })),
+        { placeHolder: "Sign out of which agent's CLI? This clears its saved credentials on this machine." },
+      );
+      if (!pick) return;
+      provider = pick.id;
+    }
+    await this.logout(provider, { signOutCli: true });
+  }
+
   private async finishProviderLogout(
     provider: AcpProvider,
     report?: (text: string) => void,
@@ -8731,8 +8793,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     } catch (error) {
       const providerName = providerDisplayName(provider);
       const detail = errorDetail(error);
-      this.host.appendLine(`[providers] ${providerName} signed out, but saving connection state failed: ${detail}`);
-      const text = `${providerName} signed out and its conversations were reset, but the disconnected state could not be saved: ${detail}`;
+      this.host.appendLine(`[providers] ${providerName} disconnected, but saving connection state failed: ${detail}`);
+      const text = `${providerName} was disconnected and its conversations were reset, but the disconnected state could not be saved: ${detail}`;
       // Same reason as the failures above: on a cloud box a dialog is nobody's.
       if (report) report(text);
       else await this.host.showErrorMessage(text);
@@ -8901,7 +8963,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       this.sendRemoteClient(clientId, {
         type: "error",
-        text: `${providerName} was signed out, so that conversation ended. This tab has been reset${connected.length ? " to a fresh session" : ""}.`,
+        text: `${providerName} was disconnected, so that conversation ended. This tab has been reset${connected.length ? " to a fresh session" : ""}.`,
       });
     }
 
@@ -8917,13 +8979,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (!queued.id) {
         this.emitLocalTransient(draftNoticeTarget, {
           type: "error",
-          text: `${providerName} was signed out while ${queued.name} had an unsaved draft:\n\n${queued.text}`,
+          text: `${providerName} was disconnected while ${queued.name} had an unsaved draft:\n\n${queued.text}`,
         });
         continue;
       }
       this.emitLocalTransient(draftNoticeTarget, {
         type: "error",
-        text: `${providerName} was signed out while “${queued.name}” had a draft. It is saved — open that conversation to get it back.`,
+        text: `${providerName} was disconnected while “${queued.name}” had a draft. It is saved — open that conversation to get it back.`,
       });
     }
 

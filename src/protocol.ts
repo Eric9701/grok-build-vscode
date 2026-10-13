@@ -540,8 +540,12 @@ export type HostMsg =
    * action the connect flow uses.
    * `checking` is a re-observation in flight (Settings → Providers Refresh). It
    * is the ONLY source of that spinner: a client must never latch it locally,
-   * or an older host that ignores `refreshProviders` would spin forever. */
-  | { type: "providerState"; providers: { id: AcpProvider; connected: boolean; unavailableReason?: string; needsLogin?: boolean; cliVersion?: string; adapterVersion?: string; latestCliVersion?: string; updateAvailable?: boolean; cliUpdate?: { status: "idle" | "running" | "succeeded" | "failed"; message?: string } }[]; checking?: boolean }
+   * or an older host that ignores `refreshProviders` would spin forever.
+   * `keepsCliSignIn`: this host's `logout` only disconnects and leaves the
+   * agent CLI signed in, so the button reads Disconnect. Absent = the host
+   * clears the CLI's credentials (a cloud environment, or a host older than
+   * #203), and the button keeps reading Sign out. */
+  | { type: "providerState"; providers: { id: AcpProvider; connected: boolean; unavailableReason?: string; needsLogin?: boolean; keepsCliSignIn?: boolean; cliVersion?: string; adapterVersion?: string; latestCliVersion?: string; updateAvailable?: boolean; cliUpdate?: { status: "idle" | "running" | "succeeded" | "failed"; message?: string } }[]; checking?: boolean }
   /** Grok's grok.com + user-level MCP inventory (`_x.ai/mcp/list`; project-file
    *  servers omitted). The desk keeps launch recipes and `configFile`; remotes
    *  receive `projectMcpServerForRemote` (page fields only — no `tag`).

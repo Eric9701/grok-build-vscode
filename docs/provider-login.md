@@ -210,6 +210,11 @@ and the relay never sees any of them. See [Privacy](privacy.md).
 
 ## Signing out
 
-`grok logout`, `codex logout`, `claude auth logout` — or **Settings → Providers
-→ Sign out**, which runs the same command. Signing out of Grok is also the fix
+`grok logout`, `codex logout`, `claude auth logout` — or the **Grok: Log Out**
+command, which runs the same command for the agent you pick. **Settings →
+Providers → Disconnect** does not sign the CLI out: it turns the agent off in
+this extension and leaves the CLI signed in, so a terminal or another editor
+keeps working and Connect turns it back on without a login. On a cloud
+environment the same button reads **Sign out** and does run the CLI's logout,
+because nobody else will clear that machine. Signing out of Grok is also the fix
 for a cached OAuth session shadowing an `XAI_API_KEY` you would rather use.

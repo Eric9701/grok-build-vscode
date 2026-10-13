@@ -87,9 +87,16 @@ describe("provider logout real-entry wiring", () => {
     sidebar.startSession = vi.fn(async (_id: undefined, session: Session) => {
       session.activeSessionId = "fresh-codex-session";
     });
+    // The Grok turn is still running, so the desk is asked before it stops.
+    sidebar.host.showWarningMessage = vi.fn(async () => "Disconnect");
 
     await logoutFromRealCommand(sidebar);
 
+    expect(sidebar.host.showWarningMessage).toHaveBeenCalledWith(
+      expect.stringContaining("A reply in progress will stop. The Grok CLI stays signed in."),
+      { modal: true },
+      "Disconnect",
+    );
     expect(grok.client).toBeUndefined();
     expect(grok.turnToken).toBeUndefined();
     expect(sidebar.remoteClients.active("grok-tab")).toMatchObject({
@@ -98,7 +105,7 @@ describe("provider logout real-entry wiring", () => {
     });
     expect(sent).toContainEqual({
       type: "error",
-      text: "Grok was signed out, so that conversation ended. This tab has been reset to a fresh session.",
+      text: "Grok was disconnected, so that conversation ended. This tab has been reset to a fresh session.",
     });
     expect(sidebar.focused).toBe(codex);
     expect(codex.client).toBeDefined();
