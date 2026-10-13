@@ -1401,9 +1401,9 @@ export class AcpClient extends EventEmitter {
     }
     if (!foreign) {
       // Ordinary adapter usage_update.used is billed per call (includes
-      // output) and is not occupancy by itself. Compact's getContextUsage
-      // is the exception — sidebar adopts it only after a compact
-      // completed. Other values are per-call observations for
+      // output) and is not occupancy by itself. The compacted size is the
+      // exception — sidebar adopts the first one after a compaction
+      // signal. Other values are per-call observations for
       // occupancyFromAdapterTurn.
       if (normalized.usageUpdateUsed !== undefined) {
         this.emit("adapterUsageUpdate", normalized.usageUpdateUsed, this.lastContextWindow);

@@ -97,10 +97,14 @@ Claude turn, where the result excludes output). The host persists that
 figure per session (`SessionMetaOverride.contextUsed`) and keeps it
 monotonic between compactions. Ordinary `usage_update.used` is not
 occupancy by itself (it includes that call's output); the adapter sends
-real occupancy via `getContextUsage` only on compact (`compact_boundary`),
-and the host adopts that `usage_update.used` after `adapterCompactSignal`
-reports completed. A later summed PromptResponse must not overwrite
-that adoption. `size` is the window and must ride
+real occupancy only on compact (`compact_boundary`'s `post_tokens`), and
+the host adopts the first `usage_update.used` after any non-failed
+`adapterCompactSignal`. Measured 2026-10-13 on the pinned adapters, both
+stamping `_meta.contextCompaction: { version: 1, … }`: Claude 0.76.0 sends
+started → completed → a status-less enrichment carrying `postTokens` →
+`usage_update` (3647); codex-acp 1.11.0 sends started → `usage_update`
+(12037) → completed. Arming on both phases covers both orders. A later
+summed PromptResponse must not overwrite that adoption. `size` is the window and must ride
 `contextUsage.window` — Claude's live id is often `opus[1m]`, which does
 not match the picker model list, so stamping
 `availableModels[].totalContextTokens` alone never updates the webview.

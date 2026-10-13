@@ -634,9 +634,13 @@ export function occupancyFromUsageLog(
 }
 
 /**
- * Claude emits exact status strings; Codex stamps `_meta.contextCompaction`.
- * Title matching is the Codex fallback only — a grep titled "compact" is
- * not a compaction.
+ * Both adapters report compaction as a tool call stamped
+ * `_meta.contextCompaction` — an object (`{ version: 1, … }`) from
+ * codex-acp 1.11 and claude-agent-acp 0.76, `true` from older Codex builds.
+ * Older Claude builds emitted exact status strings instead. A status-less
+ * `tool_call_update` only adds metadata to a lifecycle already reported
+ * (Claude's `postTokens` enrichment), so it is not a new phase. Title text is
+ * never trusted — a grep titled "compact" is not a compaction.
  */
 export function adapterCompactSignal(update: unknown): "started" | "completed" | "failed" | null {
   if (typeof update === "string") {
@@ -658,9 +662,11 @@ export function adapterCompactSignal(update: unknown): "started" | "completed" |
     const fromText = adapterCompactSignal(u.content.text);
     if (fromText) return fromText;
   }
-  if (u._meta?.contextCompaction === true) {
+  const marker = u._meta?.contextCompaction;
+  if (marker === true || (marker !== null && typeof marker === "object")) {
     if (u.status === "failed") return "failed";
     if (u.status === "completed") return "completed";
+    if (u.status === undefined && u.sessionUpdate === "tool_call_update") return null;
     return "started";
   }
   return null;

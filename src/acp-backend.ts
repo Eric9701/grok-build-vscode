@@ -123,8 +123,8 @@ export interface BackendUpdate {
   contextUsed?: number;
   /**
    * Ordinary `usage_update.used` is billed per model call (includes output).
-   * Compact's getContextUsage is the exception — the host only adopts this
-   * when a compact just completed. Otherwise these are per-call observations
+   * The compacted size is the exception — the host adopts the first one after
+   * a compaction signal. Otherwise these are per-call observations
    * for occupancyFromAdapterTurn, not occupancy by themselves.
    */
   usageUpdateUsed?: number;

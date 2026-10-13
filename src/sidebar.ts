@@ -11141,13 +11141,21 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           }
         }
 
-        // Seed the context donut from grok's persisted signals.json or the
-        // remembered adapter occupancy — no turn has run yet, so without this
-        // a restored session shows 0 until the first prompt completes. Emitted
+        // Seed the context donut — no turn has run yet, so without this a
+        // restored session shows 0 until the first prompt completes. Emitted
         // after loadSession so it lands after the donut-resetting `session`
-        // event in the replay buffer.
-        this.emitContextUsage(session);
-        if (session.provider === "grok") void this.refreshContextFromSessionInfo(session, gen, { force: true });
+        // event in the replay buffer. Grok asks the live CLI first and reads
+        // signals.json only when it cannot answer: after /compact that file
+        // keeps the pre-compact count until the next turn ends (measured on
+        // grok 1.0.46), so reading it first painted the old figure over a
+        // reload (#195).
+        if (session.provider === "grok") {
+          void this.refreshContextFromSessionInfo(session, gen, { force: true }).then((fresh) => {
+            if (!fresh && gen === session.gen) this.emitContextUsage(session);
+          });
+        } else {
+          this.emitContextUsage(session);
+        }
         // Same reason, for the billing breakdown (#53) — but from OUR store, as
         // grok persists no per-turn usage anywhere.
         this.restoreUsage(session);
@@ -19947,8 +19955,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       return;
     }
     session.adapterCompactThisTurn = true;
-    session.compactUsageArmed = signal === "completed";
-    this.rememberAdapterContext(session, { compacted: true });
+    // The compacted size is the next usage_update, and the adapters place it on
+    // opposite sides of "completed": Codex between started and completed,
+    // Claude after completed (both measured on the pinned adapters). Arm on
+    // either. Only "started" marks the stored figure stale — re-marking it on
+    // Codex's "completed" would discard the size adopted a moment earlier
+    // from this turn's usageLog entry, and a rewind would refold the old peak.
+    session.compactUsageArmed = true;
+    if (signal === "started") this.rememberAdapterContext(session, { compacted: true });
   }
 
   /**
@@ -19989,8 +20003,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   /** Push the context size to the webview — chiefly the cold-restore source
-   *  before any turn has run. Grok reads signals.json; Claude/Codex read the
-   *  remembered prompt occupancy. Best-effort: no readable count, no message. */
+   *  before any turn has run. Grok reads signals.json (the fallback when
+   *  session/info cannot answer); Claude/Codex read the remembered prompt
+   *  occupancy. Best-effort: no readable count, no message. */
   private emitContextUsage(session: Session): void {
     const id = session.activeSessionId;
     if (!id) return;

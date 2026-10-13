@@ -306,9 +306,10 @@ export class Session {
   loadInFlight?: Promise<void>;
 
   /**
-   * Next Claude/Codex `usage_update.used` is getContextUsage occupancy, not
-   * the billed per-call sum. Armed only after a compact *completed* so a
-   * leftover mid-compact usage_update cannot overwrite the conversation.
+   * Next Claude/Codex `usage_update.used` is the compacted occupancy, not the
+   * billed per-call sum. Armed on started AND completed: Codex reports the
+   * size before completed, Claude after it. A stray value adopted after
+   * started is replaced when completed re-arms and the real size arrives.
    */
   compactUsageArmed = false;
 

@@ -104,6 +104,36 @@ describe("adapterCompactSignal", () => {
       _meta: { contextCompaction: true },
     })).toBe("completed");
   });
+
+  // Captured 2026-10-13 from the pinned adapters (#195): both now stamp an
+  // object, and `=== true` matched neither, so no compaction was ever seen.
+  it("recognizes the versioned contextCompaction object both pinned adapters send", () => {
+    const codexMeta = { contextCompaction: { version: 1 } };
+    expect(adapterCompactSignal({
+      sessionUpdate: "tool_call", title: "Compact conversation", kind: "think", status: "in_progress", _meta: codexMeta,
+    })).toBe("started");
+    expect(adapterCompactSignal({
+      sessionUpdate: "tool_call_update", title: "Compact conversation", status: "completed", _meta: codexMeta,
+    })).toBe("completed");
+    const claudeMeta = { contextCompaction: { version: 1 }, claudeCode: { toolName: "compact" } };
+    expect(adapterCompactSignal({ sessionUpdate: "tool_call_update", status: "failed", _meta: claudeMeta })).toBe("failed");
+  });
+
+  it("does not read Claude's status-less postTokens enrichment as a new phase", () => {
+    expect(adapterCompactSignal({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "c1",
+      _meta: {
+        contextCompaction: { version: 1, trigger: "manual", preTokens: 52493, postTokens: 3647, durationMs: 9727 },
+        claudeCode: { toolName: "compact" },
+      },
+    })).toBeNull();
+  });
+
+  it("ignores a null marker and an ordinary tool titled compact", () => {
+    expect(adapterCompactSignal({ sessionUpdate: "tool_call", status: "in_progress", _meta: { contextCompaction: null } })).toBeNull();
+    expect(adapterCompactSignal({ sessionUpdate: "tool_call", title: "grep compact", status: "completed" })).toBeNull();
+  });
 });
 
 describe("session context persistence lifecycle", () => {
