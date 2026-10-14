@@ -6,20 +6,30 @@ import { RemoteClientState } from "../src/remote-client-state";
 import { bracketRemoteSnapshot } from "../src/remote-policy";
 
 const selection = { sessionId: "s", modelId: "grok-4.7", generation: 2, sizes: [256000, 500000], defaultSize: 256000, selectedSize: 256000, available: true, changing: false };
-function setup() {
-  const h = bootWebview();
+function setup(opts: Parameters<typeof bootWebview>[0] = {}) {
+  const h = bootWebview(opts);
   dispatch(h.window, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [{ modelId: "grok-4.7", name: "Grok 4.7", contextWindowSizes: selection.sizes }] });
   dispatch(h.window, { type: "contextWindowSelection", selection });
   return h;
 }
+/** The context popup's size dropdown, after opening the popup if it is closed. */
+function sizeSelect(h: Harness): HTMLSelectElement {
+  if (h.doc.getElementById("context-popover")!.hidden) click(h.window, h.doc.getElementById("donut")!);
+  return h.doc.querySelector("#context-popover select.context-window-select") as HTMLSelectElement;
+}
+function choose(h: Harness, select: HTMLSelectElement, size: number) {
+  select.value = String(size);
+  select.dispatchEvent(new h.window.Event("change", { bubbles: true }));
+}
+const popupNotes = (h: Harness) => [...h.doc.querySelectorAll("#context-popover .context-window-control .popover-fineprint")].map((n) => n.textContent);
 describe("context-window controls", () => {
   it("updates an already-open popup when a native turn starts and ends", () => {
     const h = setup();
-    click(h.window, h.doc.getElementById("donut")!);
+    sizeSelect(h);
     dispatch(h.window, { type: "agentStart" });
-    expect(h.doc.querySelector(".context-window-choice")!.getAttribute("aria-disabled")).toBe("true");
+    expect(sizeSelect(h).disabled).toBe(true);
     dispatch(h.window, { type: "agentEnd", status: "completed" });
-    expect(h.doc.querySelector(".context-window-choice")!.getAttribute("aria-disabled")).toBe("false");
+    expect(sizeSelect(h).disabled).toBe(false);
   });
 
   it("routes a typed command without a busy turn or consuming draft attachments", () => {
@@ -35,19 +45,105 @@ describe("context-window controls", () => {
     expect(h.doc.getElementById("send-btn")!.title).not.toContain("Stop");
   });
 
-  it("shows native default and selected size in the context popup and preserves the composer", () => {
+  it("shows native default and selected size in the context popup's dropdown and preserves the composer", () => {
     const h = setup();
     const input = h.doc.getElementById("input") as HTMLTextAreaElement;
     input.value = "keep my draft";
-    click(h.window, h.doc.getElementById("donut")!);
-    const choices = h.doc.querySelectorAll("#context-popover .context-window-choice");
-    expect(choices).toHaveLength(2);
-    expect(choices[0].textContent).toBe("256K · CLI default ✓");
-    expect(choices[1].textContent).toBe("500K");
-    click(h.window, choices[1]);
+    const select = sizeSelect(h);
+    expect([...select.options].map((o) => o.textContent)).toEqual(["256K · CLI default", "500K"]);
+    expect(select.value).toBe("256000");
+    expect(select.classList.contains("settings-select")).toBe(true);
+    expect((h.doc.querySelector(`label[for="${select.id}"]`) as HTMLElement).textContent).toBe("Context window");
+    // One row: no heading, no option rows, and no standing disclaimer line.
+    const popup = h.doc.getElementById("context-popover")!;
+    expect(popup.querySelectorAll(".context-window-choice")).toHaveLength(0);
+    expect(popup.textContent).not.toContain("Context window · tokens");
+    expect(popupNotes(h)).toEqual([]);
+    expect(popup.textContent).not.toMatch(/\d,\d{3}/);
+    choose(h, select, 500000);
     expect(h.posted.at(-1)).toEqual({ type: "setContextWindow", sessionId: "s", modelId: "grok-4.7", generation: 2, size: 500000 });
     expect(input.value).toBe("keep my draft");
-    expect(choices[0].classList.contains("active")).toBe(true);
+  });
+  it.each(["knowledge", "coding"])("puts the dropdown after the occupancy block, not before it (%s)", (purpose) => {
+    const h = setup();
+    dispatch(h.window, { type: "initialState", appPurpose: purpose });
+    dispatch(h.window, { type: "subscriptionUsage", windows: [] });
+    dispatch(h.window, { type: "contextUsage", used: 30000, window: 256000, systemPromptTokens: 1000, messageTokens: 29000 });
+    sizeSelect(h);
+    const children = [...h.doc.getElementById("context-popover")!.children];
+    const at = (selector: string) => children.findIndex((el) => el.matches(selector));
+    expect(children[0].textContent).toContain("Context used");
+    expect(at(".context-window-control")).toBe(at(".context-compact") + 1);
+    expect(at(".subscription-usage")).toBeGreaterThan(at(".context-window-control"));
+    if (purpose === "coding") expect(children.findIndex((el) => el.textContent === "In this window")).toBeGreaterThan(at(".context-window-control"));
+  });
+  it("keeps showing the requested size while the host confirms it, then the confirmed one", () => {
+    const h = setup();
+    choose(h, sizeSelect(h), 500000);
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 3, changing: true } });
+    expect(sizeSelect(h).value).toBe("500000");
+    expect(sizeSelect(h).disabled).toBe(true);
+    expect(popupNotes(h)).toEqual(["Waiting for native confirmation…"]);
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 3, selectedSize: 500000 } });
+    expect(sizeSelect(h).value).toBe("500000");
+    expect(sizeSelect(h).disabled).toBe(false);
+    expect(popupNotes(h)).toEqual([]);
+  });
+  it("puts the confirmed size back when the host refuses or the CLI rejects a choice", () => {
+    const h = setup();
+    // Refused before the client published `changing`: the host's republish.
+    choose(h, sizeSelect(h), 500000);
+    dispatch(h.window, { type: "contextWindowSelection", selection });
+    expect(sizeSelect(h).value).toBe("256000");
+    // Rejected natively after `changing`: the stale, last confirmed selection.
+    choose(h, sizeSelect(h), 500000);
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 3, changing: true } });
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 3, stale: true } });
+    expect(sizeSelect(h).value).toBe("256000");
+    expect(popupNotes(h)).toEqual(["Last confirmed selection; native state needs a refresh."]);
+    // A later change made elsewhere never shows this webview's spent request.
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 4, changing: true } });
+    expect(sizeSelect(h).value).toBe("256000");
+  });
+  it("keeps the dropdown in place across a rebuild that would draw it identically", () => {
+    // A native <select> closes its open list when it leaves the document, and
+    // opening the popup itself requests refreshes whose replies rebuild it.
+    const h = setup();
+    const select = sizeSelect(h);
+    dispatch(h.window, { type: "subscriptionUsage", windows: [] });
+    dispatch(h.window, { type: "contextUsage", used: 1000, window: 256000 });
+    expect(sizeSelect(h)).toBe(select);
+    expect(select.isConnected).toBe(true);
+    expect(h.doc.getElementById("context-popover")!.textContent).toContain("Subscription usage");
+    // Anything it draws differently is a new control.
+    dispatch(h.window, { type: "setBusy", value: true });
+    expect(sizeSelect(h)).not.toBe(select);
+    expect(sizeSelect(h).disabled).toBe(true);
+  });
+  it("shows the unavailable reason in the popup in place of a dropdown", () => {
+    const h = setup();
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, available: false, reason: "CLI update required" } });
+    sizeSelect(h);
+    expect(h.doc.querySelector("#context-popover select")).toBeNull();
+    expect(popupNotes(h)).toEqual(["CLI update required"]);
+  });
+  it("marks smaller sizes that may compact in the dropdown", () => {
+    const h = setup();
+    dispatch(h.window, { type: "contextUsage", used: 300000, window: 500000 });
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, selectedSize: 500000 } });
+    const select = sizeSelect(h);
+    expect([...select.options].map((o) => o.textContent)).toEqual(["256K · CLI default · may compact", "500K"]);
+    expect(select.value).toBe("500000");
+  });
+  it("lets no offered size claim to be the window before one is confirmed", () => {
+    const h = setup();
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, selectedSize: undefined } });
+    const select = sizeSelect(h);
+    expect(select.selectedOptions[0].textContent).toBe("—");
+    expect(select.selectedOptions[0].disabled).toBe(true);
+    expect([...select.options].slice(1).map((o) => o.textContent)).toEqual(["256K · CLI default", "500K"]);
+    choose(h, select, 500000);
+    expect(h.posted.at(-1)).toMatchObject({ type: "setContextWindow", size: 500000 });
   });
   it("opens the model continuation only after a confirmed host frame and supports keyboard selection", () => {
     const h = setup();
@@ -71,8 +167,23 @@ describe("context-window controls", () => {
       const row = h.doc.querySelector("#gear-popover .context-window-choice")!;
       click(h.window, row);
       expect(row.getAttribute("aria-disabled")).toBe("true");
+      const select = sizeSelect(h);
+      expect(select.disabled).toBe(true);
+      // A change event that reaches a locked control still posts nothing, and
+      // the dropdown goes back to the size it was showing.
+      choose(h, select, 500000);
+      expect(select.value).toBe("256000");
       expect(h.posted.some(m => m.type === "setContextWindow")).toBe(false);
     }
+  });
+  it("locks the dropdown during initial startup", () => {
+    const h = bootWebview({ ready: false });
+    dispatch(h.window, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [] });
+    dispatch(h.window, { type: "contextWindowSelection", selection });
+    const select = sizeSelect(h);
+    expect(select.disabled).toBe(true);
+    choose(h, select, 500000);
+    expect(h.posted.some(m => m.type === "setContextWindow")).toBe(false);
   });
   it("rejects a late frame from another session and warns before native compaction", () => {
     const h = setup();
@@ -210,7 +321,9 @@ describe("context-window picker opening is one-shot", () => {
     for (const h of [desk, reloaded, phoneAgain]) {
       expect(gear(h).hidden).toBe(true);
       click(h.window, h.doc.getElementById("donut")!);
-      expect(h.doc.querySelector("#context-popover .context-window-choice.active")!.textContent).toBe("500K ✓");
+      const select = sizeSelect(h);
+      expect(select.value).toBe("500000");
+      expect(select.selectedOptions[0].textContent).toBe("500K");
     }
   });
 });

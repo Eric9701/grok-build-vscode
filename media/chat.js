@@ -592,6 +592,9 @@
     contextWindow: 200000,
     contextWindowSelection: undefined,
     contextSelectionSessionId: undefined,
+    // The size this webview asked for, shown in the popup's dropdown while the
+    // host confirms it. Only a `changing` selection reads it.
+    contextWindowRequest: undefined,
     usedTokens: 0,
     useCtrlEnter: false,
     commands: [],
@@ -2478,7 +2481,18 @@
   }
 
   function renderContextPopover() {
-    contextPopover.innerHTML = "";
+    // A native <select> closes its open list the moment it leaves the document,
+    // and this popup rebuilds on every usage frame -- including the replies to
+    // the refreshes its own opening requests, which land just as a person may be
+    // reaching for the size dropdown. So a size control that would be redrawn
+    // identically, and still shows what it was drawn with, stays in place while
+    // everything around it is rebuilt.
+    const sizeControl = contextWindowControl();
+    const prior = contextPopover.querySelector(".context-window-control");
+    const priorSelect = prior && prior.querySelector("select");
+    const keep = sizeControl && prior && prior.dataset.key === sizeControl.dataset.key
+      && (!priorSelect || priorSelect.value === sizeControl.querySelector("select").value) ? prior : null;
+    for (const node of [...contextPopover.childNodes]) if (node !== keep) node.remove();
     // A `↳ ` label marks a sub-row (a component of the line above it) — indented
     // via CSS rather than padding the string, so the value column stays aligned.
     const info = (label, value, parent) => {
@@ -2542,12 +2556,14 @@
       }).format(usd);
     };
 
-    appendContextWindowChoices(contextPopover);
+    // Built apart so it can go in ahead of a kept size control.
+    const lead = document.createDocumentFragment();
     const used = state.usedTokens || 0;
     const pct = Math.min(100, Math.round((used / state.contextWindow) * 100));
     info(
       "Context used",
       `${tok(used)} / ${tok(state.contextWindow)} (${pct}%)`,
+      lead,
     );
 
     const bar = document.createElement("div");
@@ -2561,7 +2577,7 @@
     fill.style.width = pct + "%";
     fill.style.setProperty("--context-fill", contextFullnessColor(pct));
     bar.appendChild(fill);
-    contextPopover.appendChild(bar);
+    lead.appendChild(bar);
 
     const act = document.createElement("button");
     act.type = "button";
@@ -2576,7 +2592,9 @@
         closePopovers();
       };
     }
-    if (globalThis.GrokWebviewHelpers.providerSupports(state.activeProvider, "compact")) contextPopover.appendChild(act);
+    if (globalThis.GrokWebviewHelpers.providerSupports(state.activeProvider, "compact")) lead.appendChild(act);
+    contextPopover.insertBefore(lead, keep);
+    if (!keep && sizeControl) contextPopover.appendChild(sizeControl);
 
     const subscription = document.createElement("section");
     subscription.className = "subscription-usage";
@@ -4220,9 +4238,101 @@
     });
   }
 
-  function appendContextWindowChoices(parent) {
+  function contextWindowSelectionShown() {
     const selection = state.contextWindowSelection;
-    if (state.activeProvider !== "grok" || !selection || selection.modelId !== state.currentModelId) return;
+    return state.activeProvider === "grok" && selection && selection.modelId === state.currentModelId ? selection : undefined;
+  }
+
+  function contextWindowLocked(selection) {
+    return !!(state.busy || state.startingPhase || selection.changing);
+  }
+
+  function contextWindowNote(selection) {
+    return selection.changing ? "Waiting for native confirmation…" : selection.stale ? "Last confirmed selection; native state needs a refresh." : "Session setting; offered sizes do not guarantee server allowance.";
+  }
+
+  /** Re-checks the lock at the moment of choosing; a rendered control can be a
+   *  frame older than the turn that just started. */
+  function chooseContextWindow(selection, size) {
+    if (state.busy || state.startingPhase || state.contextWindowSelection?.changing) return false;
+    vscode.postMessage({ type: "setContextWindow", sessionId: selection.sessionId, modelId: selection.modelId, generation: selection.generation, size });
+    return true;
+  }
+
+  /** The context popup's size control: one row, a label and the same native
+   *  <select> Settings uses, placed after the occupancy block because it is
+   *  rarely changed. The picker that follows a model change keeps its own rows
+   *  (appendContextWindowChoices) -- there the choice is the whole question.
+   *
+   *  `dataset.key` names everything the control draws, so a rebuild of the
+   *  popup can keep a control that would come out identical (see
+   *  renderContextPopover). */
+  function contextWindowControl() {
+    const selection = contextWindowSelectionShown();
+    if (!selection) return null;
+    const wrap = document.createElement("div");
+    wrap.className = "context-window-control";
+    const note = (text) => {
+      const el = document.createElement("div");
+      el.className = "popover-fineprint";
+      el.textContent = text;
+      wrap.appendChild(el);
+    };
+    if (!selection.available) {
+      note(selection.reason || "Native selection is unavailable in this session.");
+      wrap.dataset.key = JSON.stringify([selection.sessionId, selection.modelId, selection.generation, wrap.innerHTML]);
+      return wrap;
+    }
+    // While the host confirms, show the size that was asked for rather than
+    // flicking back to the old one; the note underneath says it is pending.
+    const request = state.contextWindowRequest;
+    const shown = selection.changing && request && request.sessionId === selection.sessionId && request.modelId === selection.modelId
+      ? request.size : selection.selectedSize;
+    const row = document.createElement("div");
+    row.className = "popover-info context-window-row";
+    const label = document.createElement("label");
+    label.htmlFor = "context-window-select";
+    label.textContent = "Context window";
+    const select = document.createElement("select");
+    select.id = "context-window-select";
+    select.className = "settings-select context-window-select";
+    select.disabled = contextWindowLocked(selection);
+    select.title = "Applies to this session; server access limits still apply.";
+    // A size nothing has confirmed, or one the model does not offer, gets a
+    // placeholder rather than letting the first choice claim to be the window.
+    const offered = selection.sizes.includes(shown);
+    if (!offered) {
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.disabled = true;
+      placeholder.textContent = shown === undefined ? "—" : compactTokens(shown);
+      select.appendChild(placeholder);
+    }
+    for (const size of selection.sizes) {
+      const option = document.createElement("option");
+      option.value = String(size);
+      option.textContent = compactTokens(size) + (size === selection.defaultSize ? " · CLI default" : "") + (size < state.usedTokens ? " · may compact" : "");
+      select.appendChild(option);
+    }
+    const value = offered ? String(shown) : "";
+    select.value = value;
+    select.onchange = () => {
+      const size = Number(select.value);
+      if (chooseContextWindow(selection, size)) state.contextWindowRequest = { sessionId: selection.sessionId, modelId: selection.modelId, size };
+      else select.value = value;
+    };
+    row.append(label, select);
+    wrap.appendChild(row);
+    // The standing disclaimer lives in the tooltip; only a state that needs
+    // reading takes a line.
+    if (selection.changing || selection.stale) note(contextWindowNote(selection));
+    wrap.dataset.key = JSON.stringify([selection.sessionId, selection.modelId, selection.generation, value, wrap.innerHTML]);
+    return wrap;
+  }
+
+  function appendContextWindowChoices(parent) {
+    const selection = contextWindowSelectionShown();
+    if (!selection) return;
     const heading = document.createElement("div");
     heading.className = "popover-section";
     heading.textContent = "Context window · tokens";
@@ -4234,7 +4344,7 @@
       parent.appendChild(note);
       return;
     }
-    const locked = state.busy || state.startingPhase || selection.changing;
+    const locked = contextWindowLocked(selection);
     selection.sizes.forEach((size) => {
       const row = document.createElement("div");
       row.className = "toolbar-popover-item context-window-choice" + (locked ? " disabled" : "") + (size === selection.selectedSize ? " active" : "");
@@ -4244,10 +4354,7 @@
       row.textContent = compactTokens(size) + (size === selection.defaultSize ? " · CLI default" : "") + (size === selection.selectedSize ? " ✓" : "");
       row.title = size < state.usedTokens ? "Choosing this smaller window may start native auto-compaction." : "Applies to this session; server access limits still apply.";
       if (size < state.usedTokens) row.textContent += " · may compact";
-      const choose = () => {
-        if (state.busy || state.startingPhase || state.contextWindowSelection?.changing) return;
-        vscode.postMessage({ type: "setContextWindow", sessionId: selection.sessionId, modelId: selection.modelId, generation: selection.generation, size });
-      };
+      const choose = () => chooseContextWindow(selection, size);
       row.onclick = (event) => { event.stopPropagation(); if (!locked) choose(); };
       row.onkeydown = (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (!locked) choose(); }
@@ -4261,7 +4368,7 @@
     });
     const note = document.createElement("div");
     note.className = "popover-fineprint";
-    note.textContent = selection.changing ? "Waiting for native confirmation…" : selection.stale ? "Last confirmed selection; native state needs a refresh." : "Session setting; offered sizes do not guarantee server allowance.";
+    note.textContent = contextWindowNote(selection);
     parent.appendChild(note);
   }
 
@@ -20453,6 +20560,7 @@
         if (selection.modelId !== state.currentModelId) break;
         if (state.contextWindowSelection?.sessionId === selection.sessionId && state.contextWindowSelection.generation > selection.generation) break;
         state.contextWindowSelection = selection;
+        if (!selection.changing) state.contextWindowRequest = undefined;
         if (msg.openPicker && state.activeProvider === "grok") renderContextWindowPicker();
         else if (!gearPopover.hidden && state.gearView === "contextWindow") renderContextWindowPicker();
         if (!contextPopover.hidden) renderContextPopover();

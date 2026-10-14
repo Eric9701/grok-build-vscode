@@ -11441,12 +11441,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private async changeContextWindow(session: Session, size: number, expected: Pick<ContextWindowSelection, "sessionId" | "modelId" | "generation"> | undefined = session.client?.contextWindowSelection): Promise<void> {
     if (!session.client || !expected) return;
+    // Every refusal also republishes the confirmed selection: the popup's
+    // dropdown already shows the size that was picked, and a refusal that
+    // happens before the client publishes `changing` sends nothing else that
+    // would put the confirmed size back.
+    const refuse = (text: string) => {
+      this.emit(session, { type: "error", text });
+      if (session.client) this.emit(session, { type: "contextWindowSelection", selection: session.client.contextWindowSelection });
+    };
     if (session.priming || turnIsInFlight(session) || this.pickerChange) {
-      this.emit(session, { type: "error", text: "Wait for the current turn or session setup to finish before changing the context window." });
+      refuse("Wait for the current turn or session setup to finish before changing the context window.");
       return;
     }
     try { await session.client.setContextWindow(size, expected); }
-    catch (error) { this.emit(session, { type: "error", text: `Failed to change context window: ${(error as Error).message}` }); }
+    catch (error) { refuse(`Failed to change context window: ${(error as Error).message}`); }
   }
 
   private async onMessage(msg: WebviewMsg, origin: MsgOrigin, clientId?: string): Promise<void> {

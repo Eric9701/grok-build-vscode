@@ -46,7 +46,12 @@ describe("context selection host routing", () => {
     if (busy === "picker") h.sidebar.pickerChange = Promise.resolve();
     await h.send({ type: "setContextWindow", ...selection, size: 500000 });
     expect(h.session.client!.setContextWindow).not.toHaveBeenCalled();
-    expect(h.sidebar.emit.mock.calls.at(-1)[1].type).toBe("error");
+    // The error, then the confirmed selection: a dropdown showing the refused
+    // pick has nothing else that would put the confirmed size back.
+    expect(h.sidebar.emit.mock.calls.slice(-2).map((c: any[]) => c[1])).toEqual([
+      { type: "error", text: expect.stringContaining("Wait for the current turn") },
+      { type: "contextWindowSelection", selection },
+    ]);
   });
   it("passes the UI identity to the client and reports a native rejection", async () => {
     const h = harness();
@@ -54,7 +59,10 @@ describe("context selection host routing", () => {
     const msg = { type: "setContextWindow", sessionId: "old", modelId: "m", generation: 0, size: 500000 };
     await h.send(msg);
     expect(h.session.client!.setContextWindow).toHaveBeenCalledWith(500000, msg);
-    expect(h.sidebar.emit.mock.calls.at(-1)[1].text).toContain("older session");
+    expect(h.sidebar.emit.mock.calls.slice(-2).map((c: any[]) => c[1])).toEqual([
+      { type: "error", text: "Failed to change context window: older session" },
+      { type: "contextWindowSelection", selection },
+    ]);
   });
   it.each(["codex", "claude", "muse"] as const)("keeps %s model switching during a turn unchanged", async (provider) => {
     const h = harness();

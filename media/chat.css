@@ -6938,3 +6938,10 @@ body.host-wait-visible .gfp-panel.gfp-overlay { bottom: var(--host-wait-height, 
 .context-window-choice[aria-disabled="true"] { color: var(--vscode-disabledForeground, var(--vscode-descriptionForeground)); opacity: .6; cursor: default; }
 .context-window-choice[aria-disabled="true"]:hover { background: transparent; }
 .context-window-choice:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+/* The context popup's size control is the Settings dropdown (.settings-select,
+   whose tokens and focus ring it keeps), sized for a popover row: no 160px
+   floor, row-height padding, and a thumb-sized target where the Compact button
+   above it grows to one too. Id weight, because settings.css loads after this. */
+#context-popover .context-window-select { min-width: 0; padding: 2px 6px; }
+#context-popover .context-window-select:disabled { opacity: .6; cursor: default; }
+@media (hover: none), (pointer: coarse) { #context-popover .context-window-select { min-height: 36px; } }
