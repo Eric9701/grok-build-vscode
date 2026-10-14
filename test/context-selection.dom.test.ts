@@ -427,6 +427,46 @@ describe("switching to a smaller window asks first when it can cost an auto-comp
     }
   });
 
+  it.each(["Enter", "the send button"])("judges a typed switch against the session's own window while the picker previews another model (%s)", async (how) => {
+    // The picker writes a previewed model into the page and commits only when
+    // it closes, so the host would still shrink the CURRENT model's window.
+    const h = bootWebview();
+    dispatch(h.window, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [
+      { modelId: "grok-4.7", name: "Grok 4.7", contextWindowSizes: selection.sizes },
+      { modelId: "grok-code", name: "Grok Code" },
+    ] });
+    dispatch(h.window, { type: "contextUsage", used: 300000, window: 500000 });
+    dispatch(h.window, { type: "contextWindowSelection", selection: at500 });
+    click(h.window, h.doc.getElementById("gear-btn")!);
+    click(h.window, [...h.doc.querySelectorAll(".model-picker-row")].find((row) => row.textContent?.includes("Grok Code")) as HTMLElement);
+    expect(h.doc.getElementById("gear-popover")!.hidden).toBe(false);
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "/context-window 256k";
+    input.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    if (how === "Enter") input.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    else click(h.window, h.doc.getElementById("send-btn")!);
+    expect(switches(h)).toEqual([]);
+    expect(h.doc.querySelector(".confirm-overlay .confirm-body")!.textContent).toBe(will);
+    click(h.window, button(h, "Switch to 256K"));
+    await Promise.resolve();
+    expect(switches(h)).toEqual([{ type: "send", text: "/context-window 256k", bare: true }]);
+  });
+
+  it("opening the popup during a preview commits the preview first, so its dropdown never acts on a model being left", () => {
+    const h = bootWebview();
+    dispatch(h.window, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [
+      { modelId: "grok-4.7", name: "Grok 4.7", contextWindowSizes: selection.sizes },
+      { modelId: "grok-code", name: "Grok Code" },
+    ] });
+    dispatch(h.window, { type: "contextUsage", used: 300000, window: 500000 });
+    dispatch(h.window, { type: "contextWindowSelection", selection: at500 });
+    click(h.window, h.doc.getElementById("gear-btn")!);
+    click(h.window, [...h.doc.querySelectorAll(".model-picker-row")].find((row) => row.textContent?.includes("Grok Code")) as HTMLElement);
+    click(h.window, h.doc.getElementById("donut")!);
+    expect(h.posted.filter((m) => m.type === "setModel")).toEqual([{ type: "setModel", modelId: "grok-code" }]);
+    expect(h.doc.querySelector("#context-popover .context-window-control")).toBeNull();
+  });
+
   it("a cancelled typed switch sends nothing and leaves the command in the composer", async () => {
     const h = using(300000);
     typed(h, "/context-window 256k");

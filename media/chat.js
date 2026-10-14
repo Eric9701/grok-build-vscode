@@ -4238,9 +4238,15 @@
     });
   }
 
-  function contextWindowSelectionShown() {
+  /** The selection a switch would change: that of the model the session runs,
+   *  never one the picker is only previewing. A preview writes the previewed
+   *  model into `state` and commits when the picker closes, so until then the
+   *  host still holds `modelBaseline` -- and judging a switch against the
+   *  preview let a typed `/context-window` shrink the real window unasked. */
+  function sessionContextWindowSelection() {
     const selection = state.contextWindowSelection;
-    return state.activeProvider === "grok" && selection && selection.modelId === state.currentModelId ? selection : undefined;
+    const running = modelBaseline || { modelId: state.currentModelId, provider: state.activeProvider };
+    return running.provider === "grok" && selection && selection.modelId === running.modelId ? selection : undefined;
   }
 
   function contextWindowLocked(selection) {
@@ -4287,7 +4293,7 @@
    *  refuse anyway -- goes to the host exactly as before. */
   function sendContextWindowCommand(text) {
     const send = () => vscode.postMessage({ type: "send", text, bare: true });
-    const selection = contextWindowSelectionShown();
+    const selection = sessionContextWindowSelection();
     const size = globalThis.GrokWebviewHelpers.parseContextWindowSize(text.replace(/^\/context-window/i, ""));
     if (!selection || !selection.available || contextWindowLocked(selection) || !selection.sizes.includes(size)) { send(); return; }
     afterShrinkConfirmed(selection, size, send);
@@ -4302,7 +4308,7 @@
    *  popup can keep a control that would come out identical (see
    *  renderContextPopover). */
   function contextWindowControl() {
-    const selection = contextWindowSelectionShown();
+    const selection = sessionContextWindowSelection();
     if (!selection) return null;
     const wrap = document.createElement("div");
     wrap.className = "context-window-control";
@@ -4368,7 +4374,7 @@
   }
 
   function appendContextWindowChoices(parent) {
-    const selection = contextWindowSelectionShown();
+    const selection = sessionContextWindowSelection();
     if (!selection) return;
     const heading = document.createElement("div");
     heading.className = "popover-section";
