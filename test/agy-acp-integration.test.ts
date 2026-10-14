@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AcpClient, type PermissionRequest } from "../src/acp";
 import { AgyBackend, agyWorkingFolderPrompt } from "../src/agy-backend";
-import { agyCredentialPresent, runAgySignIn } from "../src/agy-auth";
+import { agyGoogleSignInPresent, agyStartupAuth, runAgySignIn } from "../src/agy-auth";
 
 const FAKE = path.join(__dirname, "fixtures", "fake-agy-acp.cjs");
 
@@ -21,13 +21,14 @@ describe("Antigravity over ACP (real subprocess, fake server)", () => {
   let sink: string;
   const clients: AcpClient[] = [];
 
-  function client(extraEnv: NodeJS.ProcessEnv = {}): AcpClient {
+  function client(extraEnv: NodeJS.ProcessEnv = {}, startupAuth?: { methodId: string; meta?: Record<string, unknown> }): AcpClient {
     const made = new AcpClient({
       cliPath: FAKE,
       cwd,
       backend: new AgyBackend({ env: { GEMINI_HOME: home } }),
       env: { ...process.env, GEMINI_HOME: home, FAKE_AGY_SINK: sink, ...extraEnv },
       log: () => {},
+      ...(startupAuth ? { startupAuth } : {}),
     });
     clients.push(made);
     return made;
@@ -154,11 +155,11 @@ describe("Antigravity over ACP (real subprocess, fake server)", () => {
     });
     expect(done).toEqual({ ok: true, output: "" });
     expect(urls).toEqual(["https://accounts.google.com/o/oauth2/v2/auth?client_id=fake"]);
-    expect(await agyCredentialPresent({ env: { GEMINI_HOME: home }, platform: "linux" })).toBe(true);
+    expect(await agyGoogleSignInPresent({ env: { GEMINI_HOME: home }, platform: "linux" })).toBe(true);
     const agy = client();
     await agy.start();
     await agy.logout();
-    expect(await agyCredentialPresent({ env: { GEMINI_HOME: home }, platform: "linux" })).toBe(false);
+    expect(await agyGoogleSignInPresent({ env: { GEMINI_HOME: home }, platform: "linux" })).toBe(false);
   });
 
   it("reports a refused Google sign-in as failed", async () => {
@@ -167,6 +168,45 @@ describe("Antigravity over ACP (real subprocess, fake server)", () => {
     });
     expect(done).toMatchObject({ ok: false, failure: "failed" });
     expect(done.output).toContain("Onboarding failed");
+  });
+
+  it("authenticates a key start in _meta before the session, and offers the key catalog", async () => {
+    const agy = client({}, agyStartupAuth("api-key", "AIza-good"));
+    await agy.start();
+    await agy.newSession();
+    const methods = received().map((entry) => entry.method);
+    expect(methods.indexOf("authenticate")).toBeGreaterThan(methods.indexOf("initialize"));
+    expect(methods.indexOf("authenticate")).toBeLessThan(methods.indexOf("session/new"));
+    expect(received().find((entry) => entry.method === "authenticate").params)
+      .toEqual({ methodId: "gemini-api-key", _meta: { "api-key": "AIza-good" } });
+    // One row per family, effort as each family's own levels; no Gemini 4 Argon.
+    expect(agy.availableModels.map((model) => model.modelId))
+      .toEqual(["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro"]);
+    expect(agy.availableModels.find((model) => model.modelId === "gemini-3.1-pro")?.reasoningEfforts).toEqual(["low", "high"]);
+    expect(agy.availableModels[0].reasoningEfforts).toEqual(["low", "medium", "high"]);
+    expect(agy.availableModels.some((model) => /argon/i.test(model.modelId))).toBe(false);
+    await agy.setModel("gemini-3.1-pro");
+    expect(agy.currentModelId).toBe("gemini-3.1-pro");
+  });
+
+  it("states the Google method on every start, whatever settings.json was left saying", async () => {
+    signIn(home);
+    fs.writeFileSync(path.join(home, "antigravity-acp", "settings.json"), JSON.stringify({ auth: { type: "gemini-api-key" } }));
+    const agy = client({}, agyStartupAuth("google"));
+    await agy.start();
+    await agy.newSession();
+    expect(received().find((entry) => entry.method === "authenticate").params).toEqual({ methodId: "oauth-personal" });
+    expect(agy.availableModels.map((model) => model.modelId)).toEqual(["gemini-3.8-flash"]);
+  });
+
+  it("reports a key Google refuses mid-turn as a rejected credential", async () => {
+    const agy = client({}, agyStartupAuth("api-key", "bad-key"));
+    await agy.start();
+    await agy.newSession();
+    let rejected = 0;
+    agy.on("credentialRejected", () => { rejected += 1; });
+    await agy.prompt("hello");
+    expect(rejected).toBe(1);
   });
 
   it("lists the project's conversations from disk", async () => {

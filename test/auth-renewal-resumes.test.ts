@@ -142,7 +142,7 @@ describe("signing in from a conversation that is being refused", () => {
   // credential the person came to create. An unsteered review found this on
   // the desk path, where it is the FIRST thing every user does after upgrading
   // (saved connections are cleared once, so everyone presses Connect again).
-  it.each(["grok", "codex", "claude", "muse", "agy"])(
+  it.each(["grok", "codex", "claude", "muse"])(
     "leaves %s awaiting its sign-in rather than reporting a healthy account",
     async provider => {
       const { sidebar } = loginSidebar({});
@@ -252,7 +252,7 @@ describe("a desk terminal sign-in finishes without being asked twice", () => {
 });
 
 describe("Connect adopts the CLI's existing sign-in", () => {
-  it.each(["grok", "codex", "claude", "muse", "agy"])("adopts %s only after consent and credential proof", async provider => {
+  it.each(["grok", "codex", "claude", "muse"])("adopts %s only after consent and credential proof", async provider => {
     const { sidebar, session } = loginSidebar({});
     session.provider = provider as Session["provider"];
     session.hasHistory = false;
@@ -285,7 +285,7 @@ describe("Connect adopts the CLI's existing sign-in", () => {
     expect(sidebar.post.mock.calls.some(([m]: any[]) => m.launched)).toBe(false);
   });
 
-  it.each(["grok", "codex", "claude", "muse", "agy"])("offers explicit %s sign-in when checking throws", async provider => {
+  it.each(["grok", "codex", "claude", "muse"])("offers explicit %s sign-in when checking throws", async provider => {
     const { sidebar } = loginSidebar({});
     sidebar.deviceLoginCredentialReady.mockRejectedValue(new Error("Cannot check"));
     await sidebar.onMessage({ type: "runGrokLogin", provider }, "local");
@@ -295,7 +295,7 @@ describe("Connect adopts the CLI's existing sign-in", () => {
     expect(sidebar.startDeviceLogin).not.toHaveBeenCalled();
   });
 
-  it.each(["grok", "codex", "claude", "muse", "agy"])("ignores a late %s check after disconnect, even after reconnect", async provider => {
+  it.each(["grok", "codex", "claude", "muse"])("ignores a late %s check after disconnect, even after reconnect", async provider => {
     const { sidebar } = loginSidebar({});
     let finish!: (ready: boolean) => void;
     sidebar.deviceLoginCredentialReady.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
@@ -318,11 +318,11 @@ describe("Connect adopts the CLI's existing sign-in", () => {
   // connected, that frame drew "needs you to sign in again" over an account
   // that was signed in all along, and its Sign in button fell through to the
   // login terminal mid-check (independent review, round 1).
-  it.each(["grok", "codex", "claude", "muse", "agy"])(
+  it.each(["grok", "codex", "claude", "muse"])(
     "keeps %s reading as not connected, and ignores a second press, until its check answers",
     async provider => {
       const { sidebar } = loginSidebar({});
-      sidebar.locatedProviders = () => ({ grok: true, codex: true, claude: true, muse: true, agy: true });
+      sidebar.locatedProviders = () => ({ grok: true, codex: true, claude: true, muse: true });
       sidebar.providerCliVersions = {};
       const frames: any[] = [];
       sidebar.postProviderState = () => {
@@ -373,13 +373,6 @@ describe("Connect adopts the CLI's existing sign-in", () => {
       state: "agy-login", provider: "agy",
       device: { status: "unavailable", message: "Connect Antigravity on the computer first." },
     }));
-  });
-
-  it("takes Antigravity's desk sign-in through the device-login card, never a terminal", async () => {
-    const { sidebar } = loginSidebar({ agy: true });
-    await sidebar.onMessage({ type: "runGrokLogin", provider: "agy" }, "local");
-    expect(sidebar.startDeviceLogin).toHaveBeenCalledWith("agy", "/usr/bin/claude", undefined, { remote: false });
-    expect(sidebar.host.createTerminal).not.toHaveBeenCalled();
   });
 
   it("does nothing for Antigravity where it is not offered", async () => {

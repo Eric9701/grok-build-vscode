@@ -6,28 +6,49 @@ import type { DeviceLoginCallbacks, DeviceLoginHandle } from "./device-login-run
 
 /** Google sign-in: the server's `oauth-personal` method. */
 export const AGY_SIGN_IN_METHOD = "oauth-personal";
+/** A pasted Gemini API key: the server's `gemini-api-key` method. */
+export const AGY_API_KEY_METHOD = "gemini-api-key";
 /** The server waits 300 s on its loopback redirect; allow for its start. */
 export const AGY_SIGN_IN_TIMEOUT_MS = 330_000;
+/** Gemini keys are about 40 characters; anything near this is not one. */
+export const MAX_AGY_API_KEY_CHARS = 512;
+
+/** How a person chose to sign Antigravity in on this machine. */
+export type AgySignInMethod = "google" | "api-key";
+
+export function isAgySignInMethod(value: unknown): value is AgySignInMethod {
+  return value === "google" || value === "api-key";
+}
+
+/** What a server start authenticates with. The key travels in `_meta`, never
+ *  in the server's environment: that environment reaches every command the
+ *  agent runs, so `echo $GEMINI_API_KEY` would put it in a transcript. */
+export interface AgyStartupAuth {
+  methodId: string;
+  meta?: Record<string, unknown>;
+}
+
+export function agyStartupAuth(method: AgySignInMethod, apiKey?: string): AgyStartupAuth {
+  return method === "api-key"
+    ? { methodId: AGY_API_KEY_METHOD, meta: { "api-key": apiKey ?? "" } }
+    : { methodId: AGY_SIGN_IN_METHOD };
+}
+
+/** A pasted key, trimmed, or the sentence that says why it is not one. */
+export function normalizeAgyApiKey(raw: unknown): { key: string } | { error: string } {
+  const key = typeof raw === "string" ? raw.trim() : "";
+  if (!key) return { error: "Paste a Gemini API key." };
+  if (key.length > MAX_AGY_API_KEY_CHARS || /\s/.test(key)) return { error: "That does not look like a Gemini API key." };
+  return { key };
+}
 
 export interface AgyCredentialProbe {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   home?: string;
   exists?: (file: string) => boolean;
-  readFile?: (file: string) => string;
   /** macOS keeps the token in the login keychain unless forced to a file. */
   keychainEntry?: () => Promise<boolean>;
-}
-
-/** The method saved in the server's settings.json, if any. */
-export function agySavedAuthType(probe: AgyCredentialProbe = {}): string | undefined {
-  const read = probe.readFile ?? ((file: string) => fs.readFileSync(file, "utf8"));
-  try {
-    const type = JSON.parse(read(path.join(agyAcpDir(probe.env, probe.home), "settings.json")))?.auth?.type;
-    return typeof type === "string" ? type : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 /** `security` reads the item's attributes only, so it never prompts. */
@@ -43,12 +64,12 @@ export function agyKeychainEntryPresent(): Promise<boolean> {
  * call and never a server process -- and never `authenticate`, which with no
  * stored token opens the person's browser.
  *
- * Both halves matter: `session/new` infers its method from settings.json, and
- * with `oauth-personal` saved but no token it starts the browser sign-in
- * itself. So "signed in" is the saved method AND its token.
+ * The method saved in the server's settings.json does not enter into it: that
+ * file is shared with every ACP client on the machine and a key sign-in
+ * rewrites it, so each server start authenticates with the method the person
+ * picked here instead.
  */
-export async function agyCredentialPresent(probe: AgyCredentialProbe = {}): Promise<boolean> {
-  if (agySavedAuthType(probe) !== AGY_SIGN_IN_METHOD) return false;
+export async function agyGoogleSignInPresent(probe: AgyCredentialProbe = {}): Promise<boolean> {
   const exists = probe.exists ?? fs.existsSync;
   if (exists(path.join(agyAcpDir(probe.env, probe.home), "acp_token.json"))) return true;
   const platform = probe.platform ?? process.platform;

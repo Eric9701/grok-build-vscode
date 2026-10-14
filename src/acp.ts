@@ -110,6 +110,12 @@ export interface AcpClientOptions {
    */
   timeouts?: AcpTimeoutInput;
   /**
+   * `authenticate` sent right after `initialize`, before any session is opened
+   * or loaded. For agents whose shared settings file another client can
+   * rewrite, so each process states its method itself.
+   */
+  startupAuth?: { methodId: string; meta?: Record<string, unknown> };
+  /**
    * Host-owned MCP servers for `session/new` and `session/load`. A getter is
    * read at request time so a Connect that lands after construct still applies.
    * The getter may be async so a host can re-read its own secrets first.
@@ -567,6 +573,8 @@ export class AcpClient extends EventEmitter {
     });
     this.steering = this.backend.steeringCapabilities(init, this.opts);
     this.emit("initialized", init);
+    const auth = this.opts.startupAuth;
+    if (auth) await this.authenticate(auth.methodId, this.timeouts.requestTimeoutMs, auth.meta);
   }
 
   private async mcpServersForSession(): Promise<AcpMcpStdioServer[]> {
@@ -909,8 +917,8 @@ export class AcpClient extends EventEmitter {
 
   /** ACP `authenticate`. Interactive methods wait on a person, so the caller
    *  sets the wait rather than the ordinary request cap. */
-  authenticate(methodId: string, timeoutMs: number): Promise<any> {
-    return this.request("authenticate", { methodId }, undefined, timeoutMs);
+  authenticate(methodId: string, timeoutMs: number, meta?: Record<string, unknown>): Promise<any> {
+    return this.request("authenticate", { methodId, ...(meta ? { _meta: meta } : {}) }, undefined, timeoutMs);
   }
 
   /** ACP `logout`: the agent clears its own stored credentials. */
@@ -1535,6 +1543,7 @@ export class AcpClient extends EventEmitter {
     if (!foreign) {
       if (normalized.workflowUpdate) this.emit("subagentLifecycle", normalized.workflowUpdate, meta);
       if (normalized.notice) this.emit("notice", normalized.notice);
+      if (normalized.credentialRejected) this.emit("credentialRejected");
       if (this.provider === "claude") {
         const windows = claudeSubscriptionWindows(normalized.update);
         if (windows !== undefined) this.emit("subscriptionUsage", windows);

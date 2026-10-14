@@ -129,6 +129,9 @@ export interface BackendUpdate {
    * for occupancyFromAdapterTurn, not occupancy by themselves.
    */
   usageUpdateUsed?: number;
+  /** The agent reported mid-turn that its credential was refused -- in-band,
+   *  as text, with no RPC error for the host to classify. */
+  credentialRejected?: true;
 }
 
 export interface BackendSessionListEntry {

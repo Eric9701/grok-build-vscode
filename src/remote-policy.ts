@@ -293,6 +293,9 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   cancelCodexInstall: "host-local",
   installAgy: "host-local",
   cancelAgyInstall: "host-local",
+  // Carries a pasted Gemini API key: it never crosses the relay.
+  agySignIn: "host-local",
+  setExperimentalAntigravity: "host-local",
   questionAnswer: "propose",
   questionCancel: "propose",
   queueSend: "propose",
@@ -619,6 +622,8 @@ export const REMOTE_REQUIRES_BOUND_SESSION: Record<WebviewMsg["type"], boolean> 
   cancelCodexInstall: false,
   installAgy: false,
   cancelAgyInstall: false,
+  agySignIn: false,
+  setExperimentalAntigravity: false,
   questionAnswer: true,
   questionCancel: true,
   queueSend: true,

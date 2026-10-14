@@ -59,6 +59,36 @@ describe("Antigravity models and effort", () => {
     expect(call).toEqual(expected ? { method: "session/set_config_option", params: { sessionId: "s", configId: "thinking_level", value: expected } } : null);
   });
 
+  // API-key mode lists the server's hardcoded catalog (model_selection.py
+  // DEFAULT_MODEL_LIST): several families, and Gemini 3.1 Pro has only high
+  // and low. `thinking_level` lists only the CURRENT family's levels, so each
+  // family's ladder comes from its own listed variants.
+  it("gives each family of the key catalog its own row and its own levels", () => {
+    const families: [string, string, string[]][] = [
+      ["gemini-3.8-flash", "Gemini 3.8 Flash", ["high", "medium", "low"]],
+      ["gemini-3.7-flash", "Gemini 3.7 Flash", ["high", "medium", "low"]],
+      ["gemini-3.1-pro", "Gemini 3.1 Pro", ["high", "low"]],
+    ];
+    const response = {
+      sessionId: "s",
+      configOptions: [
+        { currentValue: "gemini-3.8-flash", options: families.map(([value, name]) => ({ value, name })), id: "model", category: "model", type: "select" },
+        { currentValue: "medium", options: ["low", "medium", "high"].map((value) => ({ value, name: value })), id: "thinking_level", category: "thought_level", type: "select" },
+      ],
+      models: {
+        currentModelId: "gemini-3.8-flash-medium",
+        availableModels: families.flatMap(([id, name, levels]) => levels.map((level) => ({ modelId: `${id}-${level}`, name: `${name} (${level})` }))),
+      },
+    };
+    const models = normalizeAgySessionResponse(response).models;
+    expect(models.currentModelId).toBe("gemini-3.8-flash");
+    expect(models.availableModels.map((m: any) => [m.modelId, m.name, m._meta.reasoningEfforts.map((e: any) => e.value), m._meta.reasoningEffort])).toEqual([
+      ["gemini-3.8-flash", "Gemini 3.8 Flash", ["low", "medium", "high"], "medium"],
+      ["gemini-3.7-flash", "Gemini 3.7 Flash", ["low", "medium", "high"], undefined],
+      ["gemini-3.1-pro", "Gemini 3.1 Pro", ["low", "high"], undefined],
+    ]);
+  });
+
   it("reads model and level back from configOptions, keeping the host's mode", () => {
     const low = configOptions.map((o) => o.id === "thinking_level" ? { ...o, currentValue: "low" } : o);
     expect(configStateFromAgyOptions({ configOptions: low }, { modelId: "x", reasoningEffort: "high", modeId: "yolo" }))
@@ -176,6 +206,23 @@ describe("Antigravity updates", () => {
       { name: "plan" }, { name: "logout" }, { name: "usage" }] }, undefined, merger);
     expect(commands.update.availableCommands).toEqual([{ name: "usage" }]);
     expect(normalizeAgyUpdate({ sessionUpdate: "current_mode_update", currentModeId: "yolo" }, undefined, merger).update).toBeUndefined();
+  });
+
+  // The server does not fail a prompt Google refused: it sends the API's own
+  // message as agent text and ends the turn normally.
+  it.each([
+    ["API key not valid. Please pass a valid API key.", true],
+    ["API key expired. Please renew the API key.", true],
+    ["Request had invalid authentication credentials. Expected OAuth 2 access token.", true],
+    ["Agent execution error: rpc error: code = InvalidArgument reason:API_KEY_INVALID", true],
+    ["Here is how an API key works in general.", false],
+    // The agent talking about someone else's error is not Google refusing ours.
+    ["Your log says API key not valid. Please pass a valid API key. Check .env.", false],
+    ["The client returns API_KEY_INVALID when the header is empty.", false],
+  ])("flags %j as a rejected credential: %s", (text, rejected) => {
+    const result = normalizeAgyUpdate({ sessionUpdate: "agent_message_chunk", content: { type: "text", text } }, undefined, new AgyToolCallMerger());
+    expect(result.update.content.text).toBe(text);
+    expect(result.credentialRejected === true).toBe(rejected);
   });
 
   it("reads the context meter straight from usage_update", () => {

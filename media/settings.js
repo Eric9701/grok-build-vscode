@@ -389,8 +389,13 @@
     const connected = provider.connected === true;
     const needsLogin = connected && provider.needsLogin === true;
     if (needsLogin) return "This account is connected but needs to sign in again before it can be used.";
-    if (connected && provider.keepsCliSignIn === true && !remote && provider.id === "agy") {
-      return "This account is connected on this machine. Disconnect turns it off here; your Google sign-in for Antigravity stays.";
+    if (connected && !needsLogin && provider.id === "agy") {
+      const how = provider.signInMethod === "api-key" ? "a Gemini API key" : "your Google account";
+      if (remote) return "Connected with " + how + " on the computer running this workspace.";
+      return "Connected with " + how + "."
+        + (provider.keepsCliSignIn === true
+          ? " Disconnect turns it off here and keeps the " + (provider.signInMethod === "api-key" ? "saved key" : "Google sign-in") + "."
+          : "");
     }
     if (connected && provider.keepsCliSignIn === true && !remote) {
       const cli = PROVIDER_CLI_NAMES[provider.id] || "agent";
@@ -1107,7 +1112,7 @@
       title: "Antigravity", vendor: "Google", description: "", kind: "status",
       visible: (s, env) => !!(env && env.isRemote && env.providersKnown && agyAdvertised(s)),
       describe: (s) => providerConnectedNow(s, "agy")
-        ? "This account is connected on the computer running this workspace."
+        ? providerDescription(providerOf(s, "agy"), true)
         : "Connect Antigravity on the computer running this workspace.",
     },
     {
@@ -1309,12 +1314,15 @@
       id: "experimentalAntigravity",
       category: "advanced",
       title: "Experimental: Antigravity",
-      description: "Offer Google's Antigravity as an agent on this computer. Turn on grok.experimentalAntigravity, then connect it under Providers.",
-      kind: "action",
-      actionLabel: "Open setting",
+      description: "Offer Google's Antigravity as an agent on this computer. Connect it under Providers.",
+      kind: "toggle",
       hostLocal: true,
+      defaultValue: false,
       visible: (s, env) => !!(env && !env.isRemote && !hostIsCloud(env)),
-      message: () => ({ type: "openSettings", section: "grok.experimentalAntigravity" }),
+      // The host names Antigravity in providerState exactly when the setting is
+      // on (desk only), so that frame is the setting's state.
+      get: (s) => agyAdvertised(s),
+      message: (value) => ({ type: "setExperimentalAntigravity", value }),
     },
     {
       id: "openVsCodeSettings",

@@ -74,23 +74,40 @@ function configOption(configOptions: unknown, id: string): any {
   return Array.isArray(configOptions) ? configOptions.find((option) => option?.id === id) : undefined;
 }
 
+/** The server's own order for a thinking-level picker, least thinking first. */
+const LEVEL_ORDER = ["minimal", "low", "medium", "high", "xhigh", "extra_high", "max"];
+
 /**
- * One model, effort as a level. The server lists `gemini-3.8-flash-high`,
- * `-medium` and `-low` as three models, but its `configOptions` describe the
- * same thing as one model family with a `thinking_level` -- which is the shape
- * the host's picker already has for every other provider.
+ * One row per model family, effort as its level. The server lists every
+ * variant as a model (`gemini-3.8-flash-high`, `-medium`, `-low`, ...) but its
+ * `configOptions` describe a family with a `thinking_level` -- the shape the
+ * host's picker already has for every other provider. A family's levels come
+ * from the variants listed for it, because `thinking_level` only lists the
+ * CURRENT family's (Gemini 3.1 Pro has high and low, the Flash models three);
+ * a family with no listed variants falls back to the current option's levels.
  */
-export function modelsFromAgyConfigOptions(configOptions: unknown): { currentModelId?: string; availableModels: any[] } {
+export function modelsFromAgyConfigOptions(
+  configOptions: unknown,
+  variantIds: readonly string[] = [],
+): { currentModelId?: string; availableModels: any[] } {
   const model = configOption(configOptions, "model");
   const thinking = configOption(configOptions, "thinking_level");
   const currentModelId = typeof optionValue(model) === "string" ? optionValue(model) as string : undefined;
   const currentLevel = typeof optionValue(thinking) === "string" ? optionValue(thinking) as string : undefined;
-  const levels = optionValues(thinking).map((entry) => entry?.value).filter((value): value is string => typeof value === "string");
+  const currentLevels = optionValues(thinking).map((entry) => entry?.value).filter((value): value is string => typeof value === "string");
+  const levelsOf = (family: string): string[] => {
+    const listed = variantIds
+      .filter((id) => id.startsWith(`${family}-`) && LEVEL_ORDER.includes(id.slice(family.length + 1)))
+      .map((id) => id.slice(family.length + 1));
+    if (!listed.length) return family === currentModelId ? currentLevels : [];
+    return [...new Set(listed)].sort((a, b) => LEVEL_ORDER.indexOf(a) - LEVEL_ORDER.indexOf(b));
+  };
   return {
     currentModelId,
     availableModels: optionValues(model).flatMap((entry) => {
       const modelId = typeof entry?.value === "string" ? entry.value : "";
       if (!modelId) return [];
+      const levels = levelsOf(modelId);
       return [{
         modelId,
         name: typeof entry?.name === "string" && entry.name.trim() ? entry.name : modelId,
@@ -106,7 +123,10 @@ export function modelsFromAgyConfigOptions(configOptions: unknown): { currentMod
 
 export function normalizeAgySessionResponse(response: any): any {
   if (!response || typeof response !== "object") return response;
-  const models = modelsFromAgyConfigOptions(response.configOptions);
+  const variantIds = Array.isArray(response.models?.availableModels)
+    ? response.models.availableModels.map((entry: any) => entry?.modelId).filter((id: unknown): id is string => typeof id === "string")
+    : [];
+  const models = modelsFromAgyConfigOptions(response.configOptions, variantIds);
   if (!models.availableModels.length) return response;
   return { ...response, models };
 }
@@ -119,6 +139,24 @@ export function configStateFromAgyOptions(response: any, fallback: BackendConfig
     reasoningEffort: typeof level === "string" ? level : fallback.reasoningEffort,
     modeId: fallback.modeId,
   };
+}
+
+/**
+ * Google refusing the credential DURING a turn. The server does not fail the
+ * prompt for it: it sends the API's message as agent text (`format_execution_
+ * error`) and ends the turn, so the session would otherwise sit there looking
+ * fine. These are the Gemini API's own wordings for a bad, expired or missing
+ * key and a refused token. Unverified against a live bad key.
+ *
+ * Anchored to the start of the chunk: that error is one chunk that is the
+ * whole message (the API's own sentence, or `Agent execution error: ...` when
+ * it does not parse), while an agent explaining an "API key not valid" error in
+ * someone's code says it mid-reply, and must not reopen the sign-in.
+ */
+const REJECTED_CREDENTIAL = /^\s*(?:API key not valid\b|API key expired\b|Request had invalid authentication credentials\b|Method doesn't allow unregistered callers\b|Agent execution error:.*\b(?:API_KEY_INVALID|API_KEY_EXPIRED|UNAUTHENTICATED)\b)/s;
+
+export function isAgyRejectedCredentialText(text: unknown): boolean {
+  return typeof text === "string" && REJECTED_CREDENTIAL.test(text);
 }
 
 /** `-32000` is the server's auth-required code and nothing else uses it. */
@@ -221,6 +259,9 @@ export function normalizeAgyUpdate(update: any, meta: any, toolCalls: AgyToolCal
   if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
     const merged = toolCalls.accept(update);
     return merged ? { update: merged, meta } : { meta };
+  }
+  if (update.sessionUpdate === "agent_message_chunk" && isAgyRejectedCredentialText(update.content?.text)) {
+    return { update, meta, credentialRejected: true };
   }
   return { update, meta };
 }

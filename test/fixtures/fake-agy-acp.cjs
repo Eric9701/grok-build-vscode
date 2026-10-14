@@ -6,6 +6,12 @@
 //
 // Env: GEMINI_HOME (required), FAKE_AGY_SINK (JSONL of requests received),
 // FAKE_AGY_SIGN_IN = approve (default) | deny | hang.
+//
+// `gemini-api-key` behaves as the real server's does: the key arrives in
+// `authenticate` `_meta` (or GEMINI_API_KEY), is held in memory only, and
+// `auth.type` is written to the shared settings.json. Key mode lists the
+// hardcoded catalog (several families, no Gemini 4 Argon), and a turn with the
+// key "bad-key" fails the way the Gemini API refuses one: as agent text.
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
@@ -21,6 +27,8 @@ const waiting = new Map();
 const cancelled = new Set();
 const sessions = new Map();
 let loggedOut = false;
+// What `authenticate` selected in this process; settings.json otherwise.
+let auth;
 
 function write(message) { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\n"); }
 function update(sessionId, value) { write({ method: "session/update", params: { sessionId, update: value } }); }
@@ -32,27 +40,69 @@ function request(method, params) {
   write({ id, method, params });
   return new Promise((resolve) => waiting.set(id, resolve));
 }
-function signedIn() {
-  try { return !loggedOut && JSON.parse(fs.readFileSync(settingsFile, "utf8")).auth.type === "oauth-personal" && fs.existsSync(tokenFile); }
-  catch { return false; }
+function savedAuthType() {
+  try { return JSON.parse(fs.readFileSync(settingsFile, "utf8")).auth.type; } catch { return undefined; }
+}
+function rememberAuthType(type) {
+  fs.mkdirSync(acpDir, { recursive: true });
+  fs.writeFileSync(settingsFile, JSON.stringify({ auth: { type } }));
+}
+/** The method in force: the one authenticate chose, else settings.json's. */
+function currentAuth() {
+  if (loggedOut) return undefined;
+  if (auth) return auth;
+  const type = savedAuthType();
+  if (type === "oauth-personal" && fs.existsSync(tokenFile)) return { method: type };
+  if (type === "gemini-api-key" && process.env.GEMINI_API_KEY) return { method: type, key: process.env.GEMINI_API_KEY };
+  return undefined;
+}
+function signedIn() { return !!currentAuth(); }
+function apiKeyFromMeta(meta) {
+  for (const entry of ["api-key", "apiKey", "api_key"]) {
+    const value = meta?.[entry];
+    if (typeof value === "string" && value) return value;
+    if (value && typeof value === "object") {
+      for (const field of ["apiKey", "api_key", "api-key", "key"]) if (typeof value[field] === "string" && value[field]) return value[field];
+    }
+  }
+  return undefined;
 }
 function authRequired() {
   return { code: -32000, message: "Authentication required", data: { message: "No authentication method selected." } };
 }
-function configOptions(level) {
+// model_selection.py DEFAULT_MODEL_LIST: the API-key catalog. Gemini 4 Argon
+// is agent-platform only, so it is not here.
+const KEY_FAMILIES = [
+  ["gemini-3.8-flash", "Gemini 3.8 Flash", ["high", "medium", "low"]],
+  ["gemini-3.7-flash", "Gemini 3.7 Flash", ["high", "medium", "low"]],
+  ["gemini-3.6-flash", "Gemini 3.6 Flash", ["high", "medium", "low"]],
+  ["gemini-3.5-flash", "Gemini 3.5 Flash", ["high", "medium", "low"]],
+  ["gemini-3.1-pro", "Gemini 3.1 Pro", ["high", "low"]],
+];
+function families() {
+  return currentAuth()?.method === "gemini-api-key" ? KEY_FAMILIES : KEY_FAMILIES.slice(0, 1);
+}
+function configOptions(level, family = "gemini-3.8-flash") {
+  const current = families().find(([id]) => id === family) ?? families()[0];
+  const order = ["low", "medium", "high"];
   return [
-    { currentValue: "gemini-3.8-flash", options: [{ value: "gemini-3.8-flash", name: "Gemini 3.8 Flash" }], id: "model", name: "Model", category: "model", type: "select" },
-    { currentValue: level, options: [{ value: "low", name: "Low" }, { value: "medium", name: "Medium" }, { value: "high", name: "High" }], id: "thinking_level", name: "Thinking Level", category: "thought_level", type: "select" },
+    { currentValue: current[0], options: families().map(([value, name]) => ({ value, name })), id: "model", name: "Model", category: "model", type: "select" },
+    { currentValue: level, options: [...current[2]].sort((a, b) => order.indexOf(a) - order.indexOf(b)).map((value) => ({ value, name: value })), id: "thinking_level", name: "Thinking Level", category: "thought_level", type: "select" },
     { currentValue: "default", options: [{ value: "default", name: "Default" }, { value: "auto_edit", name: "Auto Edit" }, { value: "yolo", name: "YOLO" }], id: "mode", name: "Session Mode", category: "mode", type: "select" },
   ];
 }
 function sessionResult(sessionId) {
-  const level = sessions.get(sessionId)?.level ?? "high";
+  const session = sessions.get(sessionId);
+  const level = session?.level ?? "high";
+  const family = session?.family ?? "gemini-3.8-flash";
   return {
     ...(sessionId ? { sessionId } : {}),
     modes: { currentModeId: "default", availableModes: [{ id: "default", name: "Default" }, { id: "auto_edit", name: "Auto Edit" }, { id: "yolo", name: "YOLO" }] },
-    configOptions: configOptions(level),
-    models: { availableModels: ["high", "medium", "low"].map((l) => ({ modelId: `gemini-3.8-flash-${l}`, name: `Gemini 3.8 Flash (${l})` })), currentModelId: `gemini-3.8-flash-${level}` },
+    configOptions: configOptions(level, family),
+    models: {
+      availableModels: families().flatMap(([id, name, levels]) => levels.map((l) => ({ modelId: `${id}-${l}`, name: `${name} (${l})` }))),
+      currentModelId: `${family}-${level}`,
+    },
   };
 }
 function commands(sessionId) {
@@ -71,6 +121,11 @@ async function prompt(id, params) {
   if (loggedOut) return write({ id, error: { code: -32000, message: "Logged out. Sign in again to continue." } });
   commands(sessionId);
   const session = sessions.get(sessionId);
+  if (currentAuth()?.key === "bad-key") {
+    // The server reports an API refusal as text and ends the turn normally.
+    update(sessionId, { content: { type: "text", text: "API key not valid. Please pass a valid API key." }, sessionUpdate: "agent_message_chunk" });
+    return write({ id, result: { stopReason: "end_turn" } });
+  }
   if (/edit/i.test(text)) {
     // The approved edit is reported twice; the first is swept as failed.
     const target = path.join(session.cwd, "hello.txt");
@@ -133,7 +188,21 @@ rl.on("line", async (line) => {
         authMethods: [{ id: "oauth-personal", name: "Log in with Google" }],
         agentInfo: { name: "antigravity-acp", title: "Google Antigravity", version: "1.4.0" } } });
     case "authenticate": {
-      if (signedIn()) return write({ id, result: {} });
+      if (params.methodId === "gemini-api-key") {
+        // Held in memory only; the method is remembered in settings.json.
+        const key = apiKeyFromMeta(params._meta) ?? process.env.GEMINI_API_KEY;
+        if (!key) { auth = undefined; rememberAuthType("gemini-api-key"); return write({ id, result: {} }); }
+        auth = { method: "gemini-api-key", key };
+        loggedOut = false;
+        rememberAuthType("gemini-api-key");
+        return write({ id, result: {} });
+      }
+      if (fs.existsSync(tokenFile)) {
+        auth = { method: "oauth-personal" };
+        loggedOut = false;
+        rememberAuthType("oauth-personal");
+        return write({ id, result: {} });
+      }
       process.stderr.write("Open the following link to authenticate the ACP server: https://accounts.google.com/o/oauth2/v2/auth?client_id=fake\n");
       const mode = process.env.FAKE_AGY_SIGN_IN || "approve";
       if (mode === "hang") return;
@@ -141,7 +210,8 @@ rl.on("line", async (line) => {
       if (mode === "deny") return write({ id, error: { code: -32000, message: "Onboarding failed: denied" } });
       fs.mkdirSync(acpDir, { recursive: true });
       fs.writeFileSync(tokenFile, JSON.stringify({ token: "fake" }));
-      fs.writeFileSync(settingsFile, JSON.stringify({ auth: { type: "oauth-personal" } }));
+      rememberAuthType("oauth-personal");
+      auth = { method: "oauth-personal" };
       loggedOut = false;
       return write({ id, result: {} });
     }
@@ -149,6 +219,7 @@ rl.on("line", async (line) => {
       fs.rmSync(tokenFile, { force: true });
       fs.mkdirSync(acpDir, { recursive: true });
       fs.writeFileSync(settingsFile, JSON.stringify({}));
+      auth = undefined;
       loggedOut = true;
       sessions.clear();
       return write({ id, result: {} });
@@ -172,7 +243,13 @@ rl.on("line", async (line) => {
       const session = sessions.get(params.sessionId);
       if (!session) return write({ id, error: { code: -32002, message: "Resource not found" } });
       if (params.configId === "thinking_level") session.level = params.value;
-      return write({ id, result: { configOptions: configOptions(session.level) } });
+      if (params.configId === "model") {
+        const family = families().find(([value]) => value === params.value);
+        if (!family) return write({ id, error: { code: -32602, message: `Unknown model ${params.value}` } });
+        session.family = family[0];
+        if (!family[2].includes(session.level)) session.level = family[2][0];
+      }
+      return write({ id, result: { configOptions: configOptions(session.level, session.family) } });
     }
     case "session/set_mode":
       return write({ id, result: {} });

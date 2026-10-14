@@ -19,11 +19,11 @@ const require = createRequire(import.meta.url);
 export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) {
   const { AcpClient } = require("../out/acp.js");
   const { AgyBackend, agySessionPathKey, listAgySessions } = require("../out/agy-backend.js");
-  const { agyCredentialPresent } = require("../out/agy-auth.js");
+  const { agyGoogleSignInPresent, agyStartupAuth } = require("../out/agy-auth.js");
   const { locateAgyServer } = require("../out/agy-managed-installer.js");
   const server = process.env.AGY_SERVER_PATH || locateAgyServer({ managedStorageRoot: process.env.AGY_STORAGE_ROOT });
   assert(server && fs.existsSync(server), "no Antigravity server: set AGY_SERVER_PATH, or AGY_STORAGE_ROOT to the extension's global storage");
-  assert(await agyCredentialPresent(), "Antigravity is not signed in on this machine; connect it in the app first (this smoke never signs in or out)");
+  assert(await agyGoogleSignInPresent(), "Antigravity is not signed in with Google on this machine; connect it in the app first (this smoke never signs in or out)");
   // Under the home folder on purpose: that is where the server's alphabetical
   // workspace-root choice used to run commands in ~/.gemini instead.
   const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "grok-acp-smoke-agy-")));
@@ -37,6 +37,9 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
       cliPath: server, cwd: scratch, effort: "low", env: { ...process.env },
       backend: new AgyBackend(), log: (line) => log.write(`${new Date().toISOString()} ${line}\n`),
       timeouts: { requestTimeoutMs: rpcMs, promptIdleTimeoutMs: turnMs },
+      // As the host starts it: the chosen method, stated on every start. With
+      // the stored token the server refreshes silently; it never opens a browser.
+      startupAuth: agyStartupAuth("google"),
     });
     clients.push(made);
     return made;
@@ -51,11 +54,11 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
   try {
     say(`agy server: ${server}; scratch: ${scratch}`);
     agy = client();
-    const init = await new Promise((resolve, reject) => {
-      agy.once("initialized", resolve);
-      timed(agy.start(), "initialize", rpcMs).catch(reject);
-    });
-    record("initialize", "PASS", `agentInfo=${init?.agentInfo?.name} ${init?.agentInfo?.version}; systemPrompt.append=${init?.agentCapabilities?._meta?.antigravity?.systemPrompt?.append === true}`);
+    let init;
+    agy.once("initialized", (value) => { init = value; });
+    // start() returns after `authenticate {methodId: "oauth-personal"}`.
+    await timed(agy.start(), "initialize + authenticate", rpcMs * 2);
+    record("initialize", "PASS", `agentInfo=${init?.agentInfo?.name} ${init?.agentInfo?.version}; systemPrompt.append=${init?.agentCapabilities?._meta?.antigravity?.systemPrompt?.append === true}; authenticated with oauth-personal`);
     await check("session/new", async () => {
       ({ sessionId } = await timed(agy.newSession(), "session/new", rpcMs));
       assert.deepEqual(agy.availableModels.map((model) => model.modelId), ["gemini-3.8-flash"]);
@@ -141,7 +144,7 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
       const replay = [];
       resumed.on("userMessageChunk", (text) => replay.push(text));
       resumed.on("messageChunk", (text) => replay.push(text));
-      await timed(resumed.start(), "initialize (resume)", rpcMs);
+      await timed(resumed.start(), "initialize (resume)", rpcMs * 2);
       await timed(resumed.loadSession(sessionId), "session/load", rpcMs);
       assert(replay.join(" ").includes("AGY-SMOKE-OK"), "replay did not carry the first exchange");
       const listed = listAgySessions(scratch, process.platform);

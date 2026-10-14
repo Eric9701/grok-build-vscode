@@ -6,7 +6,7 @@ import { MuseBackend, withMuseCredentialBackend } from "./muse-backend";
 import { locateMuseCli, parseMuseVersionOutput } from "./muse-cli-locator";
 import { museInstallCommand } from "./muse-install";
 import { AgyBackend, agyAcpDir, listAgySessions } from "./agy-backend";
-import { agyCredentialPresent, runAgySignIn } from "./agy-auth";
+import { agyGoogleSignInPresent, agyStartupAuth, isAgySignInMethod, normalizeAgyApiKey, runAgySignIn, type AgySignInMethod, type AgyStartupAuth } from "./agy-auth";
 import { installManagedAgy, locateAgyServer } from "./agy-managed-installer";
 import type {
   Host,
@@ -527,6 +527,10 @@ const SESSION_META_KEY = "grok.sessionMeta";
 // Older booleans included silent credential-probe promotions. Never import them.
 const PROVIDER_CONNECTIONS_KEY = "grok.providerConnections.v2";
 const PROVIDER_MODEL_CACHE_KEY = "grok.providerModelCache";
+/** How Antigravity signs in on this machine: a preference, never a secret. */
+const AGY_SIGN_IN_METHOD_KEY = "grok.agySignInMethod";
+/** HostSecrets key for the pasted Gemini API key. Nowhere else holds it. */
+const AGY_API_KEY_SECRET = "grok.agy.geminiApiKey";
 const PROJECT_PROVIDER_DEFAULTS_KEY = "grok.projectProviderDefaults";
 const REPO_PINS_KEY = "grok.repoPins";
 /** Timestamped archive choices, stored under ~/.grok/client-state rather than
@@ -1001,6 +1005,10 @@ export class GrokSidebar {
   private museSessionCacheAt = new Map<string, number>();
   private museSessionRefresh = new Map<string, Promise<void>>();
   private agyServerPath?: string;
+  /** What is stored for each way of signing Antigravity in -- never the key. */
+  private agySaved?: { google: boolean; apiKey: boolean };
+  /** Why the last Antigravity credential was refused, for the choice card. */
+  private agySignInError?: string;
   private agySessionCache = new Map<string, SessionListEntry[]>();
   private agySessionCacheAt = new Map<string, number>();
   private agySessionRefresh = new Map<string, Promise<void>>();
@@ -1046,6 +1054,7 @@ export class GrokSidebar {
     "setRoutinePaused",
     "runRoutineNow",
     "setShowThinking",
+    "setExperimentalAntigravity",
     "setAppPurpose",
     "setExpandCommandOutputs",
     "setSteerByDefault",
@@ -2132,9 +2141,10 @@ export class GrokSidebar {
     // costs a 15-25 s start on Windows, and with a saved method but no token
     // its session/new opens the browser.
     if (provider === "agy") {
-      const present = await this.agyCredentialPresent();
+      const present = !!(await this.agyStartupAuthFor());
       if (signal.aborted) return false;
       this.setProviderNeedsLogin("agy", !present);
+      void this.refreshAgySaved();
       return present;
     }
     if (provider === "codex" || provider === "claude") {
@@ -2659,8 +2669,95 @@ export class GrokSidebar {
   }
 
   /** Seam for host tests: the real probe reads the server's own files. */
-  private agyCredentialPresent(): Promise<boolean> {
-    return agyCredentialPresent();
+  private agyGoogleSignedIn(): Promise<boolean> {
+    return agyGoogleSignInPresent();
+  }
+
+  /** The way the person chose. Absent is Google: the only way there was. */
+  private agyMethod(): AgySignInMethod {
+    const saved = this.state?.get<string>(AGY_SIGN_IN_METHOD_KEY);
+    return isAgySignInMethod(saved) ? saved : "google";
+  }
+
+  private async agySavedKey(): Promise<string | undefined> {
+    try { return (await this.context.secrets.get(AGY_API_KEY_SECRET)) || undefined; }
+    catch { return undefined; }
+  }
+
+  /** Re-read what is stored for each way of signing in, for the choice card
+   *  and Settings. Booleans only; the key itself never leaves secrets. */
+  private async refreshAgySaved(): Promise<void> {
+    const [google, key] = await Promise.all([this.agyGoogleSignedIn().catch(() => false), this.agySavedKey()]);
+    const next = { google, apiKey: !!key };
+    if (next.google === this.agySaved?.google && next.apiKey === this.agySaved?.apiKey) return;
+    this.agySaved = next;
+    this.postProviderState();
+  }
+
+  /**
+   * The `authenticate` a server start sends for the chosen way, or undefined
+   * when that way holds no credential. Every start states its method: the
+   * server's settings.json is shared with other ACP clients on the machine,
+   * and a key sign-in rewrites it.
+   */
+  private async agyStartupAuthFor(): Promise<AgyStartupAuth | undefined> {
+    if (this.agyMethod() === "api-key") {
+      const key = await this.agySavedKey();
+      return key ? agyStartupAuth("api-key", key) : undefined;
+    }
+    return (await this.agyGoogleSignedIn()) ? agyStartupAuth("google") : undefined;
+  }
+
+  /** The choice of how to sign in, answering a press at the desk. */
+  private async postAgyChoice(reason = this.agySignInError): Promise<void> {
+    await this.refreshAgySaved();
+    this.postLocal({
+      type: "onboarding", state: "agy-login", provider: "agy", platform: process.platform,
+      agyChoice: true, ...(reason ? { reason } : {}),
+    });
+  }
+
+  /**
+   * Connect Antigravity the way the person just chose. Consent is recorded
+   * here, by the choice, not by the Connect press that showed it. A live
+   * Antigravity process holds the credential it started with, so a renewal
+   * restarts them; the next send respawns each with the new one.
+   */
+  private async connectAgy(method: AgySignInMethod, cliPath: string, session: Session): Promise<void> {
+    await this.state.update(AGY_SIGN_IN_METHOD_KEY, method);
+    this.agySignInError = undefined;
+    for (const live of new Set([this.focused, ...this.pool, ...this.remoteClients.detachedActiveValues()])) {
+      if (live?.provider !== "agy" || !live.client) continue;
+      const client = this.detachClient(live);
+      void client?.dispose();
+      live.priming = false;
+      live.status = "idle";
+      this.emit(live, { type: "setBusy", value: false });
+    }
+    // ORDER: needs-login before the first frame that says connected.
+    this.setProviderNeedsLogin("agy", true);
+    await this.setProviderConnected("agy", true);
+    if (!this.hasProviderConsent("agy")) return;
+    const ready = !!(await this.agyStartupAuthFor());
+    await this.refreshAgySaved();
+    if (ready) {
+      this.setProviderNeedsLogin("agy", false);
+      await this.adoptSessionsForConnectedProvider("agy", session);
+      // Closes the connect dialog the choice was made in.
+      this.postLocal({ type: "onboarding", state: "provider-connected", provider: "agy", platform: process.platform });
+      return;
+    }
+    // Google with nothing stored: the browser sign-in, through the card.
+    await this.startDeviceLogin("agy", cliPath, undefined, { remote: false });
+  }
+
+  /** Google refused the credential mid-turn. Back to the choice, saying so. */
+  private async rejectAgyCredential(): Promise<void> {
+    this.agySignInError = this.agyMethod() === "api-key"
+      ? "Google rejected this API key."
+      : "Google rejected the sign-in. Sign in again.";
+    this.setProviderNeedsLogin("agy", true);
+    await this.postAgyChoice();
   }
 
   /** The short-lived server a Google sign-in runs in. Born in the home
@@ -2782,7 +2879,13 @@ export class GrokSidebar {
         // agent its host did not name, so this is the whole on/off switch.
         ...(this.agyOffered() ? [{ id: "agy" as const, connected: agyConnected, ...button,
           ...(agyConnected && versions.agy ? { cliVersion: versions.agy } : {}),
-          ...(agyConnected && needsLogin.agy ? { needsLogin: true } : {}) }] : []),
+          ...(agyConnected && needsLogin.agy ? { needsLogin: true } : {}),
+          // The way last chosen, also after a Disconnect, so the choice can
+          // say which one Connect used before.
+          ...(agyConnected || this.state?.get(AGY_SIGN_IN_METHOD_KEY) ? { signInMethod: this.agyMethod() } : {}),
+          ...(this.agySaved && (this.agySaved.google || this.agySaved.apiKey) ? {
+            savedSignIns: [...(this.agySaved.google ? ["google" as const] : []), ...(this.agySaved.apiKey ? ["api-key" as const] : [])],
+          } : {}) }] : []),
         {
           id: "grok",
           connected: grokConnected,
@@ -2883,6 +2986,7 @@ export class GrokSidebar {
       this.claudeCliPath = undefined;
       this.museCliPath = undefined;
       this.agyServerPath = undefined;
+      if (this.agyOffered()) await this.refreshAgySaved();
       // Installation discovery is always local and remains available before Connect.
       const located = this.locatedProviders();
       await Promise.all(INTERNAL_PROVIDERS.map(async provider => {
@@ -8893,6 +8997,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     opts: { fromRemote?: boolean; report?: (text: string) => void },
     fail: (text: string) => void,
   ): Promise<void> {
+    if (this.agyMethod() === "api-key") {
+      if (!opts.fromRemote) {
+        const choice = await this.host.showWarningMessage(
+          "Sign out of Antigravity? This deletes the Gemini API key saved in this app.",
+          { modal: true },
+          "Sign Out",
+        );
+        if (choice !== "Sign Out") return;
+      }
+      try { await this.context.secrets.delete(AGY_API_KEY_SECRET); }
+      catch (error) {
+        fail(`Antigravity sign-out failed: ${errorDetail(error)}. The account remains connected.`);
+        return;
+      }
+      await this.refreshAgySaved();
+      await this.finishProviderLogout("agy", opts.report);
+      return;
+    }
     const cliPath = this.locateProvider("agy");
     if (!cliPath) {
       fail("Antigravity sign-out could not run because the Antigravity server is not installed. The account remains connected.");
@@ -8917,6 +9039,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     } finally {
       await client.dispose();
     }
+    await this.refreshAgySaved();
     await this.finishProviderLogout("agy", opts.report);
   }
 
@@ -10592,11 +10715,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       });
       return undefined;
     }
-    // Antigravity's session/new starts Google's browser sign-in by itself when
-    // its saved sign-in has lost its token, and on a phone-driven start that
-    // browser opens at an empty desk. Ask its files first; signing in stays an
-    // explicit press at the computer.
-    if (session.provider === "agy" && !(await this.agyCredentialPresent())) {
+    // Antigravity authenticates every start with the way the person chose, and
+    // only when that way holds a credential: with none, `authenticate` and the
+    // server's own session/new start Google's browser sign-in, which on a
+    // phone-driven start opens at an empty desk. Signing in stays a press at
+    // the computer.
+    const agyAuth = session.provider === "agy" ? await this.agyStartupAuthFor() : undefined;
+    if (session.provider === "agy" && !agyAuth) {
       if (gen !== session.gen) return undefined;
       this.pool.delete(session);
       session.priming = false;
@@ -10676,6 +10801,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       log: (msg) => this.host.appendLine(msg),
       timeouts: this.acpClientTimeouts(),
       mcpServers: (onDispose) => supportsClientMcpServers(session.provider) ? this.hostMcpServersFor(session, onDispose) : [],
+      ...(agyAuth ? { startupAuth: agyAuth } : {}),
       ...(session.provider === "grok"
         ? { grokVersion: grokHandshakeVersion, grokVersionVerified }
         : { backend: session.provider === "muse" ? new MuseBackend(session.musePosture, session.museCloud) : this.createProviderBackend(session.provider) }),
@@ -10714,6 +10840,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.terminal = this.terminalManager.ownedBy(client);
 
     this.trackCloudAgentActivity(session, client, gen);
+    if (session.provider === "agy") client.on("credentialRejected", () => {
+      if (gen === session.gen) void this.rejectAgyCredential();
+    });
     client.on("initialized", (init) => {
       if (gen !== session.gen) return;
       this.warnOAuthShadowOnce(init?._meta?.defaultAuthMethodId, env);
@@ -12492,6 +12621,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         );
         break;
       }
+      case "setExperimentalAntigravity":
+        // The config watcher re-posts providerState, which is what the
+        // toggle reads back.
+        await this.host.getConfiguration("grok")
+          .update("experimentalAntigravity", !!msg.value, "global");
+        break;
       case "setShowThinking":
         // Persist globally (like the other display prefs); the config watcher
         // re-posts the value, keeping every open webview in sync.
@@ -12662,6 +12797,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           else this.post(message);
           break;
         }
+        // Antigravity signs in with Google or with a pasted Gemini API key, so
+        // Connect offers that choice rather than adopting whatever is stored;
+        // otherwise a Disconnect and Connect could never switch. The choice
+        // itself (`agySignIn`) records consent.
+        if (provider === "agy") {
+          await this.postAgyChoice();
+          break;
+        }
         // A press that lands while a first Connect is still checking is the
         // same request again, not a sign-in: consent is already recorded, so it
         // would otherwise fall through to the login terminal below.
@@ -12725,9 +12868,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           // leave the agent masked as not connected.
           if (checkingConnect && this.providerConnectChecks?.delete(provider)) this.postProviderState();
         }
-        // Muse's CLI prints a link instead of opening a browser; Antigravity's
-        // server signs in over ACP. Both report through the device-login card.
-        if (provider === "muse" || provider === "agy") {
+        // Muse's CLI prints a link instead of opening a browser, so its desk
+        // sign-in reports through the device-login card too.
+        if (provider === "muse") {
           await this.startDeviceLogin(provider, cliPath, clientId, { remote: false });
           break;
         }
@@ -12796,6 +12939,34 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           provider,
           launched: true,
         });
+        break;
+      }
+      case "agySignIn": {
+        // Desk only: the key never crosses the relay, and Google's page would
+        // open at the desk. Host-local in remote-policy.ts as well.
+        if (origin !== "local" || !this.agyOffered()) break;
+        const cliPath = this.locateProvider("agy");
+        if (!cliPath) {
+          this.postLocal({ type: "onboarding", state: "missing-agy", platform: process.platform, provider: "agy",
+            device: { status: "failed", message: "Antigravity is not installed on this machine." } });
+          break;
+        }
+        if (msg.method === "api-key") {
+          if (msg.key !== undefined) {
+            const parsed = normalizeAgyApiKey(msg.key);
+            if ("error" in parsed) { await this.postAgyChoice(parsed.error); break; }
+            try { await this.context.secrets.store(AGY_API_KEY_SECRET, parsed.key); }
+            catch (error) {
+              this.host.appendLine(`[agy] saving the API key failed: ${errorDetail(error)}`);
+              await this.postAgyChoice("The key could not be saved on this machine.");
+              break;
+            }
+          } else if (!(await this.agySavedKey())) {
+            await this.postAgyChoice("Paste a Gemini API key.");
+            break;
+          }
+        }
+        await this.connectAgy(msg.method === "api-key" ? "api-key" : "google", cliPath, session);
         break;
       }
       case "submitDeviceLoginCode": {

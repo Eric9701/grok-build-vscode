@@ -11092,7 +11092,8 @@
       return;
     }
     if (connectWizard.agyOnboarding) {
-      connectWizard.body.innerHTML = agyOnboardingPanel(connectWizard.agyOnboarding.mode, connectWizard.agyOnboarding.info);
+      const { mode, info } = connectWizard.agyOnboarding;
+      connectWizard.body.innerHTML = mode === "agy-login" ? agyChoicePanel(info) : agyOnboardingPanel(mode, info);
       return;
     }
     // The mirror is the live source, but a confirmed account retires its
@@ -11105,7 +11106,7 @@
       connectWizard.body.innerHTML = connectWizard.checking
         ? `<div class="onb"><p class="onb-heading">Checking…</p><p class="onb-desc">Checking the CLI's existing sign-in.</p></div>`
         : provider === "muse" ? museOnboardingPanel("muse-login", {})
-        : provider === "agy" ? agyOnboardingPanel("agy-login", {})
+        : provider === "agy" ? agyChoicePanel({})
         : `<div class="onb"><p class="onb-heading">Sign in to continue</p>`
           + `<p class="onb-desc">${launched ? "Finish signing in in the terminal, then continue here." : "Start sign-in with the CLI when you are ready."}</p>`
           + `<button class="onb-action" data-act="connectProvider" data-provider="${provider}">Open terminal &amp; run <code>${command}</code></button>`
@@ -11143,6 +11144,14 @@
     // device flow, handled below like every other one.
     if (provider === "agy" && agyAdvertised && !IS_REMOTE) {
       const ownsWizard = !!connectWizard && connectWizard.provider === provider;
+      // A Connect press answers with the choice of how to sign in, wherever
+      // it was pressed: Settings, the card, the composer's sign-in prompt.
+      if (mode === "agy-login" && !device && info && info.agyChoice) {
+        openConnectWizard(provider);
+        connectWizard.agyOnboarding = { mode, info };
+        renderConnectWizard();
+        return;
+      }
       if (mode === "missing-agy" && (device || ownsWizard)) {
         openConnectWizard(provider);
         connectWizard.agyOnboarding = { mode, info: info || {} };
@@ -11305,10 +11314,43 @@
     }
     const provider = (state.providers || []).find(p => p.id === "agy");
     const connected = !!(provider && provider.connected);
+    const reason = info && info.reason;
     return `<div class="onb"><p class="onb-heading">${connected ? "Sign in to Antigravity" : "Connect Antigravity"}</p>`
-      + `<p class="onb-desc">Antigravity uses your Google account. Signing in opens Google's page in your browser.</p>`
-      + `<button class="onb-action" data-act="connectProvider" data-provider="agy">${connected ? "Sign in with Google" : "Connect Antigravity"}</button>`
-      + `<button class="onb-action onb-secondary" data-act="recheckProvider" data-provider="agy">Re-check</button></div>`;
+      + (reason ? `<p class="onb-install-error" role="alert">${escapeHtml(reason)}</p>` : "")
+      + `<p class="onb-desc">Sign in with your Google account, or use a Gemini API key.</p>`
+      + `<button class="onb-action" data-act="connectProvider" data-provider="agy">${connected ? "Sign in again" : "Connect Antigravity"}</button></div>`;
+  }
+
+  /**
+   * The choice of how Antigravity signs in: Google, or a pasted Gemini API
+   * key. One card, in the connect dialog. Stored ways are marked so a person
+   * who Disconnected can see what Connect will reuse; the key itself never
+   * reaches the renderer -- only that one is saved.
+   */
+  function agyChoicePanel(info) {
+    const provider = (state.providers || []).find(p => p.id === "agy") || {};
+    const saved = Array.isArray(provider.savedSignIns) ? provider.savedSignIns : [];
+    const last = provider.signInMethod;
+    const reason = info && info.reason;
+    const lastUsed = (method) => last === method ? " (last used)" : "";
+    return `<div class="onb onb-agy-choice"><p class="onb-heading">Connect Antigravity</p>`
+      + (reason ? `<p class="onb-install-error" role="alert">${escapeHtml(reason)}</p>` : "")
+      + `<p class="onb-desc">Choose how Antigravity signs in on this computer.</p>`
+      + `<button class="onb-action" type="button" data-act="agySignInGoogle">Sign in with Google${lastUsed("google")}</button>`
+      + `<p class="onb-desc">${saved.includes("google")
+        ? "Already signed in on this computer, so no browser is needed."
+        : "Opens Google's sign-in page in your browser."}</p>`
+      + `<p class="onb-or">or</p>`
+      + `<p class="onb-desc"><strong>Gemini API key${lastUsed("api-key")}</strong> &mdash; get one at `
+      + `<a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">aistudio.google.com/apikey</a>. `
+      + `It is kept in this app's secure storage on this computer.</p>`
+      + (saved.includes("api-key")
+        ? `<button class="onb-action onb-secondary" type="button" data-act="agySignInSavedKey">Use the saved key</button>`
+          + `<p class="onb-desc">Or replace it:</p>`
+        : "")
+      + `<div class="onb-cmd onb-code-entry">`
+      + `<input class="onb-code-input onb-agy-key" type="password" maxlength="512" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste API key" aria-label="Gemini API key">`
+      + `<button class="onb-action" type="button" data-act="agySignInKey">Use key</button></div></div>`;
   }
 
   /** A host that did not name Muse or Antigravity gets no card for it. */
@@ -21811,7 +21853,7 @@
             // AFTER the mirror: renderConnectWizard reads it, and syncing
             // first painted the previous state every time (caught by driving
             // the states in a browser, 2026-08-31).
-            syncConnectWizard(msg.provider, msg.device, msg.state, { platform: msg.platform, launched: msg.launched });
+            syncConnectWizard(msg.provider, msg.device, msg.state, { platform: msg.platform, launched: msg.launched, agyChoice: msg.agyChoice, reason: msg.reason });
             // The composer card reads the same mirror, and this is the only
             // frame that moves it. Without this call its "Signing in…" state
             // waits for the next providerState -- which is the frame that
@@ -23078,6 +23120,16 @@
       else if (act === "installCodex") vscode.postMessage({ type: "installCodex" });
       else if (act === "cancelCodexInstall") vscode.postMessage({ type: "cancelCodexInstall" });
       else if (act === "installAgy" && !IS_REMOTE && agyAdvertised) vscode.postMessage({ type: "installAgy" });
+      else if (act === "agySignInGoogle" && !IS_REMOTE && agyAdvertised) vscode.postMessage({ type: "agySignIn", method: "google" });
+      else if (act === "agySignInSavedKey" && !IS_REMOTE && agyAdvertised) vscode.postMessage({ type: "agySignIn", method: "api-key" });
+      else if (act === "agySignInKey" && !IS_REMOTE && agyAdvertised) {
+        const input = onbAction.closest(".onb") && onbAction.closest(".onb").querySelector(".onb-agy-key");
+        const key = input ? String(input.value || "").trim() : "";
+        if (!key) return;
+        // Not kept in the page once it is on its way to the host.
+        input.value = "";
+        vscode.postMessage({ type: "agySignIn", method: "api-key", key });
+      }
       else if (act === "cancelAgyInstall" && !IS_REMOTE) vscode.postMessage({ type: "cancelAgyInstall" });
       else if (act === "runLogin") vscode.postMessage({ type: "runGrokLogin" });
       else if (act === "recheck") vscode.postMessage({ type: "recheckConnection", provider: onbAction.dataset.provider });
@@ -23248,7 +23300,7 @@
     const input = e.target && e.target.closest && e.target.closest(".onb-code-input");
     if (!input || input.disabled) return;
     e.preventDefault();
-    const btn = input.closest(".onb") && input.closest(".onb").querySelector('[data-act="submitDeviceLoginCode"]');
+    const btn = input.closest(".onb") && input.closest(".onb").querySelector('[data-act="submitDeviceLoginCode"], [data-act="agySignInKey"]');
     if (btn && !btn.disabled) btn.click();
   });
 

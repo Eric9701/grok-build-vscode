@@ -1,47 +1,61 @@
 import { EventEmitter } from "node:events";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { AGY_SIGN_IN_METHOD, AGY_SIGN_IN_TIMEOUT_MS, agyCredentialPresent, agySavedAuthType, agySignInUrl, runAgySignIn } from "../src/agy-auth";
+import {
+  AGY_SIGN_IN_METHOD, AGY_SIGN_IN_TIMEOUT_MS, MAX_AGY_API_KEY_CHARS, agyGoogleSignInPresent, agySignInUrl, agyStartupAuth,
+  isAgySignInMethod, normalizeAgyApiKey, runAgySignIn,
+} from "../src/agy-auth";
 
 const home = "/home/me";
 const acp = path.join(home, ".gemini", "antigravity-acp");
 
 function probe(files: Record<string, string>, extra: Record<string, unknown> = {}) {
-  return {
-    env: {}, home, platform: "linux" as NodeJS.Platform,
-    exists: (file: string) => file in files,
-    readFile: (file: string) => { if (!(file in files)) throw new Error("ENOENT"); return files[file]; },
-    ...extra,
-  };
+  return { env: {}, home, platform: "linux" as NodeJS.Platform, exists: (file: string) => file in files, ...extra };
 }
 
-describe("Antigravity stored sign-in", () => {
-  const settings = { [path.join(acp, "settings.json")]: JSON.stringify({ auth: { type: "oauth-personal" } }) };
+describe("Antigravity stored Google sign-in", () => {
   const token = { [path.join(acp, "acp_token.json")]: "{}" };
 
-  it("needs the saved Google method AND its token", async () => {
-    expect(await agyCredentialPresent(probe({ ...settings, ...token }))).toBe(true);
-    expect(await agyCredentialPresent(probe(settings))).toBe(false);
-    expect(await agyCredentialPresent(probe(token))).toBe(false);
-    expect(await agyCredentialPresent(probe({ [path.join(acp, "settings.json")]: JSON.stringify({ auth: { type: "gemini-api-key" } }), ...token }))).toBe(false);
-    expect(agySavedAuthType(probe({ [path.join(acp, "settings.json")]: "not json" }))).toBeUndefined();
+  // The method in the server's settings.json no longer counts: that file is
+  // shared with other ACP clients and a key sign-in rewrites it, so every
+  // start authenticates with the way chosen here.
+  it("is the token, whatever settings.json says", async () => {
+    expect(await agyGoogleSignInPresent(probe(token))).toBe(true);
+    expect(await agyGoogleSignInPresent(probe({ [path.join(acp, "settings.json")]: JSON.stringify({ auth: { type: "oauth-personal" } }) }))).toBe(false);
   });
 
   it("asks the macOS keychain only when there is no token file and file storage is not forced", async () => {
     const keychainEntry = vi.fn(async () => true);
-    expect(await agyCredentialPresent(probe(settings, { platform: "darwin", keychainEntry }))).toBe(true);
+    expect(await agyGoogleSignInPresent(probe({}, { platform: "darwin", keychainEntry }))).toBe(true);
     expect(keychainEntry).toHaveBeenCalledTimes(1);
-    expect(await agyCredentialPresent(probe(settings, { platform: "darwin", keychainEntry, env: { AGY_ACP_FORCE_FILE_STORAGE: "1" } }))).toBe(false);
-    expect(await agyCredentialPresent(probe(settings, { platform: "win32", keychainEntry }))).toBe(false);
+    expect(await agyGoogleSignInPresent(probe({}, { platform: "darwin", keychainEntry, env: { AGY_ACP_FORCE_FILE_STORAGE: "1" } }))).toBe(false);
+    expect(await agyGoogleSignInPresent(probe({}, { platform: "win32", keychainEntry }))).toBe(false);
     expect(keychainEntry).toHaveBeenCalledTimes(1);
   });
 
   it("honours GEMINI_HOME", async () => {
     const custom = path.join("/data", "g", "antigravity-acp");
-    expect(await agyCredentialPresent(probe({
-      [path.join(custom, "settings.json")]: JSON.stringify({ auth: { type: "oauth-personal" } }),
-      [path.join(custom, "acp_token.json")]: "{}",
-    }, { env: { GEMINI_HOME: path.join("/data", "g") } }))).toBe(true);
+    expect(await agyGoogleSignInPresent(probe({ [path.join(custom, "acp_token.json")]: "{}" },
+      { env: { GEMINI_HOME: path.join("/data", "g") } }))).toBe(true);
+  });
+});
+
+describe("Antigravity sign-in methods", () => {
+  it("authenticates Google as oauth-personal and a key as gemini-api-key with the key in _meta", () => {
+    expect(agyStartupAuth("google")).toEqual({ methodId: AGY_SIGN_IN_METHOD });
+    expect(agyStartupAuth("api-key", "AIza-test")).toEqual({ methodId: "gemini-api-key", meta: { "api-key": "AIza-test" } });
+  });
+
+  it("takes a pasted key trimmed, and says plainly why it is not one", () => {
+    expect(normalizeAgyApiKey("  AIza-test \n")).toEqual({ key: "AIza-test" });
+    expect(normalizeAgyApiKey("   ")).toEqual({ error: "Paste a Gemini API key." });
+    expect(normalizeAgyApiKey(undefined)).toEqual({ error: "Paste a Gemini API key." });
+    expect(normalizeAgyApiKey("two words")).toEqual({ error: "That does not look like a Gemini API key." });
+    expect(normalizeAgyApiKey("k".repeat(MAX_AGY_API_KEY_CHARS + 1))).toEqual({ error: "That does not look like a Gemini API key." });
+  });
+
+  it("knows its two methods", () => {
+    expect(["google", "api-key", "vertex", undefined].map(isAgySignInMethod)).toEqual([true, true, false, false]);
   });
 });
 
