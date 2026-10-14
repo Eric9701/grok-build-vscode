@@ -120,7 +120,8 @@ export function parseTarHeader(block: Buffer): TarHeader | undefined {
   };
 }
 
-function safeTarDestination(root: string, entryName: string): string {
+/** The extraction target for an archive entry, refusing anything that escapes `root`. */
+export function safeTarDestination(root: string, entryName: string): string {
   const normalized = path.posix.normalize(entryName.replace(/\\/g, "/")).replace(/^\.\//, "");
   if (!normalized || normalized === "." || normalized.startsWith("/") || normalized === ".." || normalized.startsWith("../")) {
     throw new Error(`Unsafe tar entry path: ${entryName}`);
