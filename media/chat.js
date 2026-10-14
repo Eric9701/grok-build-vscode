@@ -20616,17 +20616,26 @@
           : (msg.text || "");
         const t = composed.trim();
         // A context-window change refuses sends, and it is not a busy turn,
-        // so nothing below would send or queue these words. Keep them in the
-        // composer, as a typed send meeting the same lock does; the next
-        // utterance continues after them.
-        const hold = !!t && !state.busy && !!state.contextWindowSelection?.changing;
-        state.voiceBefore = hold ? composed : "";
+        // so nothing below would send or queue these words. Leave them in the
+        // composer as ordinary text, as a typed send meeting the same lock
+        // does, and end this insertion: the next utterance anchors afresh on
+        // whatever the composer holds then, corrections and the draft of a
+        // conversation opened meanwhile included.
+        if (t && !state.busy && state.contextWindowSelection?.changing) {
+          input.value = composed;
+          input.setSelectionRange(composed.length, composed.length);
+          state.voiceLive = false;
+          clearVoiceInsertion();
+          renderInputHighlight();
+          break;
+        }
+        state.voiceBefore = "";
         state.voiceAfter = "";
         state.voiceInsertionActive = true;
         state.voiceLive = false;
-        input.value = hold ? composed : "";
+        input.value = "";
         renderInputHighlight();
-        if (t && !hold) {
+        if (t) {
           // Speech is the composer's other door, and no click precedes it:
           // this arrives as a host message, so nothing bubbles into
           // `closePopovers` to commit what the picker is showing -- and

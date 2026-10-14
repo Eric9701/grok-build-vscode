@@ -136,6 +136,41 @@ describe("dictation during a context-window change", () => {
     expect((h.doc.getElementById("input") as HTMLTextAreaElement).value).toBe("keep these words");
     expect(sends(h)).toEqual([]);
   });
+  it("lets a keyboard correction of the held words survive the next utterance", () => {
+    const h = setup();
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    dispatch(h.window, { type: "contextWindowSelection", selection: changing });
+    dispatch(h.window, { type: "voicePartial", text: "keep these words" });
+    dispatch(h.window, { type: "voiceSubmit", text: "keep these words" });
+    input.value = "keep those words";
+    input.setSelectionRange(input.value.length, input.value.length);
+    input.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    dispatch(h.window, { type: "voicePartial", text: "and more" });
+    expect(input.value).toBe("keep those words and more");
+    dispatch(h.window, { type: "contextWindowSelection", selection: { ...changing, changing: false } });
+    dispatch(h.window, { type: "voiceSubmit", text: "and more" });
+    expect(sends(h)).toEqual([{ type: "send", text: "keep those words and more" }]);
+  });
+  it("leaves held words with their conversation when another one is opened with the mic still on", () => {
+    const h = setup();
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    dispatch(h.window, { type: "sessionName", sessionId: "s", name: "A", cwd: "/repo" });
+    dispatch(h.window, { type: "contextWindowSelection", selection: changing });
+    dispatch(h.window, { type: "voicePartial", text: "words for A" });
+    dispatch(h.window, { type: "voiceSubmit", text: "words for A" });
+    expect(input.value).toBe("words for A");
+    // focusSession: clear, identity, then the name that swaps the composer draft.
+    dispatch(h.window, { type: "clearMessages" });
+    dispatch(h.window, { type: "session", sessionId: "b", provider: "grok", currentModelId: "grok-4.7", models: [] });
+    dispatch(h.window, { type: "sessionName", sessionId: "b", name: "B", cwd: "/repo" });
+    expect(input.value).toBe("");
+    dispatch(h.window, { type: "voicePartial", text: "words for B" });
+    expect(input.value).toBe("words for B");
+    dispatch(h.window, { type: "voiceSubmit", text: "words for B" });
+    expect(sends(h)).toEqual([{ type: "send", text: "words for B" }]);
+    dispatch(h.window, { type: "sessionName", sessionId: "s", name: "A", cwd: "/repo" });
+    expect(input.value).toBe("words for A");
+  });
 });
 
 describe("context-window picker opening is one-shot", () => {
