@@ -4495,7 +4495,11 @@ textarea#input {
 .context-fullness > i { display: block; height: 100%; background: var(--context-fill); }
 .context-compact {
   display: block; width: calc(100% - 16px); margin: 2px 8px 8px;
-  text-align: center; padding: 0 10px; height: 28px; border: 0; border-radius: 4px;
+  text-align: center; padding: 0 10px; height: 28px; border-radius: 4px;
+  /* Some themes paint the secondary button the popup's own colour, which left
+     it reading as plain text above the bordered size dropdown. The border is
+     what keeps it a button there. */
+  border: 1px solid var(--vscode-button-border, var(--vscode-dropdown-border, transparent));
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #fff);
   font: inherit; font-weight: 500; cursor: pointer;
