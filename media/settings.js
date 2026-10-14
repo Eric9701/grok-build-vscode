@@ -64,6 +64,8 @@
     // this is the mark that actually needs the evenodd rule; Lobe ships all
     // four with it and the other three render the same either way.
     muse: "M6.897 4c1.915 0 3.516.932 5.43 3.376l.282-.373c.19-.246.383-.484.58-.71l.313-.35C14.588 4.788 15.792 4 17.225 4c1.273 0 2.469.557 3.491 1.516l.218.213c1.73 1.765 2.917 4.71 3.053 8.026l.011.392.002.25c0 1.501-.28 2.759-.818 3.7l-.14.23-.108.153c-.301.42-.664.758-1.086 1.009l-.265.142-.087.04a3.493 3.493 0 01-.302.118 4.117 4.117 0 01-1.33.208c-.524 0-.996-.067-1.438-.215-.614-.204-1.163-.56-1.726-1.116l-.227-.235c-.753-.812-1.534-1.976-2.493-3.586l-1.43-2.41-.544-.895-1.766 3.13-.343.592C7.597 19.156 6.227 20 4.356 20c-1.21 0-2.205-.42-2.936-1.182l-.168-.184c-.484-.573-.837-1.311-1.043-2.189l-.067-.32a8.69 8.69 0 01-.136-1.288L0 14.468c.002-.745.06-1.49.174-2.23l.1-.573c.298-1.53.828-2.958 1.536-4.157l.209-.34c1.177-1.83 2.789-3.053 4.615-3.16L6.897 4zm-.033 2.615l-.201.01c-.83.083-1.606.673-2.252 1.577l-.138.199-.01.018c-.67 1.017-1.185 2.378-1.456 3.845l-.004.022a12.591 12.591 0 00-.207 2.254l.002.188c.004.18.017.36.04.54l.043.291c.092.503.257.908.486 1.208l.117.137c.303.323.698.492 1.17.492 1.1 0 1.796-.676 3.696-3.641l2.175-3.4.454-.701-.139-.198C9.11 7.3 8.084 6.616 6.864 6.616zm10.196-.552l-.176.007c-.635.048-1.223.359-1.82.933l-.196.198c-.439.462-.887 1.064-1.367 1.807l.266.398c.18.274.362.56.55.858l.293.475 1.396 2.335.695 1.114c.583.926 1.03 1.6 1.408 2.082l.213.262c.282.326.529.54.777.673l.102.05c.227.1.457.138.718.138.176.002.35-.023.518-.073.338-.104.61-.32.813-.637l.095-.163.077-.162c.194-.459.29-1.06.29-1.785l-.006-.449c-.08-2.871-.938-5.372-2.2-6.798l-.176-.189c-.67-.683-1.444-1.074-2.27-1.074z",
+    // Google Antigravity's mark, from the same Lobe set (1.95.1).
+    agy: "M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z",
   };
 
   /**
@@ -377,12 +379,19 @@
 
   const PROVIDER_CLI_NAMES = { grok: "Grok", codex: "Codex", claude: "Claude Code", muse: "Muse" };
 
+  function agyAdvertised(s) {
+    return ((s && s.providers) || []).some((p) => p && p.id === "agy");
+  }
+
   /** `remote`: a remote row has no Disconnect button to explain (desk hosts
    *  keep `logout` host-local), so it keeps the plain sentence. */
   function providerDescription(provider, remote) {
     const connected = provider.connected === true;
     const needsLogin = connected && provider.needsLogin === true;
     if (needsLogin) return "This account is connected but needs to sign in again before it can be used.";
+    if (connected && provider.keepsCliSignIn === true && !remote && provider.id === "agy") {
+      return "This account is connected on this machine. Disconnect turns it off here; your Google sign-in for Antigravity stays.";
+    }
     if (connected && provider.keepsCliSignIn === true && !remote) {
       const cli = PROVIDER_CLI_NAMES[provider.id] || "agent";
       return "This account is connected on this machine. Disconnect turns it off here; the " + cli + " CLI stays signed in.";
@@ -1083,6 +1092,24 @@
       defaultValue: false, get: (s) => s.museSettings.trustWorkspaces,
       message: (value) => ({ type: "setMuseSetting", key: "museTrustWorkspaces", value }),
     },
+    // Antigravity is desk-only: Google's sign-in opens a browser on the
+    // machine running it. A remote gets a status row and never a Connect.
+    {
+      id: "providerAgy", category: "providers", logo: "agy", provider: "agy",
+      title: "Antigravity", vendor: "Google", description: "", kind: "action", keepOpen: true,
+      visible: (s, env) => !!(env && !env.isRemote && env.providersKnown && agyAdvertised(s)),
+      describe: (s) => providerDescription(providerOf(s, "agy")),
+      actionLabel: (s) => providerAction(providerOf(s, "agy")),
+      message: (s) => ({ type: providerConnectedNow(s, "agy") ? "logout" : "runGrokLogin", provider: "agy" }),
+    },
+    {
+      id: "providerAgyStatus", category: "providers", logo: "agy", provider: "agy",
+      title: "Antigravity", vendor: "Google", description: "", kind: "status",
+      visible: (s, env) => !!(env && env.isRemote && env.providersKnown && agyAdvertised(s)),
+      describe: (s) => providerConnectedNow(s, "agy")
+        ? "This account is connected on the computer running this workspace."
+        : "Connect Antigravity on the computer running this workspace.",
+    },
     {
       id: "githubConnection",
       category: "providers",
@@ -1277,6 +1304,17 @@
       hostLocal: true,
       visible: (s, env) => !!(env && env.hostCaps && env.hostCaps.toggleDevTools === true),
       message: () => ({ type: "toggleDevTools" }),
+    },
+    {
+      id: "experimentalAntigravity",
+      category: "advanced",
+      title: "Experimental: Antigravity",
+      description: "Offer Google's Antigravity as an agent on this computer. Turn on grok.experimentalAntigravity, then connect it under Providers.",
+      kind: "action",
+      actionLabel: "Open setting",
+      hostLocal: true,
+      visible: (s, env) => !!(env && !env.isRemote && !hostIsCloud(env)),
+      message: () => ({ type: "openSettings", section: "grok.experimentalAntigravity" }),
     },
     {
       id: "openVsCodeSettings",

@@ -7,6 +7,7 @@ const OFFERED_MODES = {
   claude: ["agent", "plan", "yolo"],
   codex: ["agent", "yolo"],
   muse: ["yolo", "agent", "onRequest"],
+  agy: ["agent", "yolo"],
 };
 
 describe("sessionUiSnapshot", () => {

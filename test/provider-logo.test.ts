@@ -33,6 +33,7 @@ describe("provider logo assets", () => {
       ["codex", "M9.205 8.658v-2.26"],
       ["claude", "M4.709 15.955l4.72-2.647.08-.23-.08-.128"],
       ["muse", "M6.897 4c1.915 0 3.516.932 5.43 3.376"],
+      ["agy", "M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508"],
     ]) {
       expect(table, `${id} must be in PROVIDER_LOGO_PATHS, not merely somewhere in ${file}`)
         .toContain(`${id}: "${head}`);
@@ -54,7 +55,7 @@ describe("provider logo assets", () => {
   // is a logo path is not a typo you see, it is what the composer asks you.
   it("gives every provider a composer prompt, never a logo path", () => {
     const body = objectBody(read("media/chat.js"), "COMPOSER_PLACEHOLDER");
-    for (const id of ["grok", "codex", "claude", "muse"]) {
+    for (const id of ["grok", "codex", "claude", "muse", "agy"]) {
       const found = body.match(new RegExp(`${id}: "([^"]*)"`));
       expect(found, `${id} needs a composer placeholder`).toBeTruthy();
       expect(found![1].length, `${id}'s placeholder is too long to be a prompt`).toBeLessThan(40);

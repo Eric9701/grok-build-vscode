@@ -62,11 +62,11 @@ export function startsInYolo(defaultMode: string | undefined, isResume: boolean)
   return !isResume && defaultMode === "yolo";
 }
 
-/** Modes this session's picker offers. Codex's plan review is outside this menu; Muse has no Plan. */
+/** Modes this session's picker offers. Codex's plan review is outside this menu; Muse and Antigravity have no Plan. */
 export function sessionModes(provider: string, isCloud = false): ModeId[] {
   // Deny unmatched stalls Muse's end-of-turn reminder agent; see research/muse-modes.md.
   if (provider === "muse") return isCloud ? ["yolo", "agent"] : ["yolo", "agent", "onRequest"];
-  return provider === "codex"
+  return provider === "codex" || provider === "agy"
     ? ["agent", "yolo"]
     : ["agent", "plan", "yolo"];
 }

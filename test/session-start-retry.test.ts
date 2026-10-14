@@ -805,6 +805,28 @@ describe("startSession bounded spawn retry", () => {
     });
   });
 
+  // Antigravity's own session/new opens Google's browser sign-in when its
+  // saved method has lost its token -- at an empty desk, if a phone started it.
+  it.each([true, false])("starts an Antigravity server only on a stored sign-in (stored=%s)", async stored => {
+    const sidebar = makeSidebar("/repo");
+    sidebar.providerConnectionState = { agy: true };
+    sidebar.connectedProviders = vi.fn(() => ["agy"]);
+    sidebar.usableProviders = vi.fn(() => ["agy"]);
+    sidebar.focused.provider = "agy";
+    sidebar.agyCredentialPresent = vi.fn(async () => stored);
+    const client = await sidebar.startSession(undefined, sidebar.focused);
+    if (stored) {
+      expect(client?.provider).toBe("agy");
+      expect(startControl.starts).toBe(1);
+      return;
+    }
+    expect(client).toBeUndefined();
+    expect(startControl.starts).toBe(0);
+    expect(sidebar.setProviderNeedsLogin).toHaveBeenCalledWith("agy", true);
+    expect(onboardings(sidebar)).toEqual([expect.objectContaining({ state: "agy-login", provider: "agy" })]);
+    expect(startErrors(sidebar)).toEqual([]);
+  });
+
   it("emits onboarding on the first credential failure and does not retry", async () => {
     startControl.failWith = "401 Unauthorized";
     startControl.failuresRemaining = 5;

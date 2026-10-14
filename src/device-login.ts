@@ -293,6 +293,10 @@ export function deviceLoginFailureText(
   failure: DeviceLoginFailure,
   displayName: string,
 ): string {
+  // Antigravity signs in through Google's page in the browser, not a code.
+  if (provider === "agy" && failure === "failed") {
+    return "Google sign-in for Antigravity did not finish. If the browser window was closed or the page timed out, try again.";
+  }
   switch (failure) {
     case "unsupported":
       return `This version of the ${displayName} CLI has no headless sign-in. `

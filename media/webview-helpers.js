@@ -5,6 +5,7 @@
     codex: { label: "Codex", deleteHistory: true, compact: true },
     claude: { label: "Claude", deleteHistory: true, compact: true },
     muse: { label: "Muse Code", deleteHistory: false, compact: false },
+    agy: { label: "Antigravity", deleteHistory: false, compact: false },
   };
   function providerSupports(provider, action) {
     return Object.hasOwn(PROVIDER_ACTIONS, provider || "grok")
@@ -69,7 +70,7 @@
     "museSettings",
     "cloudHostUpdateState",
     "providerConfigContent", "providerConfigWriteResult",
-    "initialState", "moveViewHint", "welcomeTips", "projectSetup", "githubState", "githubRepos", "providerState", "mcpServers", "mcpConnectors", "mcpConnectorAuthorization", "routines", "codexInstallProgress", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "updateAvailable", "updateReady", "telemetryEnabled", "thumbsFeedback", "initialized",
+    "initialState", "moveViewHint", "welcomeTips", "projectSetup", "githubState", "githubRepos", "providerState", "mcpServers", "mcpConnectors", "mcpConnectorAuthorization", "routines", "codexInstallProgress", "agyInstallProgress", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "updateAvailable", "updateReady", "telemetryEnabled", "thumbsFeedback", "initialized",
     "cliUpdating", "startupStatus", "session", "sessionName", "composerDraftSession", "sessionRemoved", "contextWindowSelection", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "mentionResults", "projectDirListing", "projectFileContent", "projectFileWriteResult", "gitStatusResult", "gitFileDiffResult", "turnFileDiffResult", "turnDiffBaseline", "gitRunResult", "userMessage", "agentStart", "thoughtChunk",
@@ -93,7 +94,7 @@
     "listRoutines", "saveRoutine", "deleteRoutine", "setRoutinePaused", "runRoutineNow",
     "setShowThinking", "setAppPurpose", "setExpandCommandOutputs",
     "dropFile", "permissionAnswer", "exitPlanAnswer", "questionAnswer", "questionCancel",
-    "setContextWindow", "setModel", "installCodex", "cancelCodexInstall", "runInstallCmd", "runMuseInstallCmd", "runGrokLogin", "cancelDeviceLogin", "submitDeviceLoginCode", "logout", "checkGrokUpdate", "updateGrok", "updateCodex", "updateClaude",
+    "setContextWindow", "setModel", "installCodex", "cancelCodexInstall", "installAgy", "cancelAgyInstall", "runInstallCmd", "runMuseInstallCmd", "runGrokLogin", "cancelDeviceLogin", "submitDeviceLoginCode", "logout", "checkGrokUpdate", "updateGrok", "updateCodex", "updateClaude",
     "recheckConnection", "refreshProviders", "retryProviderSession", "listSessions", "listRepoSessions", "selectRepo", "toggleRepoPin", "setRepoArchived", "setRepoColor", "setRepoIcon", "toggleSessionPin", "resumeSession", "renameSession", "deleteSession",
       "clearAllSessions", "pickFile", "mentionQuery", "addMentionFile", "listProjectDir", "readProjectFile", "writeProjectFile", "gitStatus", "gitFileDiff", "turnFileDiff", "turnFileOpenDiff", "gitRun", "pasteImage", "uploadFile", "voiceStart", "voiceStop",
       "remoteVoiceStart", "remoteVoiceChunk", "remoteVoiceStop", "setVoiceBackend", "configureOpenAiVoice",

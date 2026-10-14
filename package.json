@@ -316,6 +316,16 @@
           "default": "",
           "description": "Path to the Anthropic Claude Code CLI (`claude`). Empty = auto-discover on PATH, then well-known user-bin locations. Authentication stays in Anthropic's own CLI."
         },
+        "grok.experimentalAntigravity": {
+          "type": "boolean",
+          "default": false,
+          "description": "Experimental: offer Google's Antigravity as an agent on this computer (not on cloud machines). Connect it in Settings → Providers; it installs Google's ACP server into this app's storage and signs in with your Google account in the browser."
+        },
+        "grok.agyServerPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Google's Antigravity ACP server (`agy_acp_server`). Empty = the copy this app installs."
+        },
         "grok.defaultModel": {
           "type": "string",
           "default": "",

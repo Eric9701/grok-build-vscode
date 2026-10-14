@@ -576,6 +576,8 @@ export type HostMsg =
       errorId?: string;
     }
   | { type: "codexInstallProgress"; phase: "downloading" | "verifying" | "installing" | "idle"; receivedBytes?: number; totalBytes?: number; reason?: string }
+  /** Same shape for the managed Antigravity server; desk only. */
+  | { type: "agyInstallProgress"; phase: "downloading" | "verifying" | "installing" | "idle"; receivedBytes?: number; totalBytes?: number; reason?: string }
   /** Plan picker gate. `recheckable` means the version probe failed (not a
    *  verified-old CLI) — the row stays clickable so a later pick re-probes. */
   | { type: "planModeAvailability"; available: boolean; reason?: string; recheckable?: boolean }
@@ -906,7 +908,7 @@ export type HostMsg =
   // itself and a terminal is the better affordance, so nothing changes there.
   | {
       type: "onboarding";
-      state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login" | "missing-muse" | "muse-login" | "provider-connected" | "no-project";
+      state: "connect-agent" | "missing-cli" | "auth-required" | "missing-codex" | "codex-login" | "missing-claude" | "claude-login" | "missing-muse" | "muse-login" | "missing-agy" | "agy-login" | "provider-connected" | "no-project";
       platform?: string;
       reason?: string;
       provider?: AcpProvider;
@@ -1319,6 +1321,8 @@ export type WebviewMsg =
   | { type: "setModel"; modelId: string; provider?: AcpProvider; effort?: string }
   | { type: "installCodex" }
   | { type: "cancelCodexInstall" }
+  | { type: "installAgy" }
+  | { type: "cancelAgyInstall" }
   | { type: "runInstallCmd" }
   | { type: "runMuseInstallCmd" }
   | { type: "runGrokLogin"; provider?: AcpProvider }
@@ -1576,7 +1580,7 @@ export type WebviewMsg =
 // union without failing the build.
 const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   museSettings: true,
-  cloudHostUpdateState: true, initialState: true, moveViewHint: true, welcomeTips: true, projectSetup: true, githubState: true, githubRepos: true, providerState: true, mcpServers: true, mcpConnectors: true, mcpConnectorAuthorization: true, routines: true, codexInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
+  cloudHostUpdateState: true, initialState: true, moveViewHint: true, welcomeTips: true, projectSetup: true, githubState: true, githubRepos: true, providerState: true, mcpServers: true, mcpConnectors: true, mcpConnectorAuthorization: true, routines: true, codexInstallProgress: true, agyInstallProgress: true, planModeAvailability: true, showThinking: true, appPurpose: true, fontScale: true, grokUpdateStatus: true, updateAvailable: true, updateReady: true, telemetryEnabled: true, thumbsFeedback: true,
   contextWindowSelection: true, initialized: true, cliUpdating: true, startupStatus: true, session: true, sessionName: true, composerDraftSession: true, modelChanged: true,
   modeChanged: true, openModePopover: true, voiceState: true, voiceConfigured: true,
   voicePartial: true, voiceSubmit: true, voiceTranscript: true, voiceError: true,
@@ -1608,7 +1612,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true, setPromptNav: true, setPinLiveWorkflows: true, setExpandDiffCard: true,
   setSoundNotifications: true, setProcessingSound: true, setReadRepliesAloud: true, setSummarizeRepliesAloud: true, setVoiceSendPhrase: true, setVoiceKeyterms: true, setTelemetryEnabled: true, setThumbsFeedback: true, setDesktopTray: true, summarizeSpeech: true, requestImageFull: true, requestImageOriginal: true, composerFocus: true,
   dropFile: true, permissionAnswer: true, exitPlanAnswer: true, questionAnswer: true,
-  questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, runInstallCmd: true, runMuseInstallCmd: true, runGrokLogin: true,
+  questionCancel: true, setModel: true, installCodex: true, cancelCodexInstall: true, installAgy: true, cancelAgyInstall: true, runInstallCmd: true, runMuseInstallCmd: true, runGrokLogin: true,
   cancelDeviceLogin: true, submitDeviceLoginCode: true,
   logout: true, checkGrokUpdate: true, updateGrok: true, updateCodex: true, updateClaude: true, recheckConnection: true, refreshProviders: true, retryProviderSession: true,
   listSessions: true, listRepoSessions: true, selectRepo: true, toggleRepoPin: true, toggleSessionPin: true,

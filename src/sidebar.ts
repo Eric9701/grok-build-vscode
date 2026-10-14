@@ -5,6 +5,9 @@ import { CloudHostUpdate, cloudHostIsIdle, cloudHostBootSupportsUpdate, cloudLiv
 import { MuseBackend, withMuseCredentialBackend } from "./muse-backend";
 import { locateMuseCli, parseMuseVersionOutput } from "./muse-cli-locator";
 import { museInstallCommand } from "./muse-install";
+import { AgyBackend, agyAcpDir, listAgySessions } from "./agy-backend";
+import { agyCredentialPresent, runAgySignIn } from "./agy-auth";
+import { installManagedAgy, locateAgyServer } from "./agy-managed-installer";
 import type {
   Host,
   HostCancellationToken,
@@ -135,8 +138,9 @@ import {
   deviceLoginCodeNote,
   noRemoteSignInMessage,
   deviceLoginUnavailable,
+  type DeviceLoginPlan,
 } from "./device-login";
-import { probeClaudeAuthStatus, runDeviceLogin, type DeviceLoginHandle } from "./device-login-run";
+import { probeClaudeAuthStatus, runDeviceLogin, type DeviceLoginCallbacks, type DeviceLoginHandle } from "./device-login-run";
 import {
   GITHUB_CLI_BIN,
   githubDeviceLoginFailureText,
@@ -806,6 +810,7 @@ export class GrokSidebar {
   /** Serialises history listings onto that shared process, per provider. */
   private adapterHistoryQueue = new Map<AcpProvider, Promise<void>>();
   private codexInstallAbort?: AbortController;
+  private agyInstallAbort?: AbortController;
   private providerConnectionState: ProviderConnections = {};
   private providerRuns = new Map<AcpProvider, AbortController>();
   private providerLoginAttempts = new Map<AcpProvider, AbortController>();
@@ -995,6 +1000,10 @@ export class GrokSidebar {
   private museSessionCache = new Map<string, SessionListEntry[]>();
   private museSessionCacheAt = new Map<string, number>();
   private museSessionRefresh = new Map<string, Promise<void>>();
+  private agyServerPath?: string;
+  private agySessionCache = new Map<string, SessionListEntry[]>();
+  private agySessionCacheAt = new Map<string, number>();
+  private agySessionRefresh = new Map<string, Promise<void>>();
   private readonly providerCliVersions: Partial<Record<AcpProvider, string>> = {};
   /** Accounts that are configured but answered an auth-shaped failure. Not the
    *  same as disconnected: the CLI is installed and the user meant to use it,
@@ -1768,6 +1777,14 @@ export class GrokSidebar {
       this.museCliPath = locateMuseCli({ configuredPath: this.host.getConfiguration("grok").get<string>("museCliPath", "") });
       return this.museCliPath;
     }
+    if (provider === "agy") {
+      if (this.agyServerPath && fs.existsSync(this.agyServerPath)) return this.agyServerPath;
+      this.agyServerPath = locateAgyServer({
+        configuredPath: this.host.getConfiguration("grok").get<string>("agyServerPath", ""),
+        managedStorageRoot: this.context.globalStorageUri.fsPath,
+      });
+      return this.agyServerPath;
+    }
     if (this.claudeCliPath && fs.existsSync(this.claudeCliPath)) return this.claudeCliPath;
     const located = locateClaudeCli({
       configuredPath: this.host.getConfiguration("grok").get<string>("claudeCliPath", ""),
@@ -1801,7 +1818,19 @@ export class GrokSidebar {
       codex: !!this.locateProvider("codex"),
       claude: !!this.locateProvider("claude"),
       muse: !!this.locateProvider("muse"),
+      // Not offered reads as not installed, so nothing can run it.
+      agy: this.agyOffered() && !!this.locateProvider("agy"),
     };
+  }
+
+  /**
+   * Antigravity is experimental and desk-only: off unless
+   * `grok.experimentalAntigravity` is set, and never on a cloud machine. Every
+   * Antigravity surface keys off the host advertising it, so this is the gate.
+   */
+  private agyOffered(): boolean {
+    return this.host?.getConfiguration?.("grok")?.get<boolean>("experimentalAntigravity", false) === true
+      && !isCloudEnvironment();
   }
 
   private adapterHistory(provider: AcpProvider): {
@@ -1814,6 +1843,9 @@ export class GrokSidebar {
     }
     if (provider === "muse") return {
       cache: this.museSessionCache ??= new Map(), at: this.museSessionCacheAt ??= new Map(), refresh: this.museSessionRefresh ??= new Map(),
+    };
+    if (provider === "agy") return {
+      cache: this.agySessionCache ??= new Map(), at: this.agySessionCacheAt ??= new Map(), refresh: this.agySessionRefresh ??= new Map(),
     };
     if (provider === "claude") {
       return { cache: this.claudeSessionCache, at: this.claudeSessionCacheAt, refresh: this.claudeSessionRefresh };
@@ -1845,10 +1877,11 @@ export class GrokSidebar {
     }));
   }
 
-  private createProviderBackend(provider: AcpProvider): CodexBackend | ClaudeBackend | MuseBackend | undefined {
+  private createProviderBackend(provider: AcpProvider): CodexBackend | ClaudeBackend | MuseBackend | AgyBackend | undefined {
     if (provider === "codex") return new CodexBackend();
     if (provider === "claude") return new ClaudeBackend();
     if (provider === "muse") return new MuseBackend(undefined, isCloudEnvironment());
+    if (provider === "agy") return new AgyBackend();
     return undefined;
   }
 
@@ -1884,7 +1917,7 @@ export class GrokSidebar {
    * something available the session's own provider is the specific gap to
    * close, so show that.
    */
-  private onboardingForSession(session: Session): "connect-agent" | "auth-required" | "codex-login" | "claude-login" | "muse-login" {
+  private onboardingForSession(session: Session): "connect-agent" | "auth-required" | "codex-login" | "claude-login" | "muse-login" | "agy-login" {
     if (session.hasHistory) return providerLoginState(session.provider);
     return this.usableProviders().length ? providerLoginState(session.provider) : "connect-agent";
   }
@@ -2077,6 +2110,15 @@ export class GrokSidebar {
     const signal = this.providerRunSignal(provider);
     // MSP exposes no credential-status operation. A catalog read cannot prove sign-in.
     if (provider === "muse") return false;
+    // Antigravity's honest cheap answer is its stored sign-in. A probe process
+    // costs a 15-25 s start on Windows, and with a saved method but no token
+    // its session/new opens the browser.
+    if (provider === "agy") {
+      const present = await this.agyCredentialPresent();
+      if (signal.aborted) return false;
+      this.setProviderNeedsLogin("agy", !present);
+      return present;
+    }
     if (provider === "codex" || provider === "claude") {
       // These throwaway ACP processes hold the binary too. Don't start one
       // during replacement; the updater explicitly re-observes afterward.
@@ -2193,7 +2235,8 @@ export class GrokSidebar {
 
     const isCloud = isCloudEnvironment();
     const unavailable = deviceLoginUnavailable(provider, { isCloud });
-    const plan = deviceLoginPlan(provider);
+    // Antigravity has no login command: it signs in over ACP (`runAgySignIn`).
+    const plan: DeviceLoginPlan | undefined = provider === "agy" ? { args: [] } : deviceLoginPlan(provider);
     // Before anything is spawned. A person who reads this fixes a setting in
     // fifteen seconds; a person who reads the failure afterwards has already
     // waited for it.
@@ -2283,7 +2326,7 @@ export class GrokSidebar {
     // flow in the map forever, silently blocking every later attempt.
     let settled = false;
     let handle: DeviceLoginHandle | undefined;
-    handle = runDeviceLogin(cliPath, plan.args, {
+    const callbacks: DeviceLoginCallbacks = {
       onPrompt: (prompt) => {
         if (signal.aborted || !this.hasProviderConsent(provider)) return;
         send({
@@ -2336,8 +2379,12 @@ export class GrokSidebar {
           message: deviceLoginFailureText(provider, result.failure, displayName),
         });
       },
-    }, undefined, provider === "muse" ? withMuseCredentialBackend(process.env) : undefined,
-    { needsCode: !!plan.needsCode });
+    };
+    handle = provider === "agy"
+      ? runAgySignIn(this.agySignInClient(cliPath, signal), callbacks)
+      : runDeviceLogin(cliPath, plan.args, callbacks, undefined,
+        provider === "muse" ? withMuseCredentialBackend(process.env) : undefined,
+        { needsCode: !!plan.needsCode });
     if (!settled) {
       if (handle) {
         entry.handle = handle;
@@ -2498,6 +2545,7 @@ export class GrokSidebar {
     if (!this.hasProviderConsent(provider)) return false;
     const signal = this.providerRunSignal(provider);
     if (provider === "muse") return this.providerCredentialFilePresent(provider);
+    if (provider === "agy") return this.reprobeProviderCredentials(provider, requireProof);
     if (provider === "claude") {
       const cliPath = this.locateProvider("claude");
       if (!cliPath) return false;
@@ -2517,6 +2565,7 @@ export class GrokSidebar {
   private providerCredentialFilePresent(provider: AcpProvider): boolean {
     try {
       if (provider === "muse") return fs.existsSync(path.join(os.homedir(), ".config", "muse", "auth.json"));
+      if (provider === "agy") return fs.existsSync(path.join(agyAcpDir(), "acp_token.json"));
       if (provider === "codex") return fs.existsSync(path.join(resolveCodexHome(), "auth.json"));
       // GROK_HOME, not a hardcoded ~/.grok: the CLI honours it and so does the
       // rest of this host, so hardcoding made the fallback miss a credential
@@ -2583,6 +2632,73 @@ export class GrokSidebar {
     void attempt(0);
   }
 
+  /** The server names its version in `initialize`; there is no other probe. */
+  private noteAgyVersion(init: any): void {
+    const version = init?.agentInfo?.version;
+    if (typeof version !== "string" || !version.trim() || this.providerCliVersions.agy === version.trim()) return;
+    this.providerCliVersions.agy = version.trim();
+    this.postProviderState();
+  }
+
+  /** Seam for host tests: the real probe reads the server's own files. */
+  private agyCredentialPresent(): Promise<boolean> {
+    return agyCredentialPresent();
+  }
+
+  /** The short-lived server a Google sign-in runs in. Born in the home
+   *  directory for the same reason the history process is. */
+  private agySignInClient(cliPath: string, signal: AbortSignal): AcpClient {
+    const consent = this.providerRunSignal("agy");
+    return new AcpClient({
+      signal: AbortSignal.any([consent, signal]),
+      cliPath,
+      cwd: this.projectHomeDir(),
+      env: { ...process.env },
+      backend: new AgyBackend(),
+      log: (message) => this.host.appendLine(message),
+    });
+  }
+
+  /** Download the pinned Antigravity server into extension storage. Desk only:
+   *  the message is host-local, and the gate keeps it off cloud machines. */
+  private async installManagedAgyServer(): Promise<void> {
+    if (this.agyInstallAbort || !this.agyOffered()) return;
+    if (this.locateProvider("agy")) {
+      this.postLocal({ type: "onboarding", state: "agy-login", provider: "agy", platform: process.platform });
+      return;
+    }
+    const controller = new AbortController();
+    this.agyInstallAbort = controller;
+    // One frame per percent: the archive arrives in thousands of chunks.
+    let lastStep = "";
+    try {
+      const binary = await installManagedAgy({
+        storageRoot: this.context.globalStorageUri.fsPath,
+        signal: controller.signal,
+        onProgress: (phase, value) => {
+          const percent = value?.totalBytes ? Math.floor((value.receivedBytes / value.totalBytes) * 100) : -1;
+          const step = `${phase}:${percent}`;
+          if (step === lastStep) return;
+          lastStep = step;
+          this.postLocal({ type: "agyInstallProgress", phase, receivedBytes: value?.receivedBytes, totalBytes: value?.totalBytes });
+        },
+      });
+      this.agyServerPath = binary;
+      this.postProviderState();
+      this.postLocal({ type: "agyInstallProgress", phase: "idle" });
+      this.postLocal({ type: "onboarding", state: "agy-login", provider: "agy", platform: process.platform });
+    } catch (error) {
+      const reason = controller.signal.aborted
+        ? "Antigravity installation was cancelled."
+        : `Antigravity installation failed: ${errorDetail(error)}`;
+      this.host.appendLine(`[agy] managed install failed: ${reason}`);
+      this.postLocal({ type: "agyInstallProgress", phase: "idle", reason });
+      this.postLocal({ type: "onboarding", state: "missing-agy", platform: process.platform, reason, provider: "agy" });
+    } finally {
+      if (this.agyInstallAbort === controller) this.agyInstallAbort = undefined;
+    }
+  }
+
   private async installManagedCodexCli(): Promise<void> {
     if (this.codexInstallAbort) return;
     const alreadyLocated = this.locateProvider("codex");
@@ -2633,6 +2749,7 @@ export class GrokSidebar {
     const codexConnected = connected.codex === true && located.codex === true;
     const claudeConnected = connected.claude === true && located.claude === true;
     const museConnected = connected.muse === true && located.muse === true;
+    const agyConnected = connected.agy === true && located.agy === true;
     this.lastProviderConnected = { grok: grokConnected, codex: codexConnected, claude: claudeConnected };
     // What the account button does on THIS host, so no page labels it
     // Disconnect for a host that would clear the CLI's credentials (`logout`).
@@ -2643,6 +2760,11 @@ export class GrokSidebar {
         { id: "muse", connected: museConnected, ...button,
           ...(museConnected && versions.muse ? { cliVersion: versions.muse } : {}),
           ...(needsLogin.muse ? { needsLogin: true } : {}) },
+        // Advertised only where it is offered; a renderer draws nothing for an
+        // agent its host did not name, so this is the whole on/off switch.
+        ...(this.agyOffered() ? [{ id: "agy" as const, connected: agyConnected, ...button,
+          ...(agyConnected && versions.agy ? { cliVersion: versions.agy } : {}),
+          ...(agyConnected && needsLogin.agy ? { needsLogin: true } : {}) }] : []),
         {
           id: "grok",
           connected: grokConnected,
@@ -2742,12 +2864,15 @@ export class GrokSidebar {
       this.codexCliPath = undefined;
       this.claudeCliPath = undefined;
       this.museCliPath = undefined;
+      this.agyServerPath = undefined;
       // Installation discovery is always local and remains available before Connect.
       const located = this.locatedProviders();
       await Promise.all(INTERNAL_PROVIDERS.map(async provider => {
         if (!located[provider] || !this.hasProviderConsent(provider)) return;
         if (opts.credentials === true) await this.reprobeProviderCredentials(provider).catch(() => false);
-        if (provider !== "grok") await this.reprobeProviderVersion(provider);
+        // Antigravity's version arrives with its handshake: there is no cheap
+        // `--version` for a server that takes 15-25 s to start on Windows.
+        if (provider !== "grok" && provider !== "agy") await this.reprobeProviderVersion(provider);
       }));
     } finally {
       this.providerRefreshInFlight = false;
@@ -3032,6 +3157,10 @@ export class GrokSidebar {
       }
       if (e.affectsConfiguration("grok.codexCliPath")) {
         this.codexCliPath = undefined;
+        this.postProviderState();
+      }
+      if (e.affectsConfiguration("grok.agyServerPath") || e.affectsConfiguration("grok.experimentalAntigravity")) {
+        this.agyServerPath = undefined;
         this.postProviderState();
       }
       if (e.affectsConfiguration("grok.museCliPath")) {
@@ -3759,7 +3888,7 @@ Only continue if you trust this code.`,
       }
       if (session.client !== client) return;
       if (remember) void this.rememberGrokConfig("defaultMode", remember);
-      await this.state.update(MUSE_MODE_PREF_KEY, modeId);
+      if (session.provider === "muse") await this.state.update(MUSE_MODE_PREF_KEY, modeId);
       if (session.client !== client) return;
       session.autoApprove = modeId === "yolo";
       if (session.musePosture) {
@@ -8651,6 +8780,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (opts.report) opts.report(text);
       else void this.host.showErrorMessage(text);
     };
+    if (provider === "agy") {
+      await this.signOutAgy(opts, fail);
+      return;
+    }
     if (usesAdapterHistory(provider)) {
       const cliPath = this.locateProvider(provider);
       const name = providerDisplayName(provider);
@@ -8732,6 +8865,41 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       return;
     }
     await this.finishProviderLogout("grok", opts.report);
+  }
+
+  /**
+   * Antigravity has no CLI to run `logout` with: the server clears its own
+   * stored Google sign-in through ACP `logout`, in a server started for it.
+   */
+  private async signOutAgy(
+    opts: { fromRemote?: boolean; report?: (text: string) => void },
+    fail: (text: string) => void,
+  ): Promise<void> {
+    const cliPath = this.locateProvider("agy");
+    if (!cliPath) {
+      fail("Antigravity sign-out could not run because the Antigravity server is not installed. The account remains connected.");
+      return;
+    }
+    if (!opts.fromRemote) {
+      const choice = await this.host.showWarningMessage(
+        "Sign out of Antigravity? This clears the Google sign-in Antigravity stored on this machine.",
+        { modal: true },
+        "Sign Out",
+      );
+      if (choice !== "Sign Out") return;
+    }
+    const client = this.agySignInClient(cliPath, new AbortController().signal);
+    try {
+      await client.start();
+      await client.logout();
+    } catch (error) {
+      fail(`Antigravity sign-out failed: ${errorDetail(error)}. The account remains connected.`);
+      this.postProviderState();
+      return;
+    } finally {
+      await client.dispose();
+    }
+    await this.finishProviderLogout("agy", opts.report);
   }
 
   /**
@@ -9158,6 +9326,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.uplink = undefined;
     this.codexInstallAbort?.abort(new Error("Installation cancelled."));
     this.codexInstallAbort = undefined;
+    this.agyInstallAbort?.abort(new Error("Installation cancelled."));
+    this.agyInstallAbort = undefined;
     try { this.keepAwake.stop(); } catch { /* the pid watcher reaps it anyway */ }
     try { this.settingsEditor?.dispose(); } catch { /* tab already gone */ }
     this.settingsEditor = undefined;
@@ -9238,6 +9408,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
 
   private probeProviderVersion(provider: AcpProvider): Promise<string> {
     if (!this.hasProviderConsent(provider)) return Promise.resolve("");
+    if (provider === "agy") return Promise.resolve(this.providerCliVersions.agy ?? "");
     if (provider === "codex") return this.probeCodexVersion();
     if (provider === "claude") return this.probeClaudeVersion();
     if (provider === "muse") return this.probeMuseVersion();
@@ -10407,6 +10578,19 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       });
       return undefined;
     }
+    // Antigravity's session/new starts Google's browser sign-in by itself when
+    // its saved sign-in has lost its token, and on a phone-driven start that
+    // browser opens at an empty desk. Ask its files first; signing in stays an
+    // explicit press at the computer.
+    if (session.provider === "agy" && !(await this.agyCredentialPresent())) {
+      if (gen !== session.gen) return undefined;
+      this.pool.delete(session);
+      session.priming = false;
+      this.emit(session, { type: "setBusy", value: false });
+      this.setProviderNeedsLogin("agy", true);
+      this.emit(session, { type: "onboarding", state: this.onboardingForSession(session), provider: "agy", platform: process.platform });
+      return undefined;
+    }
 
     // Keep the established once-per-extension-upgrade update trigger, then read
     // the resulting version solely to decide whether Plan is safe to expose
@@ -10524,6 +10708,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.providerCliVersions.grok = handshakeVersion.trim().replace(/^v/i, "");
         this.postProviderState();
       }
+      if (session.provider === "agy") this.noteAgyVersion(init);
       this.emit(session, {
         type: "initialized",
         info: {
@@ -12155,6 +12340,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "installCodex":
         await this.installManagedCodexCli();
         break;
+      case "installAgy":
+        if (origin !== "local") break;
+        await this.installManagedAgyServer();
+        break;
+      case "cancelAgyInstall":
+        this.agyInstallAbort?.abort(new Error("Installation cancelled."));
+        break;
       case "cancelCodexInstall":
         this.codexInstallAbort?.abort(new Error("Installation cancelled."));
         break;
@@ -12432,6 +12624,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       case "runGrokLogin": {
         const provider: AcpProvider = isInternalProvider(msg.provider) ? msg.provider : "grok";
+        if (provider === "agy" && (origin === "remote" || !this.agyOffered())) {
+          // Google's sign-in opens a browser on THIS machine, which from a
+          // phone would be a desk nobody is sitting at. Refused before any
+          // consent is recorded; chatting with a connected desk still works.
+          if (clientId) this.sendRemoteClient(clientId, {
+            type: "onboarding", state: "agy-login", platform: process.platform, provider,
+            device: { status: "unavailable", message: "Connect Antigravity on the computer first." },
+          });
+          break;
+        }
         const cliPath = this.locateProvider(provider);
         if (!cliPath) {
           const message: HostMsg = {
@@ -12439,10 +12641,10 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
             state: missingProviderState(provider),
             platform: process.platform,
             provider,
-            ...(provider === "muse" ? { device: { status: "failed" as const, message: "Muse Code is not installed on this machine." } } : {}),
+            ...(provider === "muse" || provider === "agy" ? { device: { status: "failed" as const, message: `${providerDisplayName(provider)} is not installed on this machine.` } } : {}),
           };
           if (clientId) this.sendRemoteClient(clientId, message);
-          else if (provider === "muse") this.postLocal(message);
+          else if (provider === "muse" || provider === "agy") this.postLocal(message);
           else this.post(message);
           break;
         }
@@ -12509,7 +12711,9 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           // leave the agent masked as not connected.
           if (checkingConnect && this.providerConnectChecks?.delete(provider)) this.postProviderState();
         }
-        if (provider === "muse") {
+        // Muse's CLI prints a link instead of opening a browser; Antigravity's
+        // server signs in over ACP. Both report through the device-login card.
+        if (provider === "muse" || provider === "agy") {
           await this.startDeviceLogin(provider, cliPath, clientId, { remote: false });
           break;
         }
@@ -12626,22 +12830,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       case "recheckConnection": {
         const provider: AcpProvider = isInternalProvider(msg.provider) ? msg.provider : session.provider;
+        if (provider === "agy" && !this.agyOffered()) break;
         if (!this.locateProvider(provider)) {
           const message: HostMsg = {
             type: "onboarding",
             state: missingProviderState(provider),
             platform: process.platform,
             provider,
-            ...(provider === "muse" ? { device: { status: "failed" as const, message: "Muse Code is not installed on this machine." } } : {}),
+            ...(provider === "muse" || provider === "agy" ? { device: { status: "failed" as const, message: `${providerDisplayName(provider)} is not installed on this machine.` } } : {}),
           };
           if (clientId) this.sendRemoteClient(clientId, message);
-          else if (provider === "muse") this.postLocal(message);
+          else if (provider === "muse" || provider === "agy") this.postLocal(message);
           else this.post(message);
           break;
         }
         if (!this.hasProviderConsent(provider)) {
-          if (provider === "muse") {
-            const message: HostMsg = { type: "onboarding", state: "muse-login", provider, platform: process.platform };
+          if (provider === "muse" || provider === "agy") {
+            const message: HostMsg = { type: "onboarding", state: providerLoginState(provider), provider, platform: process.platform };
             if (clientId) this.sendRemoteClient(clientId, message);
             else this.postLocal(message);
           }
@@ -13529,7 +13734,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private reservedMcpIdentityFor(session: Session): ReservedMcpIdentity {
     const cwd = this.sessionCwd(session);
     const parts: ReservedMcpIdentity[] = [];
-    if (session.provider === "muse") return { names: [], urls: [] };
+    if (session.provider === "muse" || session.provider === "agy") return { names: [], urls: [] };
     for (const filePath of mcpConfigPaths({
       cwd,
       provider: session.provider,
@@ -14088,6 +14293,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const adapter: SessionListEntry[] = [];
     if (providers.includes("codex")) adapter.push(...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? []));
     if (providers.includes("muse")) adapter.push(...(this.museSessionCache?.get(projectProviderKey(cwd)) ?? []));
+    if (providers.includes("agy")) adapter.push(...(this.agySessionCache?.get(projectProviderKey(cwd)) ?? []));
     if (providers.includes("claude")) adapter.push(...(this.claudeSessionCache.get(projectProviderKey(cwd)) ?? []));
     for (const session of this.pool) {
       if (!usesAdapterHistory(session.provider) || !session.activeSessionId || !pathsEqual(this.sessionCwd(session), cwd)) continue;
@@ -14304,9 +14510,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!history || !cliPath || !this.connectedProviders().includes(provider)) return;
     if (this.providerCliUpdate?.provider === provider) return;
     const signal = this.providerRunSignal(provider);
-    const client = await this.adapterHistoryClient(provider, cliPath);
-    if (!client || signal.aborted) return;
-    const result = await client.listSessions(cwd, process.platform);
+    let result: { sessions: BackendSessionListEntry[] };
+    if (provider === "agy") {
+      // A directory read; starting a server for it would cost more than the
+      // listing is worth (see listAgySessions).
+      result = { sessions: listAgySessions(cwd, process.platform) };
+    } else {
+      const client = await this.adapterHistoryClient(provider, cliPath);
+      if (!client || signal.aborted) return;
+      result = await client.listSessions(cwd, process.platform);
+    }
     if (signal.aborted) return;
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const stableOverrides: SessionMetaOverrides = { ...overrides };
@@ -15605,6 +15818,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       codex: pickSttBackend({ ...state, provider: "codex" }) ?? null,
       claude: pickSttBackend({ ...state, provider: "claude" }) ?? null,
       muse: pickSttBackend({ ...state, provider: "muse" }) ?? null,
+      agy: pickSttBackend({ ...state, provider: "agy" }) ?? null,
     } };
   }
 

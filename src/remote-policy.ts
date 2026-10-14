@@ -291,6 +291,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   setModel: "propose",
   installCodex: "host-local",
   cancelCodexInstall: "host-local",
+  installAgy: "host-local",
+  cancelAgyInstall: "host-local",
   questionAnswer: "propose",
   questionCancel: "propose",
   queueSend: "propose",
@@ -615,6 +617,8 @@ export const REMOTE_REQUIRES_BOUND_SESSION: Record<WebviewMsg["type"], boolean> 
   setModel: true,
   installCodex: false,
   cancelCodexInstall: false,
+  installAgy: false,
+  cancelAgyInstall: false,
   questionAnswer: true,
   questionCancel: true,
   queueSend: true,
@@ -979,6 +983,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   // first, so a tab sees only routines and projects it may already reach.
   routines: "mirror",
   codexInstallProgress: "host-local",
+  agyInstallProgress: "host-local",
   // Placement is a property of the machine running the extension, and `moveView`
   // is host-local anyway — a remote could neither act on the hint nor need it.
   moveViewHint: "host-local",
@@ -1174,6 +1179,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   mcpConnectorAuthorization: "none",
   routines: "entries",
   codexInstallProgress: "none",
+  agyInstallProgress: "none",
   expandCommandOutputs: "none",
   steerByDefault: "none",
   promptNav: "none",

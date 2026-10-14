@@ -33,8 +33,16 @@ describe("provider registration across surfaces", () => {
     host.providerConnectionState = all;
     host.codexSessionCache = new Map(); host.claudeSessionCache = new Map();
     host.locateProvider = vi.fn(() => "/cli");
+    // Antigravity is advertised only where it is offered: the experimental
+    // setting on, and not a cloud machine.
+    let experimental = true;
+    host.host = { getConfiguration: () => ({ get: (key: string, fallback: unknown) => key === "experimentalAntigravity" ? experimental : fallback }) };
     expect(Object.keys(host.locatedProviders())).toEqual([...INTERNAL_PROVIDERS]);
     expect(host.providerStateMessage().providers.map((p: any) => p.id).sort()).toEqual([...INTERNAL_PROVIDERS].sort());
+    experimental = false;
+    expect(host.providerStateMessage().providers.map((p: any) => p.id)).not.toContain("agy");
+    expect(host.locatedProviders().agy).toBe(false);
+    experimental = true;
     for (const id of INTERNAL_PROVIDERS) {
       expect(isInternalProvider(id)).toBe(true);
       expect(sanitizeSessionStartProps({ provider: id }).provider).toBe(id);

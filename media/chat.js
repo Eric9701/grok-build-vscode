@@ -2,17 +2,24 @@
   const hostApi = acquireVsCodeApi();
   let museAdvertised = false;
   let museAvailable = false;
-  function namesMuse(value) {
+  // Antigravity exists only where the host names it in providerState: desk
+  // hosts with the experimental setting on. Nothing else draws or sends it.
+  let agyAdvertised = false;
+  function namesProvider(value, id) {
     if (!value || typeof value !== "object") return false;
     return Object.entries(value).some(([key, child]) =>
-      key === "provider" && child === "muse" || child && typeof child === "object" && namesMuse(child));
+      key === "provider" && child === id || child && typeof child === "object" && namesProvider(child, id));
   }
   const vscode = { getState: () => hostApi.getState(), setState: value => hostApi.setState(value),
     postMessage: message => {
-      if (namesMuse(message) && !museAvailable) return false;
+      if (namesProvider(message, "muse") && !museAvailable) return false;
+      if (namesProvider(message, "agy") && !agyAdvertised) return false;
       return hostApi.postMessage(message);
     } };
-  function offeredProviders() { return Object.keys(globalThis.GrokWebviewHelpers.PROVIDER_ACTIONS).filter(id => id !== "muse" || museAvailable); }
+  function offeredProviders() {
+    return Object.keys(globalThis.GrokWebviewHelpers.PROVIDER_ACTIONS)
+      .filter(id => (id !== "muse" || museAvailable) && (id !== "agy" || agyAdvertised));
+  }
   const hostWait = window.GrokHostWait.get();
   const pendingPreferences = new Map();
   let sendWait = null;
@@ -521,6 +528,7 @@
     codex: "Ask GPT\u2026",
     claude: "Ask Claude\u2026",
     muse: "Ask Muse…",
+    agy: "Ask Antigravity…",
   };
   // What each level MEANS. The name is prepended from `effortLabel` rather than
   // spelled here, so one level cannot be called two things in one popover — the
@@ -581,6 +589,7 @@
      *  Settings so a connect started there reports where the click happened. */
     deviceLoginByProvider: {},
     codexInstall: { phase: "idle", receivedBytes: 0, totalBytes: 0, reason: "" },
+    agyInstall: { phase: "idle", receivedBytes: 0, totalBytes: 0, reason: "" },
     availableModels: [],
     currentModeId: "agent",
     // Null until a host sends `modeChanged.modes`. Absent means the old rule:
@@ -4397,7 +4406,9 @@
     // in its place ("Codex default") reads as something you can select — so its
     // rows are replaced by the one action that can actually help.
     const signInProviders = offeredProviders().filter(providerNeedsLogin);
-    models = models.filter((model) => ((model.provider || state.activeProvider) !== "muse" || museAvailable) && !signInProviders.includes(model.provider || state.activeProvider));
+    models = models.filter((model) => ((model.provider || state.activeProvider) !== "muse" || museAvailable)
+      && ((model.provider || state.activeProvider) !== "agy" || agyAdvertised)
+      && !signInProviders.includes(model.provider || state.activeProvider));
     if (grouped) {
       models = offeredProviders().flatMap((provider) => models.filter((model) =>
         (model.provider || state.activeProvider) === provider));
@@ -5454,6 +5465,8 @@
     // this is the mark that actually needs the evenodd rule; Lobe ships all
     // four with it and the other three render the same either way.
     muse: "M6.897 4c1.915 0 3.516.932 5.43 3.376l.282-.373c.19-.246.383-.484.58-.71l.313-.35C14.588 4.788 15.792 4 17.225 4c1.273 0 2.469.557 3.491 1.516l.218.213c1.73 1.765 2.917 4.71 3.053 8.026l.011.392.002.25c0 1.501-.28 2.759-.818 3.7l-.14.23-.108.153c-.301.42-.664.758-1.086 1.009l-.265.142-.087.04a3.493 3.493 0 01-.302.118 4.117 4.117 0 01-1.33.208c-.524 0-.996-.067-1.438-.215-.614-.204-1.163-.56-1.726-1.116l-.227-.235c-.753-.812-1.534-1.976-2.493-3.586l-1.43-2.41-.544-.895-1.766 3.13-.343.592C7.597 19.156 6.227 20 4.356 20c-1.21 0-2.205-.42-2.936-1.182l-.168-.184c-.484-.573-.837-1.311-1.043-2.189l-.067-.32a8.69 8.69 0 01-.136-1.288L0 14.468c.002-.745.06-1.49.174-2.23l.1-.573c.298-1.53.828-2.958 1.536-4.157l.209-.34c1.177-1.83 2.789-3.053 4.615-3.16L6.897 4zm-.033 2.615l-.201.01c-.83.083-1.606.673-2.252 1.577l-.138.199-.01.018c-.67 1.017-1.185 2.378-1.456 3.845l-.004.022a12.591 12.591 0 00-.207 2.254l.002.188c.004.18.017.36.04.54l.043.291c.092.503.257.908.486 1.208l.117.137c.303.323.698.492 1.17.492 1.1 0 1.796-.676 3.696-3.641l2.175-3.4.454-.701-.139-.198C9.11 7.3 8.084 6.616 6.864 6.616zm10.196-.552l-.176.007c-.635.048-1.223.359-1.82.933l-.196.198c-.439.462-.887 1.064-1.367 1.807l.266.398c.18.274.362.56.55.858l.293.475 1.396 2.335.695 1.114c.583.926 1.03 1.6 1.408 2.082l.213.262c.282.326.529.54.777.673l.102.05c.227.1.457.138.718.138.176.002.35-.023.518-.073.338-.104.61-.32.813-.637l.095-.163.077-.162c.194-.459.29-1.06.29-1.785l-.006-.449c-.08-2.871-.938-5.372-2.2-6.798l-.176-.189c-.67-.683-1.444-1.074-2.27-1.074z",
+    // Google Antigravity's mark, from the same Lobe set (1.95.1).
+    agy: "M21.751 22.607c1.34 1.005 3.35.335 1.508-1.508C17.73 15.74 18.904 1 12.037 1 5.17 1 6.342 15.74.815 21.1c-2.01 2.009.167 2.511 1.507 1.506 5.192-3.517 4.857-9.714 9.715-9.714 4.857 0 4.522 6.197 9.714 9.715z",
   };
 
   /**
@@ -5489,11 +5502,12 @@
     if (provider === "codex") return "Codex";
     if (provider === "claude") return "Claude";
     if (provider === "muse") return "Muse Code";
+    if (provider === "agy") return "Antigravity";
     return "Grok";
   }
 
   function providerLogoId(provider) {
-    if (provider === "codex" || provider === "claude" || provider === "muse") return provider;
+    if (provider === "codex" || provider === "claude" || provider === "muse" || provider === "agy") return provider;
     return "grok";
   }
 
@@ -9686,7 +9700,7 @@
     const host = state.welcomeTips || {};
     const providers = state.providers || [];
     const altConnected = providers.some(
-      (p) => p && (p.id === "codex" || p.id === "claude" || p.id === "muse" && museAdvertised) && p.connected,
+      (p) => p && (p.id === "codex" || p.id === "claude" || p.id === "muse" && museAdvertised || p.id === "agy" && agyAdvertised) && p.connected,
     );
     return {
       appPurpose: state.appPurpose === "coding" ? "coding" : "knowledge",
@@ -10799,11 +10813,11 @@
   function remoteConnectPanel(mode, info, ver) {
     const device = info.device;
     const provider = info.provider
-      || (mode === "codex-login" ? "codex" : mode === "claude-login" ? "claude" : mode === "muse-login" ? "muse" : mode === "auth-required" ? "grok" : "");
+      || (mode === "codex-login" ? "codex" : mode === "claude-login" ? "claude" : mode === "muse-login" ? "muse" : mode === "agy-login" ? "agy" : mode === "auth-required" ? "grok" : "");
     // The products' own names, everywhere this panel speaks. Not "Grok": that
     // is the model, the extension is Grok Build, and a heading that disagrees
     // with the button beneath it reads as two different things to connect.
-    const NAMES = { grok: "Grok Build", codex: "Codex", claude: "Claude Code", muse: "Muse Code" };
+    const NAMES = { grok: "Grok Build", codex: "Codex", claude: "Claude Code", muse: "Muse Code", agy: "Antigravity" };
     const name = NAMES[provider] || "an agent";
     const status = (text) => { if (ver) setWelcomeStatus(text, false); };
 
@@ -10884,7 +10898,9 @@
       status("Starting sign-in");
       return `<div class="onb">` +
         `<p class="onb-heading">Connecting ${escapeHtml(name)}</p>` +
-        `<p class="onb-desc">Asking the ${escapeHtml(name)} CLI for a sign-in code&hellip;</p>` +
+        `<p class="onb-desc">${provider === "agy"
+          ? "Starting Antigravity&hellip; Google's sign-in opens in your browser in a moment."
+          : `Asking the ${escapeHtml(name)} CLI for a sign-in code&hellip;`}</p>` +
         cancel +
       `</div>`;
     }
@@ -10960,7 +10976,8 @@
     // frame's provider is the specific thing being asked for again.
     const nothingConnected = !((state.providers || []).some((p) => p && p.connected));
     const cloudFresh = !!(state.hostCaps && state.hostCaps.remoteAgentSignOut) && nothingConnected;
-    const offer = (provider && !cloudFresh ? [provider] : offeredProviders()).filter(id => id !== "muse" || museAvailable);
+    const offer = (provider && !cloudFresh ? [provider] : offeredProviders())
+      .filter(id => (id !== "muse" || museAvailable) && (id !== "agy" || !IS_REMOTE));
     // A cloud machine's three agents are not equal offers: Grok is the native
     // one. Ranking is the cloud-only part; every agent that has a headless
     // flow is offered, including Claude Code's paste-code sign-in.
@@ -11074,6 +11091,10 @@
       connectWizard.body.innerHTML = museOnboardingPanel(connectWizard.museOnboarding.mode, connectWizard.museOnboarding.info);
       return;
     }
+    if (connectWizard.agyOnboarding) {
+      connectWizard.body.innerHTML = agyOnboardingPanel(connectWizard.agyOnboarding.mode, connectWizard.agyOnboarding.info);
+      return;
+    }
     // The mirror is the live source, but a confirmed account retires its
     // mirror, so a settled panel keeps its own copy of the last thing it was
     // told rather than falling back to the empty-state offer.
@@ -11084,6 +11105,7 @@
       connectWizard.body.innerHTML = connectWizard.checking
         ? `<div class="onb"><p class="onb-heading">Checking…</p><p class="onb-desc">Checking the CLI's existing sign-in.</p></div>`
         : provider === "muse" ? museOnboardingPanel("muse-login", {})
+        : provider === "agy" ? agyOnboardingPanel("agy-login", {})
         : `<div class="onb"><p class="onb-heading">Sign in to continue</p>`
           + `<p class="onb-desc">${launched ? "Finish signing in in the terminal, then continue here." : "Start sign-in with the CLI when you are ready."}</p>`
           + `<button class="onb-action" data-act="connectProvider" data-provider="${provider}">Open terminal &amp; run <code>${command}</code></button>`
@@ -11108,13 +11130,34 @@
     if (!IS_REMOTE && connectWizard && connectWizard.provider === provider) {
       connectWizard.checking = false;
       connectWizard.launched = !!(info && info.launched);
-      if (!device && provider !== "muse") {
+      if (!device && provider !== "muse" && provider !== "agy") {
         if (mode === "provider-connected" || !CONNECT_ONBOARDING_MODES[mode]) closeConnectWizard();
         else renderConnectWizard();
         return;
       }
     }
-    if (!IS_REMOTE && provider !== "muse") return;
+    if (!IS_REMOTE && provider !== "muse" && provider !== "agy") return;
+    // Antigravity's install and sign-in panels, at the desk. A missing server
+    // answers with a `failed` device, as Muse's does, so the wizard opens on
+    // the Install button wherever Connect was pressed. Its sign-in itself is a
+    // device flow, handled below like every other one.
+    if (provider === "agy" && agyAdvertised && !IS_REMOTE) {
+      const ownsWizard = !!connectWizard && connectWizard.provider === provider;
+      if (mode === "missing-agy" && (device || ownsWizard)) {
+        openConnectWizard(provider);
+        connectWizard.agyOnboarding = { mode, info: info || {} };
+        renderConnectWizard();
+        return;
+      }
+      if (ownsWizard && !device) {
+        if (mode === "agy-login") {
+          connectWizard.agyOnboarding = { mode, info: info || {} };
+          renderConnectWizard();
+        } else if (mode === "provider-connected") closeConnectWizard();
+        return;
+      }
+      if (ownsWizard) connectWizard.agyOnboarding = null;
+    }
     // A missing CLI never started a login flow. Keep its response over Settings
     // and existing conversations, including bare replies from older hosts.
     if (provider === "muse" && museAdvertised && mode === "missing-muse"
@@ -11178,6 +11221,7 @@
     "codex-login": true,
     "claude-login": true,
     "muse-login": true,
+    "agy-login": true,
     "auth-required": true,
   };
 
@@ -11228,9 +11272,64 @@
       + '<button class="onb-action onb-secondary" type="button" data-act="recheckProvider" data-provider="muse">Re-check</button></div>';
   }
 
+  /**
+   * Antigravity's own panels: install (a managed download, like Codex's) and
+   * Google sign-in. A remote gets neither -- signing in opens a browser on the
+   * desk, so it says where to do it instead.
+   */
+  function agyOnboardingPanel(mode, info) {
+    if (IS_REMOTE) {
+      return `<div class="onb"><p class="onb-heading">Connect Antigravity at the computer</p>`
+        + `<p class="onb-desc">Antigravity signs in with Google in a browser on the computer running this workspace. Connect it there, then use it from here.</p></div>`;
+    }
+    if (mode === "missing-agy") {
+      const install = state.agyInstall;
+      const installing = install.phase !== "idle";
+      const percent = install.totalBytes > 0
+        ? Math.min(100, Math.round((install.receivedBytes / install.totalBytes) * 100))
+        : null;
+      const progressLabel = install.phase === "downloading"
+        ? `Downloading Antigravity${percent == null ? "" : ` (${percent}%)`}...`
+        : install.phase === "verifying" ? "Verifying the download..."
+        : install.phase === "installing" ? "Unpacking Antigravity..." : "";
+      const reason = (info && info.reason) || install.reason;
+      return `<div class="onb"><p class="onb-heading">Install Antigravity</p>`
+        + `<p class="onb-desc">Download Google's Antigravity agent server into this app's storage. It is a large download: about 125 MB, and more on Linux.</p>`
+        + (reason ? `<p class="onb-install-error" role="alert">${escapeHtml(reason)}</p>` : "")
+        + (installing
+          ? `<div class="onb-install-progress" role="status"><span>${escapeHtml(progressLabel)}</span>`
+            + (percent == null ? "" : `<progress max="100" value="${percent}">${percent}%</progress>`)
+            + `<button class="onb-action onb-secondary" type="button" data-act="cancelAgyInstall">Cancel</button></div>`
+          : `<button class="onb-action" type="button" data-act="installAgy">Install Antigravity</button>`)
+        + `<button class="onb-action onb-secondary" type="button" data-act="recheckProvider" data-provider="agy">Re-check</button></div>`;
+    }
+    const provider = (state.providers || []).find(p => p.id === "agy");
+    const connected = !!(provider && provider.connected);
+    return `<div class="onb"><p class="onb-heading">${connected ? "Sign in to Antigravity" : "Connect Antigravity"}</p>`
+      + `<p class="onb-desc">Antigravity uses your Google account. Signing in opens Google's page in your browser.</p>`
+      + `<button class="onb-action" data-act="connectProvider" data-provider="agy">${connected ? "Sign in with Google" : "Connect Antigravity"}</button>`
+      + `<button class="onb-action onb-secondary" data-act="recheckProvider" data-provider="agy">Re-check</button></div>`;
+  }
+
+  /** A host that did not name Muse or Antigravity gets no card for it. */
+  function onboardingAdvertised(mode, info) {
+    if ((info.provider === "muse" || mode === "muse-login" || mode === "missing-muse") && !museAdvertised) return false;
+    return agyAdvertised || !(info.provider === "agy" || mode === "agy-login" || mode === "missing-agy");
+  }
+
+  /** Antigravity's install and sign-in cards; its live sign-in flow is drawn
+   *  by the shared device-flow panel instead. True when it painted. */
+  function paintAgyCard(mode, info, onb, ver) {
+    if (!(mode === "missing-agy" || mode === "agy-login" && (IS_REMOTE || !info.device))) return false;
+    if (ver) setWelcomeStatus(mode === "missing-agy" ? "Antigravity not installed" : "Connect Antigravity", false);
+    onb.innerHTML = agyOnboardingPanel(mode, info);
+    updateSendButton();
+    return true;
+  }
+
   function showOnboarding(mode, info, beforeRender) {
     info = info || {};
-    if ((info.provider === "muse" || mode === "muse-login" || mode === "missing-muse") && !museAdvertised) return;
+    if (!onboardingAdvertised(mode, info)) return;
     state.onboardingMode = mode;
     state.onboardingInfo = info;
     if (beforeRender) beforeRender();
@@ -11247,7 +11346,8 @@
     const onb = $("welcome-onboarding");
     const ver = $("welcome-version");
     if (!onb) return;
-    if ((IS_REMOTE || info.provider === "muse" && museAvailable && info.device) && (mode === "connect-agent" || mode === "codex-login" || mode === "claude-login" || mode === "auth-required" || mode === "muse-login" && museAvailable)) {
+    if (paintAgyCard(mode, info, onb, ver)) return;
+    if ((IS_REMOTE || info.device && (info.provider === "muse" && museAvailable || info.provider === "agy")) && (mode === "connect-agent" || mode === "codex-login" || mode === "claude-login" || mode === "auth-required" || mode === "muse-login" && museAvailable || mode === "agy-login")) {
       // The card is an ENTRY POINT, not a second renderer: a live flow belongs
       // to the wizard, so the card keeps showing the offer underneath it.
       // The card NEVER renders a live flow. Stripping it only while the wizard
@@ -11305,7 +11405,8 @@
       const id = info.provider || "grok";
       const done = id === "codex"
         ? "You can start working with OpenAI!"
-        : id === "claude" ? "You can start clauding!" : id === "muse" ? "Muse Code is connected." : "You can start grokking!";
+        : id === "claude" ? "You can start clauding!" : id === "muse" ? "Muse Code is connected."
+        : id === "agy" ? "Antigravity is connected." : "You can start grokking!";
       if (ver) setWelcomeStatus("Connected", false);
       onb.innerHTML =
         `<div class="onb onb-connected">` +
@@ -11339,6 +11440,9 @@
             `</button>` +
             (museAvailable ? `<button class="onb-agent-tile onb-action" type="button" data-act="connectProvider" data-provider="muse">` +
               `<span class="onb-agent-mark">${providerLogoMarkup("muse")}</span><span><strong>Muse Code</strong><small>Meta Muse CLI</small></span>` +
+            `</button>` : "") +
+            (agyAdvertised ? `<button class="onb-agent-tile onb-action" type="button" data-act="connectProvider" data-provider="agy">` +
+              `<span class="onb-agent-mark">${providerLogoMarkup("agy")}</span><span><strong>Antigravity</strong><small>Google Antigravity (experimental)</small></span>` +
             `</button>` : "") +
           `</div>` +
         `</div>`;
@@ -13915,7 +14019,8 @@
     // Capability, never a version check: a host built before remote sign-in
     // drops `runGrokLogin` silently, and a button that does nothing is worse
     // than the honest dead end. Same rule the connect panel already follows.
-    const canSignIn = !IS_REMOTE || !!(state.hostCaps && state.hostCaps.remoteAgentSignIn);
+    // Antigravity signs in only at the desk: Google's page opens there.
+    const canSignIn = !IS_REMOTE || !!(state.hostCaps && state.hostCaps.remoteAgentSignIn) && provider !== "agy";
     // A sign-in already running is not an offer to make one. The code entry
     // closes the moment the code is submitted, but verifying it takes a second
     // or two -- and the card underneath went straight back to "Sign in", which
@@ -16205,7 +16310,7 @@
   function activityVerb() {
     if (state.activeProvider === "codex") return CODEX_ACTIVITY_VERB;
     if (state.activeProvider === "claude") return CLAUDE_ACTIVITY_VERB;
-    if (state.activeProvider === "muse") return "Working";
+    if (state.activeProvider === "muse" || state.activeProvider === "agy") return "Working";
     return GROK_ACTIVITY_VERB;
   }
 
@@ -16213,6 +16318,7 @@
     if (state.activeProvider === "codex") return "OpenAI is working";
     if (state.activeProvider === "claude") return "Claude is working";
     if (state.activeProvider === "muse") return "Muse Code is working";
+    if (state.activeProvider === "agy") return "Antigravity is working";
     return "Grok is working";
   }
 
@@ -17915,8 +18021,10 @@
     strip.hidden = !!(link && (!link.reachable || !link.restored));
     const seconds = Math.floor(Math.max(0, Date.now() - startup.startedAt) / 1000);
     // A CLI update routinely takes minutes; only a stalled start is "slow".
-    const slow = seconds >= 20 && startup.stage !== "updating";
-    const provider = { grok: "Grok", codex: "Codex", claude: "Claude", muse: "Muse" }[startup.provider] || "Grok";
+    // Antigravity's Windows server unpacks itself on every start: 15-25 s is
+    // its ordinary start, not a stall.
+    const slow = seconds >= (startup.provider === "agy" ? 60 : 20) && startup.stage !== "updating";
+    const provider = { grok: "Grok", codex: "Codex", claude: "Claude", muse: "Muse", agy: "Antigravity" }[startup.provider] || "Grok";
     const count = Number.isInteger(startup.messageCount) && startup.messageCount >= 0 ? startup.messageCount + " " : "";
     const label = { updating: "Updating the " + provider + " CLI", starting: "Starting " + provider,
       opening: "Opening the conversation", loading: "Loading " + count + "messages" }[startup.stage];
@@ -17974,7 +18082,7 @@
       }
     } else if (state.startupStatus) {
       sendBtn.innerHTML = ICON.spinner;
-      const name = { grok: "Grok", codex: "Codex", claude: "Claude", muse: "Muse" }[state.startupStatus.provider] || "Grok";
+      const name = { grok: "Grok", codex: "Codex", claude: "Claude", muse: "Muse", agy: "Antigravity" }[state.startupStatus.provider] || "Grok";
       sendBtn.title = name + (state.startupStatus.stage === "updating" ? " is updating" : " is still starting");
       sendBtn.classList.add("initializing");
       sendBtn.disabled = true;
@@ -20053,6 +20161,7 @@
       case "providerState":
         museAdvertised = Array.isArray(msg.providers) && msg.providers.some(p => p && p.id === "muse");
         museAvailable = museAdvertised && msg.providers.some(p => p && p.id === "muse" && !p.unavailableReason);
+        agyAdvertised = Array.isArray(msg.providers) && msg.providers.some(p => p && p.id === "agy");
         state.providersKnown = true;
         state.providers = Array.isArray(msg.providers) ? msg.providers.filter((provider) =>
           provider && Object.hasOwn(globalThis.GrokWebviewHelpers.PROVIDER_ACTIONS, provider.id)) : [];
@@ -20151,7 +20260,8 @@
         state.routineSavePending = false;
         state.routines = Array.isArray(msg.entries) ? msg.entries : [];
         state.routineProjects = Array.isArray(msg.projects) ? msg.projects : [];
-        state.routineModels = (Array.isArray(msg.models) ? msg.models : []).filter(m => m.provider !== "muse" || museAvailable);
+        state.routineModels = (Array.isArray(msg.models) ? msg.models : [])
+          .filter(m => (m.provider !== "muse" || museAvailable) && (m.provider !== "agy" || agyAdvertised));
         state.routineError = msg.error || "";
         state.routineErrorId = msg.errorId || "";
         refreshSettingsOverlay();
@@ -20165,6 +20275,21 @@
         };
         if (state.onboardingMode === "missing-codex") {
           showOnboarding("missing-codex", { ...state.onboardingInfo, reason: state.codexInstall.reason });
+        }
+        break;
+      case "agyInstallProgress":
+        state.agyInstall = {
+          phase: msg.phase || "idle",
+          receivedBytes: Number.isFinite(msg.receivedBytes) ? msg.receivedBytes : 0,
+          totalBytes: Number.isFinite(msg.totalBytes) ? msg.totalBytes : 0,
+          reason: typeof msg.reason === "string" ? msg.reason : "",
+        };
+        if (state.onboardingMode === "missing-agy") {
+          showOnboarding("missing-agy", { ...state.onboardingInfo, reason: state.agyInstall.reason });
+        }
+        if (connectWizard && connectWizard.agyOnboarding && connectWizard.agyOnboarding.mode === "missing-agy") {
+          connectWizard.agyOnboarding.info = { ...connectWizard.agyOnboarding.info, reason: state.agyInstall.reason };
+          renderConnectWizard();
         }
         break;
       case "planModeAvailability":
@@ -20571,7 +20696,8 @@
 
         state.subscriptionWindows = [];
         state.currentModelId = msg.currentModelId;
-        state.activeProvider = msg.provider === "codex" || msg.provider === "claude" || msg.provider === "muse" && museAvailable ? msg.provider : "grok";
+        state.activeProvider = msg.provider === "codex" || msg.provider === "claude" || msg.provider === "muse" && museAvailable
+          || msg.provider === "agy" && agyAdvertised ? msg.provider : "grok";
         // modeChanged is posted before session, so the button was painted for
         // the previous provider. Repaint once this frame names the new one.
         updateModeBtn(state.currentModeId);
@@ -20589,7 +20715,7 @@
         // whichever provider a later optimistic model pick happens to select.
         state.availableModels = (msg.models || [])
           .map(m => ({ ...m, provider: m.provider || state.activeProvider }))
-          .filter(m => m.provider !== "muse" || museAvailable);
+          .filter(m => (m.provider !== "muse" || museAvailable) && (m.provider !== "agy" || agyAdvertised));
         if (currentModel()?.reasoningEffort) state.effort = currentModel().reasoningEffort;
         refreshModelControls();
         renderProviderSignInCard();
@@ -22940,6 +23066,7 @@
         (onbAction.querySelector("small") || onbAction).textContent = "Checking…";
         if (connectWizard && connectWizard.provider === onbAction.dataset.provider) {
           connectWizard.museOnboarding = null;
+          connectWizard.agyOnboarding = null;
           connectWizard.checking = true;
           renderConnectWizard();
         }
@@ -22950,6 +23077,8 @@
       }
       else if (act === "installCodex") vscode.postMessage({ type: "installCodex" });
       else if (act === "cancelCodexInstall") vscode.postMessage({ type: "cancelCodexInstall" });
+      else if (act === "installAgy" && !IS_REMOTE && agyAdvertised) vscode.postMessage({ type: "installAgy" });
+      else if (act === "cancelAgyInstall" && !IS_REMOTE) vscode.postMessage({ type: "cancelAgyInstall" });
       else if (act === "runLogin") vscode.postMessage({ type: "runGrokLogin" });
       else if (act === "recheck") vscode.postMessage({ type: "recheckConnection", provider: onbAction.dataset.provider });
       else if (act === "connectProvider") vscode.postMessage({ type: "runGrokLogin", provider: onbAction.dataset.provider });

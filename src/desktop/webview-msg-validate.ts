@@ -168,6 +168,8 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
     case "runMuseInstallCmd":
     case "installCodex":
     case "cancelCodexInstall":
+    case "installAgy":
+    case "cancelAgyInstall":
     case "checkGrokUpdate":
     case "updateGrok":
     case "updateCodex":
