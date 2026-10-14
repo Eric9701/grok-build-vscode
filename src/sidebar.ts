@@ -1833,6 +1833,24 @@ export class GrokSidebar {
       && !isCloudEnvironment();
   }
 
+  /** The card a session gets when its provider cannot start. Usable, not
+   *  connected: with only a lapsed provider left there is nothing to fall back
+   *  to, so offer the choice rather than this one provider's missing-CLI copy.
+   *  An Antigravity conversation with the experiment switched off gets the
+   *  choice too, without naming `agy`: renderers draw no card for a provider
+   *  the host does not advertise, and a blank page would swallow what the
+   *  person types next. */
+  private refusedStartOnboarding(provider: AcpProvider): {
+    state: "connect-agent" | ReturnType<typeof missingProviderState>;
+    provider?: AcpProvider;
+  } {
+    if (provider === "agy" && !this.agyOffered()) return { state: "connect-agent" };
+    return {
+      state: this.usableProviders().length ? missingProviderState(provider) : "connect-agent",
+      provider,
+    };
+  }
+
   private adapterHistory(provider: AcpProvider): {
     cache: Map<string, SessionListEntry[]>;
     at: Map<string, number>;
@@ -10376,12 +10394,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.postProviderState();
       this.emit(target, {
         type: "onboarding",
-        // Usable, not connected — with only a lapsed provider left there is
-        // nothing to fall back to, so offer the choice rather than this one
-        // provider's missing-CLI copy.
-        state: this.usableProviders().length ? missingProviderState(target.provider) : "connect-agent",
+        ...this.refusedStartOnboarding(target.provider),
         platform: process.platform,
-        provider: target.provider,
       });
       return undefined;
     }

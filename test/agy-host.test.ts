@@ -106,6 +106,16 @@ describe("Antigravity in providerState", () => {
     sidebar.noteAgyVersion({ agentInfo: { version: "1.4.0" } });
     expect(sidebar.postProviderState).toHaveBeenCalledTimes(1);
   });
+
+  it("an Antigravity conversation that cannot start gets a card a renderer will draw", () => {
+    const off = host({ experimental: false });
+    off.usableProviders = () => ["grok"];
+    // Renderers draw no card for an unadvertised `agy`, so the refusal must not name it.
+    expect(off.refusedStartOnboarding("agy")).toEqual({ state: "connect-agent" });
+    const on = host();
+    on.usableProviders = () => ["grok", "agy"];
+    expect(on.refusedStartOnboarding("agy")).toEqual({ state: "missing-agy", provider: "agy" });
+  });
 });
 
 describe("connecting Antigravity at the desk", () => {
