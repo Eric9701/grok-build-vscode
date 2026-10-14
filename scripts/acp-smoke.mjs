@@ -6,7 +6,8 @@
 // must also judge the per-provider render reports before shipping.
 // No fixture fallback — a green run against a fake would be worse than no run.
 //
-// Run: npm run smoke:acp [-- --provider=codex|claude|muse]
+// Run: npm run smoke:acp [-- --provider=codex|claude|muse|agy]
+// Antigravity (agy) is opt-in only and runs its own checks: see agy-smoke.mjs.
 // Optional: CODEX_CLI_PATH / CLAUDE_CLI_PATH / MUSE_CLI_PATH (existing user CLI),
 // ACP_SMOKE_<PROVIDER>_MODEL (must be advertised), ACP_SMOKE_<PROVIDER>_EFFORT
 // (must be advertised; default the lowest),
@@ -613,8 +614,8 @@ function probeCli(cli, args, cwd) {
 async function main() {
   const selected = process.argv.slice(2);
   const scenario = smokeScenario(selected, ["plain reply", "subagent", "workflow"]);
-  assert(selected.every(a => /^--provider=(codex|claude|muse)$/.test(a) || a.startsWith("--scenario="))
-    && selected.filter(a => a.startsWith("--provider=")).length <= 1, "usage: npm run smoke:acp -- --provider=codex|claude|muse [--scenario=plain-reply|subagent|workflow]");
+  assert(selected.every(a => /^--provider=(codex|claude|muse|agy)$/.test(a) || a.startsWith("--scenario="))
+    && selected.filter(a => a.startsWith("--provider=")).length <= 1, "usage: npm run smoke:acp -- --provider=codex|claude|muse|agy [--scenario=plain-reply|subagent|workflow]");
   const chosenProvider = selected.find(a => a.startsWith("--provider="))?.slice(11);
   const requested = capability => !scenario || ["initialize", "session/new", "model", "render", "boundary audit"].includes(capability)
     || capability === (scenario === "plain reply" ? "streaming" : scenario) || (scenario === "workflow" && capability === "delivery prompt");
@@ -657,6 +658,16 @@ async function main() {
   process.once("SIGINT", interrupt);
   process.once("SIGTERM", interrupt);
 
+  if (chosenProvider === "agy") {
+    const { runAgySmoke } = await import("./agy-smoke.mjs");
+    const record = (capability, result, detail) => {
+      rows.push({ provider: "agy", capability, result, detail: detail.replace(/\r?\n/g, " ") });
+      say(`agy ${capability}: ${result} — ${detail}`);
+      report();
+    };
+    try { await runAgySmoke({ root, output, record, say, rpcMs, turnMs }); }
+    catch (error) { record("setup", "FAIL", errorText(error)); }
+  }
   for (const [provider, Backend, locate] of [["codex", CodexBackend, locateCodexCli], ["claude", ClaudeBackend, locateClaudeCli], ["muse", MuseBackend, locateMuseCli]]) {
     if (chosenProvider && chosenProvider !== provider) continue;
     const required = [...capabilities, "model", "steering", "subagent", "workflow", "render", ...(provider === "muse" ? ["delivery prompt"] : [])];

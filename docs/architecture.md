@@ -11,8 +11,9 @@ they deliberately stop being "thin." For day-to-day usage see the
 
 The host is a UI shell over `grok agent stdio`, the pinned
 `@agentclientprotocol/codex-acp` and `@agentclientprotocol/claude-agent-acp` adapters,
-or the bundled Muse adapter (`adapters/muse/`) driving the installed Muse CLI
-through the pinned official SDK. It speaks JSON-RPC over the
+the bundled Muse adapter (`adapters/muse/`) driving the installed Muse CLI
+through the pinned official SDK, or Google's Antigravity ACP server, spawned
+directly (experimental, desk only). It speaks JSON-RPC over the
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com) on the selected
 backend's stdin/stdout and renders one internal event vocabulary. Conversation
 state remains in the selected CLI; provider identity and presentation state live
@@ -40,8 +41,10 @@ sidebar host ──► AcpClient ──► GrokBackend   ──► grok agent st
                          ├────► CodexBackend  ──► node codex-acp (CODEX_PATH=codex)
                          ├────► ClaudeBackend ──► node claude-agent-acp
                                                    (CLAUDE_CODE_EXECUTABLE=claude)
-                         └────► MuseBackend   ──► node muse-adapter/main.mjs
+                         ├────► MuseBackend   ──► node muse-adapter/main.mjs
                                                    ──► muse serve (MSP via SDK)
+                         └────► AgyBackend    ──► agy_acp_server (Google's ACP
+                                                   server, pinned managed download)
        ▲                         │
        └── established internal events ◄── Codex wire normalization
 ```
@@ -605,6 +608,7 @@ The full pedagogical write-up lives in
 | [src/acp.ts](../src/acp.ts) | Provider-neutral ACP client — spawns the selected backend, manages session lifecycle, normalizes through its backend hooks, and emits the extension's established events. `interject` (#52 Steer) sends whichever method the focused backend names — grok's unadvertised `_x.ai/interject` (`{sessionId, text}` plus additive `content` for images, omitted when text-only), Codex's advertised `_session/steering` — while `forkSession` (#48), `submitFeedback` (#114), and worktree RPCs (P2-8) call the unadvertised `_x.ai/*` methods; all return `"unsupported"` on -32601 rather than throwing |
 | [src/feedback.ts](../src/feedback.ts) | Pure thumbs-feedback helpers (#114) — availability plus `grok.thumbsFeedback` opt-in (default off), snake_case params, no `turn_number` (agent attributes the current turn); see [research/turn-feedback.md](../research/turn-feedback.md) |
 | [src/acp-backend.ts](../src/acp-backend.ts) / [src/grok-backend.ts](../src/grok-backend.ts) / [src/codex-backend.ts](../src/codex-backend.ts) / [src/claude-backend.ts](../src/claude-backend.ts) / [src/muse-backend.ts](../src/muse-backend.ts) / [adapters/muse/](../adapters/muse/) | Backend contract, Grok identity, Codex, Claude and Muse host normalization. Codex uses `session/set_config_option`; Claude maps `configOptions` into the host model picker, lists sessions with `{ cwd }`, and maps Agent/Auto-accept onto native permission modes |
+| [src/agy-backend.ts](../src/agy-backend.ts) / [src/agy-auth.ts](../src/agy-auth.ts) / [src/agy-managed-installer.ts](../src/agy-managed-installer.ts) | Antigravity (`agy`, experimental, desk only, gated by `grok.experimentalAntigravity`): Google's ACP server spawned directly with no client fs/terminal; one model with `thinking_level` as effort; the working-folder system-prompt append on `session/new`/`session/load`; the approved-edit duplicate folded into one card; history read from the server's own store; a clean Windows stop that lets PyInstaller delete its unpack. Sign-in presence is read from the server's files, Google sign-in runs ACP `authenticate` as a device login, sign-out ACP `logout`. The pinned, SHA-256-checked zip streams into extension storage. See [research/antigravity-acp.md](../research/antigravity-acp.md) |
 | [src/codex-model-cache.ts](../src/codex-model-cache.ts) / [src/claude-model-cache.ts](../src/claude-model-cache.ts) | Short-lived connect warm-up that caches adapter models from a scratch `session/new`, deletes the temporary adapter-owned session, and cleans up the client/cwd |
 | [src/provider-ui.ts](../src/provider-ui.ts) | Pure provider presentation/state policy — Grok-first model grouping, empty-model default sentinel, normalized project defaults, adapter listing-time freeze (`adapterActivityAt` pins Codex, Claude and Muse to the host-observed clock), clear-all refresh guard (`adapterEntriesEligibleForClear`), and mixed-provider recency merge |
 | [src/worktree.ts](../src/worktree.ts) | Pure worktree helpers (P2-8) — parse create/list/apply/remove/status, multi-cwd history merge; wire notes in [research/worktree.md](../research/worktree.md) |
