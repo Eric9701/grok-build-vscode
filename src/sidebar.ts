@@ -11602,15 +11602,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         await this.changeContextWindow(session, msg.size, msg);
         break;
       case "send":
+        // A bare `/context-window` never arrives: the webview opens its context
+        // popup for that. Here it is just a size that does not parse.
         if (/^\/context-window(?:\s|$)/i.test(msg.text.trim())) {
-          const argument = msg.text.trim().replace(/^\/context-window/i, "").trim();
-          if (!argument) {
-            if (session.client) this.emit(session, { type: "contextWindowSelection", selection: session.client.contextWindowSelection, openPicker: true });
-          } else {
-            const size = parseContextWindowSize(argument);
-            if (size === undefined) this.emit(session, { type: "error", text: "Use /context-window 500k or a whole token count offered by the model." });
-            else await this.changeContextWindow(session, size);
-          }
+          const size = parseContextWindowSize(msg.text.trim().replace(/^\/context-window/i, ""));
+          if (size === undefined) this.emit(session, { type: "error", text: "Use /context-window 500k or a whole token count offered by the model." });
+          else await this.changeContextWindow(session, size);
           break;
         }
         let queuedSendCommit: { text: string; items: QueuedSendEntry[] } | undefined;
@@ -12080,8 +12077,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           if (typeof effort === "string" && session.activeSessionId === before) {
             await this.applyEffort(effort, session, origin, clientId, requester);
           }
-          if (session.provider === "grok" && session.client?.contextWindowSelection && session.client.currentModelId === msg.modelId)
-            this.emit(session, { type: "contextWindowSelection", selection: session.client.contextWindowSelection, openPicker: true });
         })());
         break;
       }
@@ -18895,10 +18890,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       || message.type === "permissionRequest")) this.pendingTurnDiffCaptures.delete(session.turnToken);
     if (session.suppressContent && GrokSidebar.SUPPRESS_TYPES.has(message.type)) return;
     if (message.type === "clearMessages") session.buffer = [];
-    // `openPicker` is the transient half of this frame (see TRANSIENT_TYPES):
-    // the person just changed the model or typed `/context-window`. Only the
-    // selection is state worth replaying.
-    else if (message.type === "contextWindowSelection" && message.openPicker) session.buffer.push({ type: message.type, selection: message.selection });
     else if (!GrokSidebar.TRANSIENT_TYPES.has(message.type)) session.buffer.push(message);
     if (message.type === "runProgress") this.cloudHostUpdate?.considerApply();
     if (message.type === "userMessage" && !message.steer) {

@@ -56,7 +56,6 @@ describe("context-window controls", () => {
     expect((h.doc.querySelector(`label[for="${select.id}"]`) as HTMLElement).textContent).toBe("Context window");
     // One row: no heading, no option rows, and no standing disclaimer line.
     const popup = h.doc.getElementById("context-popover")!;
-    expect(popup.querySelectorAll(".context-window-choice")).toHaveLength(0);
     expect(popup.textContent).not.toContain("Context window · tokens");
     expect(popupNotes(h)).toEqual([]);
     expect(popup.textContent).not.toMatch(/\d,\d{3}/);
@@ -145,28 +144,34 @@ describe("context-window controls", () => {
     choose(h, select, 500000);
     expect(h.posted.at(-1)).toMatchObject({ type: "setContextWindow", size: 500000 });
   });
-  it("opens the model continuation only after a confirmed host frame and supports keyboard selection", () => {
+  it("a model change only changes the model: nothing opens on its own, and an older host's openPicker is ignored", () => {
     const h = setup();
-    dispatch(h.window, { type: "contextWindowSelection", selection, openPicker: true });
-    const rows = h.doc.querySelectorAll("#gear-popover .context-window-choice");
-    expect(rows).toHaveLength(2);
-    // Sizes read the way the meter says them, never as raw token counts.
-    expect([...rows].map((r) => r.textContent)).toEqual(["256K · CLI default ✓", "500K"]);
-    expect(h.doc.getElementById("gear-popover")!.textContent).not.toMatch(/\d,\d{3}/);
-    rows[0].dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    expect(h.doc.activeElement).toBe(rows[1]);
-    rows[1].dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-    expect(h.posted.at(-1)?.type).toBe("setContextWindow");
-    expect(h.doc.getElementById("gear-popover")!.textContent).toContain("Continue to reasoning effort");
+    dispatch(h.window, { type: "modelChanged", modelId: "grok-4.7" });
+    // An unreleased host sent `openPicker` with the new model's selection.
+    expect(() => dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 3 }, openPicker: true })).not.toThrow();
+    expect(h.doc.getElementById("gear-popover")!.hidden).toBe(true);
+    expect(h.doc.getElementById("context-popover")!.hidden).toBe(true);
+    // The selection itself still lands: the popup offers it.
+    expect([...sizeSelect(h).options].map((o) => o.textContent)).toEqual(["256K · CLI default", "500K"]);
   });
-  it("locks both controls while busy or awaiting confirmation", () => {
+  it.each(["the send button", "Enter"])("a bare /context-window opens the context popup and sends nothing (%s)", (how) => {
+    const h = setup();
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = "/context-window";
+    input.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    if (how === "Enter") input.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    else click(h.window, h.doc.getElementById("send-btn")!);
+    // Still open once the click has reached the document's popover closer.
+    expect(h.doc.getElementById("context-popover")!.hidden).toBe(false);
+    expect(h.doc.querySelector("#context-popover select.context-window-select")).not.toBeNull();
+    expect(h.doc.getElementById("gear-popover")!.hidden).toBe(true);
+    expect(h.posted.filter((m) => m.type === "send" || m.type === "setContextWindow")).toEqual([]);
+  });
+  it("locks the dropdown while busy or awaiting confirmation", () => {
     for (const changing of [true, false]) {
       const h = setup();
       if (!changing) dispatch(h.window, { type: "setBusy", value: true });
-      dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, changing }, openPicker: true });
-      const row = h.doc.querySelector("#gear-popover .context-window-choice")!;
-      click(h.window, row);
-      expect(row.getAttribute("aria-disabled")).toBe("true");
+      dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, changing } });
       const select = sizeSelect(h);
       expect(select.disabled).toBe(true);
       // A change event that reaches a locked control still posts nothing, and
@@ -185,41 +190,12 @@ describe("context-window controls", () => {
     choose(h, select, 500000);
     expect(h.posted.some(m => m.type === "setContextWindow")).toBe(false);
   });
-  it("rejects a late frame from another session and warns before native compaction", () => {
+  it("ignores a late frame from another session, an older generation and a model no longer selected", () => {
     const h = setup();
-    dispatch(h.window, { type: "contextUsage", used: 300000, window: 500000 });
-    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, selectedSize: 500000 }, openPicker: true });
-    expect(h.doc.querySelector(".context-window-choice")!.textContent).toBe("256K · CLI default · will compact");
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, sessionId: "old", sizes: [1, 2] } });
-    expect(h.doc.querySelectorAll(".context-window-choice")[1].textContent).toBe("500K ✓");
-  });
-  it("shows a reason instead of selectable sizes when native support is absent", () => {
-    const h = setup();
-    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, available: false, reason: "CLI update required" }, openPicker: true });
-    expect(h.doc.querySelectorAll(".context-window-choice")).toHaveLength(0);
-    expect(h.doc.getElementById("gear-popover")!.textContent).toContain("CLI update required");
-  });
-  it("ignores older generations and frames for a model no longer selected", () => {
-    const h = setup();
-    dispatch(h.window, { type: "contextWindowSelection", selection, openPicker: true });
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 1, sizes: [1, 2] } });
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, modelId: "old-model", generation: 3, sizes: [1, 2] } });
-    expect(h.doc.querySelectorAll(".context-window-choice")[1].textContent).toBe("500K");
-  });
-  it("locks choices during initial startup", () => {
-    const h = bootWebview({ ready: false });
-    dispatch(h.window, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [] });
-    dispatch(h.window, { type: "contextWindowSelection", selection, openPicker: true });
-    const row = h.doc.querySelector(".context-window-choice")!;
-    click(h.window, row);
-    expect(row.getAttribute("aria-disabled")).toBe("true");
-    expect(h.posted.some(m => m.type === "setContextWindow")).toBe(false);
-  });
-  it("marks a failed confirmation as stale while keeping the confirmed choice", () => {
-    const h = setup();
-    dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, stale: true }, openPicker: true });
-    expect(h.doc.querySelector(".context-window-choice.active")!.textContent).toBe("256K · CLI default ✓");
-    expect(h.doc.getElementById("gear-popover")!.textContent).toContain("native state needs a refresh");
+    expect([...sizeSelect(h).options].map((o) => o.textContent)).toEqual(["256K · CLI default", "500K"]);
   });
 });
 
@@ -288,9 +264,9 @@ describe("dictation during a context-window change", () => {
   });
 });
 
-describe("context-window picker opening is one-shot", () => {
+describe("a model change opens nothing", () => {
   const gear = (h: Harness) => h.doc.getElementById("gear-popover")!;
-  it("opens where the model was changed, but a switch back, reload or phone rebuild only restores the selection", () => {
+  it("live or replayed on a switch back, reload or phone rebuild, it only restores the selection", () => {
     const desk = bootWebview(), phone = bootWebview({ remote: true });
     const confirmed = { ...selection, generation: 3, selectedSize: 500000 };
     const session = new Session(); session.cwd = "/repo"; session.provider = "grok";
@@ -307,10 +283,9 @@ describe("context-window picker opening is one-shot", () => {
 
     sidebar.emit(session, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [{ modelId: "grok-4.7", name: "Grok 4.7", contextWindowSizes: selection.sizes }] });
     sidebar.emit(session, { type: "modelChanged", modelId: "grok-4.7" });
-    sidebar.emit(session, { type: "contextWindowSelection", selection: confirmed, openPicker: true });
-    for (const h of [desk, phone]) expect(gear(h).hidden).toBe(false);
-    click(desk.window, desk.doc.getElementById("messages")!);
-    expect(gear(desk).hidden).toBe(true);
+    // What the client publishes once the new model is confirmed.
+    sidebar.emit(session, { type: "contextWindowSelection", selection: confirmed });
+    for (const h of [desk, phone]) expect(gear(h).hidden).toBe(true);
 
     // focusSession / rehydrateWebviewFromFocused, then focusRemoteSession / a phone reconnect.
     const deskReplay = [{ type: "clearMessages" }, { type: "historyReplay", active: true }, ...session.buffer, { type: "historyReplay", active: false }, ...sessionUiSnapshot(session, "agent")];
@@ -320,6 +295,7 @@ describe("context-window picker opening is one-shot", () => {
     for (const m of phoneReplay) dispatch(phoneAgain.window, m);
     for (const h of [desk, reloaded, phoneAgain]) {
       expect(gear(h).hidden).toBe(true);
+      expect(h.doc.getElementById("context-popover")!.hidden).toBe(true);
       click(h.window, h.doc.getElementById("donut")!);
       const select = sizeSelect(h);
       expect(select.value).toBe("500000");
@@ -400,18 +376,6 @@ describe("switching to a smaller window asks first when it can cost an auto-comp
     const h = using(undefined);
     choose(h, sizeSelect(h), 256000);
     expect(dialog(h)).toBeNull();
-    expect(switches(h)).toEqual([switchTo256]);
-  });
-
-  it("asks from the picker that follows a model change", async () => {
-    const h = using(300000);
-    dispatch(h.window, { type: "contextWindowSelection", selection: at500, openPicker: true });
-    const row = [...h.doc.querySelectorAll("#gear-popover .context-window-choice")].find((r) => r.textContent!.startsWith("256K")) as HTMLElement;
-    click(h.window, row);
-    expect(switches(h)).toEqual([]);
-    expect(h.doc.querySelector(".confirm-overlay .confirm-body")!.textContent).toContain("will trigger auto-compact");
-    click(h.window, button(h, "Switch to 256K"));
-    await Promise.resolve();
     expect(switches(h)).toEqual([switchTo256]);
   });
 

@@ -655,7 +655,7 @@ export type HostMsg =
   // Optional and additive: a client that never sees it keeps its old fallback.
   | { type: "sessionName"; sessionId: string; name: string; cwd: string; repoCwd?: string }
   | { type: "composerDraftSession"; draftId: string; sessionId: string }
-  | { type: "contextWindowSelection"; selection: ContextWindowSelection; openPicker?: boolean }
+  | { type: "contextWindowSelection"; selection: ContextWindowSelection }
   | { type: "modelChanged"; modelId: string }
   // `modes` is the set this session offers. Absent on an older host: the page
   // keeps its previous rule (Muse's button hidden, Codex without Plan).

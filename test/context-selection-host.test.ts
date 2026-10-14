@@ -31,13 +31,23 @@ describe("context selection host routing", () => {
     expect(h.sidebar.handleSend).not.toHaveBeenCalled();
     expect(h.session.chips).toHaveLength(1);
   });
-  it("opens the bare command and reports malformed sizes", async () => {
+  it("reports a size it cannot read, a bare command included", async () => {
+    // The webview opens its context popup for a bare command; a host that
+    // receives one anyway has no size to apply.
+    for (const text of ["/context-window", "/context-window 1.5k"]) {
+      const h = harness();
+      await h.send({ type: "send", text });
+      expect(h.sidebar.emit.mock.calls.map((c: any[]) => c[1])).toEqual([{ type: "error", text: "Use /context-window 500k or a whole token count offered by the model." }]);
+      expect(h.session.client!.setContextWindow).not.toHaveBeenCalled();
+    }
+  });
+  it("a Grok model change only changes the model", async () => {
     const h = harness();
-    await h.send({ type: "send", text: "/context-window" });
-    expect(h.sidebar.emit).toHaveBeenCalledWith(h.session, { type: "contextWindowSelection", selection, openPicker: true });
-    await h.send({ type: "send", text: "/context-window 1.5k" });
-    expect(h.sidebar.emit.mock.calls.at(-1)[1].type).toBe("error");
-    expect(h.session.client!.setContextWindow).not.toHaveBeenCalled();
+    await h.send({ type: "setModel", modelId: "m" });
+    expect(h.sidebar.switchModel).toHaveBeenCalled();
+    // The client publishes the new model's selection itself; nothing here
+    // sends one, so nothing can pop a size picker open.
+    expect(h.sidebar.emit.mock.calls.filter((c: any[]) => c[1].type === "contextWindowSelection")).toEqual([]);
   });
   it.each(["turn", "startup", "picker"])("refuses a context change during %s", async (busy) => {
     const h = harness();
