@@ -42,7 +42,8 @@ describe("context-window controls", () => {
     click(h.window, h.doc.getElementById("donut")!);
     const choices = h.doc.querySelectorAll("#context-popover .context-window-choice");
     expect(choices).toHaveLength(2);
-    expect(choices[0].textContent).toContain("CLI default");
+    expect(choices[0].textContent).toBe("256K · CLI default ✓");
+    expect(choices[1].textContent).toBe("500K");
     click(h.window, choices[1]);
     expect(h.posted.at(-1)).toEqual({ type: "setContextWindow", sessionId: "s", modelId: "grok-4.7", generation: 2, size: 500000 });
     expect(input.value).toBe("keep my draft");
@@ -53,6 +54,9 @@ describe("context-window controls", () => {
     dispatch(h.window, { type: "contextWindowSelection", selection, openPicker: true });
     const rows = h.doc.querySelectorAll("#gear-popover .context-window-choice");
     expect(rows).toHaveLength(2);
+    // Sizes read the way the meter says them, never as raw token counts.
+    expect([...rows].map((r) => r.textContent)).toEqual(["256K · CLI default ✓", "500K"]);
+    expect(h.doc.getElementById("gear-popover")!.textContent).not.toMatch(/\d,\d{3}/);
     rows[0].dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
     expect(h.doc.activeElement).toBe(rows[1]);
     rows[1].dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
@@ -74,9 +78,9 @@ describe("context-window controls", () => {
     const h = setup();
     dispatch(h.window, { type: "contextUsage", used: 300000, window: 500000 });
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, selectedSize: 500000 }, openPicker: true });
-    expect(h.doc.querySelector(".context-window-choice")!.textContent).toContain("may compact");
+    expect(h.doc.querySelector(".context-window-choice")!.textContent).toBe("256K · CLI default · may compact");
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, sessionId: "old", sizes: [1, 2] } });
-    expect(h.doc.querySelectorAll(".context-window-choice")[1].textContent).toContain("500");
+    expect(h.doc.querySelectorAll(".context-window-choice")[1].textContent).toBe("500K ✓");
   });
   it("shows a reason instead of selectable sizes when native support is absent", () => {
     const h = setup();
@@ -89,7 +93,7 @@ describe("context-window controls", () => {
     dispatch(h.window, { type: "contextWindowSelection", selection, openPicker: true });
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, generation: 1, sizes: [1, 2] } });
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, modelId: "old-model", generation: 3, sizes: [1, 2] } });
-    expect(h.doc.querySelectorAll(".context-window-choice")[1].textContent).toContain("500");
+    expect(h.doc.querySelectorAll(".context-window-choice")[1].textContent).toBe("500K");
   });
   it("locks choices during initial startup", () => {
     const h = bootWebview({ ready: false });
@@ -103,7 +107,7 @@ describe("context-window controls", () => {
   it("marks a failed confirmation as stale while keeping the confirmed choice", () => {
     const h = setup();
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, stale: true }, openPicker: true });
-    expect(h.doc.querySelector(".context-window-choice.active")!.textContent).toContain("256");
+    expect(h.doc.querySelector(".context-window-choice.active")!.textContent).toBe("256K · CLI default ✓");
     expect(h.doc.getElementById("gear-popover")!.textContent).toContain("native state needs a refresh");
   });
 });
@@ -206,7 +210,7 @@ describe("context-window picker opening is one-shot", () => {
     for (const h of [desk, reloaded, phoneAgain]) {
       expect(gear(h).hidden).toBe(true);
       click(h.window, h.doc.getElementById("donut")!);
-      expect(h.doc.querySelector("#context-popover .context-window-choice.active")!.textContent).toContain("500,000");
+      expect(h.doc.querySelector("#context-popover .context-window-choice.active")!.textContent).toBe("500K ✓");
     }
   });
 });

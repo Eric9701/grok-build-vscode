@@ -4241,7 +4241,7 @@
       row.setAttribute("role", "button");
       row.tabIndex = locked ? -1 : 0;
       row.setAttribute("aria-disabled", String(locked));
-      row.textContent = Number(size).toLocaleString() + (size === selection.defaultSize ? " · CLI default" : "") + (size === selection.selectedSize ? " ✓" : "");
+      row.textContent = compactTokens(size) + (size === selection.defaultSize ? " · CLI default" : "") + (size === selection.selectedSize ? " ✓" : "");
       row.title = size < state.usedTokens ? "Choosing this smaller window may start native auto-compaction." : "Applies to this session; server access limits still apply.";
       if (size < state.usedTokens) row.textContent += " · may compact";
       const choose = () => {

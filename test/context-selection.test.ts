@@ -29,6 +29,9 @@ describe("native context selection", () => {
   });
   it("accepts CLI shorthand and rejects non-native counts", () => {
     expect(parseContextWindowSize("500k")).toBe(500000);
+    // The controls display "500K", so that spelling must be accepted as typed.
+    expect(parseContextWindowSize("500K")).toBe(500000);
+    expect(parseContextWindowSize("500000")).toBe(500000);
     expect(parseContextWindowSize("256000")).toBe(256000);
     for (const text of ["0", "-1", "1.5k", "500kb", "500k high", "Infinity"]) expect(parseContextWindowSize(text)).toBeUndefined();
   });
