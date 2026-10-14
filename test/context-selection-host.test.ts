@@ -63,6 +63,23 @@ describe("context selection host routing", () => {
       { type: "contextWindowSelection", selection },
     ]);
   });
+  it("refuses a typed size posted behind a model change, and the model change still lands", async () => {
+    // The webview commits the picker before a `/context-window`, so the host
+    // sees `setModel` first. The real tracker sets `pickerChange` before that
+    // handler yields; the size meets it and is refused out loud, instead of
+    // starting a context change that would drop the model change.
+    const h = harness();
+    delete h.sidebar.trackPickerChange;
+    let finish!: () => void;
+    h.sidebar.switchModel = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const modelChange = h.send({ type: "setModel", modelId: "grok-code" });
+    await h.send({ type: "send", text: "/context-window 500k" });
+    expect(h.session.client!.setContextWindow).not.toHaveBeenCalled();
+    expect(h.sidebar.emit.mock.calls.map((c: any[]) => c[1])).toContainEqual({ type: "error", text: "Wait for the current turn or session setup to finish before changing the context window." });
+    finish();
+    await modelChange;
+    expect(h.sidebar.switchModel).toHaveBeenCalledWith("grok-code", h.session, undefined, "grok");
+  });
   it("passes the UI identity to the client and reports a native rejection", async () => {
     const h = harness();
     vi.mocked(h.session.client!.setContextWindow).mockRejectedValueOnce(new Error("older session"));

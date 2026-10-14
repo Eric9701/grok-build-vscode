@@ -391,9 +391,15 @@ describe("switching to a smaller window asks first when it can cost an auto-comp
     }
   });
 
-  it.each(["Enter", "the send button"])("judges a typed switch against the session's own window while the picker previews another model (%s)", async (how) => {
-    // The picker writes a previewed model into the page and commits only when
-    // it closes, so the host would still shrink the CURRENT model's window.
+  it.each([
+    ["/context-window 500k", "the send button"], ["/context-window 500k", "Enter"],
+    ["/context-window 256k", "the send button"], ["/context-window 256k", "Enter"],
+  ])("a typed %s with another model picked in the open picker commits that model first (%s)", (text, how) => {
+    // Sent before the model it was typed beside, a size started a context
+    // change and the host dropped the `setModel` behind it: the chip showed
+    // the new model while the CLI kept the old one. Committed first, the size
+    // meets the host's model change and is refused with its wait message
+    // (test/context-selection-host.test.ts), whatever size it names.
     const h = bootWebview();
     dispatch(h.window, { type: "session", sessionId: "s", provider: "grok", currentModelId: "grok-4.7", models: [
       { modelId: "grok-4.7", name: "Grok 4.7", contextWindowSizes: selection.sizes },
@@ -405,15 +411,14 @@ describe("switching to a smaller window asks first when it can cost an auto-comp
     click(h.window, [...h.doc.querySelectorAll(".model-picker-row")].find((row) => row.textContent?.includes("Grok Code")) as HTMLElement);
     expect(h.doc.getElementById("gear-popover")!.hidden).toBe(false);
     const input = h.doc.getElementById("input") as HTMLTextAreaElement;
-    input.value = "/context-window 256k";
+    input.value = text;
     input.dispatchEvent(new h.window.Event("input", { bubbles: true }));
     if (how === "Enter") input.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     else click(h.window, h.doc.getElementById("send-btn")!);
-    expect(switches(h)).toEqual([]);
-    expect(h.doc.querySelector(".confirm-overlay .confirm-body")!.textContent).toBe(will);
-    click(h.window, button(h, "Switch to 256K"));
-    await Promise.resolve();
-    expect(switches(h)).toEqual([{ type: "send", text: "/context-window 256k", bare: true }]);
+    expect(h.posted.filter((m) => m.type === "setModel" || m.type === "send" || m.type === "setContextWindow"))
+      .toEqual([{ type: "setModel", modelId: "grok-code" }, { type: "send", text, bare: true }]);
+    expect(dialog(h)).toBeNull();
+    expect(h.doc.getElementById("gear-btn")!.textContent).toContain("Grok Code");
   });
 
   it("opening the popup during a preview commits the preview first, so its dropdown never acts on a model being left", () => {

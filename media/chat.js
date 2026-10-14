@@ -4238,15 +4238,14 @@
     });
   }
 
-  /** The selection a switch would change: that of the model the session runs,
-   *  never one the picker is only previewing. A preview writes the previewed
-   *  model into `state` and commits when the picker closes, so until then the
-   *  host still holds `modelBaseline` -- and judging a switch against the
-   *  preview let a typed `/context-window` shrink the real window unasked. */
+  /** The selection a switch would change, for the model on screen. No picker
+   *  preview is ever pending here: opening the popup closes the picker, and
+   *  every way a typed or dictated `/context-window` is sent commits the
+   *  picker first, so a model on screen but not yet confirmed has no
+   *  selection, and the host refuses the size while that change runs. */
   function sessionContextWindowSelection() {
     const selection = state.contextWindowSelection;
-    const running = modelBaseline || { modelId: state.currentModelId, provider: state.activeProvider };
-    return running.provider === "grok" && selection && selection.modelId === running.modelId ? selection : undefined;
+    return state.activeProvider === "grok" && selection && selection.modelId === state.currentModelId ? selection : undefined;
   }
 
   function contextWindowLocked(selection) {
@@ -18233,14 +18232,6 @@
   }
 
   function sendOrStop(event) {
-    if (/^\/context-window(?:\s|$)/i.test(input.value.trim())) {
-      sendContextWindowCommand(input.value.trim());
-      // A bare command opens the context popup; the Send click that did it
-      // must not close it again on its way to the document's closer.
-      if (event && !contextPopover.hidden) event.stopPropagation();
-      return;
-    }
-    if (state.contextWindowSelection?.changing) return;
     // A model or effort the picker is still SHOWING belongs to this send. The
     // document's own click listener flushes on the way out, but it sits on the
     // bubble phase -- this button's handler runs first, so without this line
@@ -18251,7 +18242,21 @@
     // corner. Committing here is also what gives the host a `pickerChange` for
     // `handleSend` to wait on. Idempotent: the close that follows posts
     // nothing, and a flush with nothing pending posts nothing either.
+    //
+    // First, ahead of `/context-window` too. Sent before the model it was
+    // typed beside, a size started a context change, and the host then
+    // dropped the `setModel` behind it: the chip showed the new model while
+    // the CLI kept the old one. Committed first, the size meets the host's
+    // `pickerChange` and is refused with its visible wait message.
     flushPicker();
+    if (/^\/context-window(?:\s|$)/i.test(input.value.trim())) {
+      sendContextWindowCommand(input.value.trim());
+      // A bare command opens the context popup; the Send click that did it
+      // must not close it again on its way to the document's closer.
+      if (event && !contextPopover.hidden) event.stopPropagation();
+      return;
+    }
+    if (state.contextWindowSelection?.changing) return;
     if (state.sessionSuperseded) return;
     if (state.onboardingMode === "no-project") return;
     if (state.busy) {
