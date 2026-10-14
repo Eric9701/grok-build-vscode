@@ -281,6 +281,21 @@ describe("Use a Gemini API key", () => {
     expect(sidebar.providerNeedsLogin.agy).toBe(false);
   });
 
+  it("a refusal replayed from the conversation's history does not reject the new key", () => {
+    const sidebar = host({ connected: true, method: "api-key", key: KEY });
+    sidebar.rejectAgyCredential = vi.fn(async () => {});
+    const session = new Session();
+    session.gen = 3;
+    session.replaying = true;
+    sidebar.onAgyCredentialRejected(session, 3);
+    expect(sidebar.rejectAgyCredential).not.toHaveBeenCalled();
+    session.replaying = false;
+    sidebar.onAgyCredentialRejected(session, 2);
+    expect(sidebar.rejectAgyCredential).not.toHaveBeenCalled();
+    sidebar.onAgyCredentialRejected(session, 3);
+    expect(sidebar.rejectAgyCredential).toHaveBeenCalledTimes(1);
+  });
+
   it("a session start with nothing stored for the chosen way starts no server", async () => {
     signIn();
     expect(await host({ method: "api-key" }).agyStartupAuthFor()).toBeUndefined();

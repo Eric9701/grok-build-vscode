@@ -2751,6 +2751,14 @@ export class GrokSidebar {
     await this.startDeviceLogin("agy", cliPath, undefined, { remote: false });
   }
 
+  /** A refusal counts only when it is live. `session/load` replays the
+   *  conversation's old agent text, so a conversation that once got Google's
+   *  "API key not valid" would otherwise reject every new key on resume. */
+  private onAgyCredentialRejected(session: Session, gen: number): void {
+    if (gen !== session.gen || session.replaying) return;
+    void this.rejectAgyCredential();
+  }
+
   /** Google refused the credential mid-turn. Back to the choice, saying so. */
   private async rejectAgyCredential(): Promise<void> {
     this.agySignInError = this.agyMethod() === "api-key"
@@ -10840,9 +10848,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     client.terminal = this.terminalManager.ownedBy(client);
 
     this.trackCloudAgentActivity(session, client, gen);
-    if (session.provider === "agy") client.on("credentialRejected", () => {
-      if (gen === session.gen) void this.rejectAgyCredential();
-    });
+    if (session.provider === "agy") client.on("credentialRejected", () => this.onAgyCredentialRejected(session, gen));
     client.on("initialized", (init) => {
       if (gen !== session.gen) return;
       this.warnOAuthShadowOnce(init?._meta?.defaultAuthMethodId, env);
