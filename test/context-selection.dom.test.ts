@@ -127,12 +127,12 @@ describe("context-window controls", () => {
     expect(h.doc.querySelector("#context-popover select")).toBeNull();
     expect(popupNotes(h)).toEqual(["CLI update required"]);
   });
-  it("marks smaller sizes that may compact in the dropdown", () => {
+  it("marks sizes the conversation no longer fits as ones that will compact, in the dropdown", () => {
     const h = setup();
     dispatch(h.window, { type: "contextUsage", used: 300000, window: 500000 });
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, selectedSize: 500000 } });
     const select = sizeSelect(h);
-    expect([...select.options].map((o) => o.textContent)).toEqual(["256K · CLI default · may compact", "500K"]);
+    expect([...select.options].map((o) => o.textContent)).toEqual(["256K · CLI default · will compact", "500K"]);
     expect(select.value).toBe("500000");
   });
   it("lets no offered size claim to be the window before one is confirmed", () => {
@@ -189,7 +189,7 @@ describe("context-window controls", () => {
     const h = setup();
     dispatch(h.window, { type: "contextUsage", used: 300000, window: 500000 });
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, selectedSize: 500000 }, openPicker: true });
-    expect(h.doc.querySelector(".context-window-choice")!.textContent).toBe("256K · CLI default · may compact");
+    expect(h.doc.querySelector(".context-window-choice")!.textContent).toBe("256K · CLI default · will compact");
     dispatch(h.window, { type: "contextWindowSelection", selection: { ...selection, sessionId: "old", sizes: [1, 2] } });
     expect(h.doc.querySelectorAll(".context-window-choice")[1].textContent).toBe("500K ✓");
   });
@@ -325,5 +325,123 @@ describe("context-window picker opening is one-shot", () => {
       expect(select.value).toBe("500000");
       expect(select.selectedOptions[0].textContent).toBe("500K");
     }
+  });
+});
+
+describe("switching to a smaller window asks first when it can cost an auto-compact", () => {
+  // At 500K, switching down to 256K: 70% of 256K is 179,200 tokens.
+  const at500 = { ...selection, selectedSize: 500000 };
+  const switchTo256 = { type: "setContextWindow", sessionId: "s", modelId: "grok-4.7", generation: 2, size: 256000 };
+  function using(used: number | undefined, sel: typeof selection = at500, opts: Parameters<typeof bootWebview>[0] = {}) {
+    const h = setup(opts);
+    if (used !== undefined) dispatch(h.window, { type: "contextUsage", used, window: sel.selectedSize });
+    dispatch(h.window, { type: "contextWindowSelection", selection: sel });
+    return h;
+  }
+  const dialog = (h: Harness) => h.doc.querySelector(".confirm-overlay");
+  const switches = (h: Harness) => h.posted.filter((m) => m.type === "setContextWindow" || (m.type === "send" && /^\/context-window/.test(m.text)));
+  const button = (h: Harness, text: string) => [...h.doc.querySelectorAll(".confirm-overlay button")].find((b) => b.textContent === text) as HTMLElement;
+  const typed = (h: Harness, text: string) => {
+    const input = h.doc.getElementById("input") as HTMLTextAreaElement;
+    input.value = text;
+    input.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    click(h.window, h.doc.getElementById("send-btn")!);
+  };
+
+  it.each([
+    ["at 70% exactly", 179200],
+    ["below 70%", 120000],
+  ])("switches at once %s of the smaller size", (_what, used) => {
+    const h = using(used);
+    choose(h, sizeSelect(h), 256000);
+    expect(dialog(h)).toBeNull();
+    expect(switches(h)).toEqual([switchTo256]);
+  });
+
+  const may = "This conversation already fills more than 70% of 256K, so switching may trigger auto-compact on your next message.";
+  const will = "This conversation no longer fits in 256K, so switching will trigger auto-compact on your next message.";
+  it.each([
+    ["just above 70%", 179201, may],
+    ["exactly the smaller size", 256000, may],
+    ["just above the smaller size", 256001, will],
+    ["well above the smaller size", 300000, will],
+  ])("asks first %s, and Continue sends the same switch", async (_what, used, body) => {
+    const h = using(used);
+    choose(h, sizeSelect(h), 256000);
+    expect(switches(h)).toEqual([]);
+    expect(h.doc.querySelector(".confirm-overlay .confirm-title")!.textContent).toBe("Switch to 256K?");
+    expect(h.doc.querySelector(".confirm-overlay .confirm-body")!.textContent).toBe(body);
+    expect([...h.doc.querySelectorAll(".confirm-overlay button")].map((b) => b.textContent)).toEqual(["Cancel", "Switch to 256K"]);
+    click(h.window, button(h, "Switch to 256K"));
+    await Promise.resolve();
+    expect(dialog(h)).toBeNull();
+    expect(switches(h)).toEqual([switchTo256]);
+  });
+
+  it("Cancel sends nothing and keeps the current size", async () => {
+    const h = using(300000);
+    const select = sizeSelect(h);
+    choose(h, select, 256000);
+    click(h.window, button(h, "Cancel"));
+    await Promise.resolve();
+    expect(dialog(h)).toBeNull();
+    expect(switches(h)).toEqual([]);
+    expect(sizeSelect(h).value).toBe("500000");
+  });
+
+  it("never asks before a larger size, however full the conversation is", () => {
+    const h = using(250000, { ...selection, selectedSize: 256000 });
+    choose(h, sizeSelect(h), 500000);
+    expect(dialog(h)).toBeNull();
+    expect(switches(h)).toEqual([{ ...switchTo256, size: 500000 }]);
+  });
+
+  it("switches at once while usage is unknown", () => {
+    const h = using(undefined);
+    choose(h, sizeSelect(h), 256000);
+    expect(dialog(h)).toBeNull();
+    expect(switches(h)).toEqual([switchTo256]);
+  });
+
+  it("asks from the picker that follows a model change", async () => {
+    const h = using(300000);
+    dispatch(h.window, { type: "contextWindowSelection", selection: at500, openPicker: true });
+    const row = [...h.doc.querySelectorAll("#gear-popover .context-window-choice")].find((r) => r.textContent!.startsWith("256K")) as HTMLElement;
+    click(h.window, row);
+    expect(switches(h)).toEqual([]);
+    expect(h.doc.querySelector(".confirm-overlay .confirm-body")!.textContent).toContain("will trigger auto-compact");
+    click(h.window, button(h, "Switch to 256K"));
+    await Promise.resolve();
+    expect(switches(h)).toEqual([switchTo256]);
+  });
+
+  it("asks before a typed /context-window, then sends the command as typed", async () => {
+    for (const text of ["/context-window 256k", "/context-window 256K", "/context-window 256000"]) {
+      const h = using(200000);
+      typed(h, text);
+      expect(switches(h)).toEqual([]);
+      expect(h.doc.querySelector(".confirm-overlay .confirm-body")!.textContent).toContain("may trigger auto-compact");
+      click(h.window, button(h, "Switch to 256K"));
+      await Promise.resolve();
+      expect(switches(h)).toEqual([{ type: "send", text, bare: true }]);
+    }
+  });
+
+  it("a cancelled typed switch sends nothing and leaves the command in the composer", async () => {
+    const h = using(300000);
+    typed(h, "/context-window 256k");
+    click(h.window, button(h, "Cancel"));
+    await Promise.resolve();
+    expect(switches(h)).toEqual([]);
+    expect((h.doc.getElementById("input") as HTMLTextAreaElement).value).toBe("/context-window 256k");
+  });
+
+  it("asks on a phone as well", async () => {
+    const h = using(300000, at500, { remote: true });
+    choose(h, sizeSelect(h), 256000);
+    expect(dialog(h)).not.toBeNull();
+    click(h.window, button(h, "Switch to 256K"));
+    await Promise.resolve();
+    expect(switches(h)).toEqual([switchTo256]);
   });
 });

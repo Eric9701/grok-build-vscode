@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { AcpClient } from "../src/acp";
 import { parseContextWindowSize, contextWindowSizes } from "../src/context-selection";
+import { parseContextWindowSize as webviewParseContextWindowSize, contextWindowShrinkRisk } from "../media/webview-helpers.js";
 import { CodexBackend } from "../src/codex-backend";
 
 function setup() {
@@ -34,6 +35,28 @@ describe("native context selection", () => {
     expect(parseContextWindowSize("500000")).toBe(500000);
     expect(parseContextWindowSize("256000")).toBe(256000);
     for (const text of ["0", "-1", "1.5k", "500kb", "500k high", "Infinity"]) expect(parseContextWindowSize(text)).toBeUndefined();
+  });
+  it("reads a typed size the same way in the webview as in the host", () => {
+    // The webview decides whether `/context-window <size>` asks first; the
+    // host applies it. Two copies, one fixture set, equal answers.
+    const fixtures = ["500k", "500K", " 500000 ", "256000", "256k", "", " ", "0", "-1", "1.5k", "500kb", "500k high", "Infinity", "9007199254740993", "k", "00256k"];
+    for (const text of fixtures) expect(webviewParseContextWindowSize(text), JSON.stringify(text)).toBe(parseContextWindowSize(text));
+  });
+  it("asks before a switch down only when the conversation may not fit", () => {
+    // 70% of 256K is 179,200 tokens exactly.
+    const at500 = (used: number) => contextWindowShrinkRisk(used, 256000, 500000);
+    expect(at500(100000)).toBeNull();
+    expect(at500(179200)).toBeNull();
+    expect(at500(179201)).toBe("may");
+    expect(at500(256000)).toBe("may");
+    expect(at500(256001)).toBe("will");
+    expect(at500(499000)).toBe("will");
+    // A larger or equal size, or an unknown usage, never asks.
+    expect(contextWindowShrinkRisk(300000, 500000, 256000)).toBeNull();
+    expect(contextWindowShrinkRisk(300000, 256000, 256000)).toBeNull();
+    for (const used of [0, undefined, NaN]) expect(contextWindowShrinkRisk(used, 256000, 500000)).toBeNull();
+    // An unknown current size cannot be shown to be larger.
+    expect(contextWindowShrinkRisk(300000, 256000, undefined)).toBeNull();
   });
   it("confirms the native override before publishing its active value", async () => {
     const { client, request } = setup();

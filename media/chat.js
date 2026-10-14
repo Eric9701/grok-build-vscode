@@ -4259,6 +4259,40 @@
     return true;
   }
 
+  /** Runs `proceed` now, or once the person agrees to a switch down that can
+   *  cost this conversation an auto-compact (contextWindowShrinkRisk) -- the
+   *  CLI takes the smaller window without a word and compacts before the next
+   *  turn. `declined` runs if they cancel; nothing is sent then. Every way of
+   *  switching comes through here: the popup's dropdown, the picker after a
+   *  model change and a typed `/context-window`. */
+  function afterShrinkConfirmed(selection, size, proceed, declined = () => {}) {
+    const current = selection.selectedSize ?? state.contextWindow;
+    const risk = globalThis.GrokWebviewHelpers.contextWindowShrinkRisk(state.usedTokens, size, current);
+    if (!risk) { proceed(); return; }
+    const target = compactTokens(size);
+    // No usage figure in the sentence: rounded, 256,400 tokens reads "256K"
+    // beside "more than 256K", while the band itself is exact.
+    uiConfirm({
+      title: `Switch to ${target}?`,
+      body: risk === "will"
+        ? `This conversation no longer fits in ${target}, so switching will trigger auto-compact on your next message.`
+        : `This conversation already fills more than 70% of ${target}, so switching may trigger auto-compact on your next message.`,
+      confirmLabel: `Switch to ${target}`,
+    }).then((ok) => (ok ? proceed() : declined()));
+  }
+
+  /** A typed `/context-window`: the host parses and applies it, but a size
+   *  that switches down asks here first, like the controls do. Anything this
+   *  cannot judge -- no size, one not offered, a locked session the host will
+   *  refuse anyway -- goes to the host exactly as before. */
+  function sendContextWindowCommand(text) {
+    const send = () => vscode.postMessage({ type: "send", text, bare: true });
+    const selection = contextWindowSelectionShown();
+    const size = globalThis.GrokWebviewHelpers.parseContextWindowSize(text.replace(/^\/context-window/i, ""));
+    if (!selection || !selection.available || contextWindowLocked(selection) || !selection.sizes.includes(size)) { send(); return; }
+    afterShrinkConfirmed(selection, size, send);
+  }
+
   /** The context popup's size control: one row, a label and the same native
    *  <select> Settings uses, placed after the occupancy block because it is
    *  rarely changed. The picker that follows a model change keeps its own rows
@@ -4311,15 +4345,18 @@
     for (const size of selection.sizes) {
       const option = document.createElement("option");
       option.value = String(size);
-      option.textContent = compactTokens(size) + (size === selection.defaultSize ? " · CLI default" : "") + (size < state.usedTokens ? " · may compact" : "");
+      option.textContent = compactTokens(size) + (size === selection.defaultSize ? " · CLI default" : "") + (size < state.usedTokens ? " · will compact" : "");
       select.appendChild(option);
     }
     const value = offered ? String(shown) : "";
     select.value = value;
     select.onchange = () => {
       const size = Number(select.value);
-      if (chooseContextWindow(selection, size)) state.contextWindowRequest = { sessionId: selection.sessionId, modelId: selection.modelId, size };
-      else select.value = value;
+      const putBack = () => { select.value = value; };
+      afterShrinkConfirmed(selection, size, () => {
+        if (chooseContextWindow(selection, size)) state.contextWindowRequest = { sessionId: selection.sessionId, modelId: selection.modelId, size };
+        else putBack();
+      }, putBack);
     };
     row.append(label, select);
     wrap.appendChild(row);
@@ -4352,9 +4389,11 @@
       row.tabIndex = locked ? -1 : 0;
       row.setAttribute("aria-disabled", String(locked));
       row.textContent = compactTokens(size) + (size === selection.defaultSize ? " · CLI default" : "") + (size === selection.selectedSize ? " ✓" : "");
-      row.title = size < state.usedTokens ? "Choosing this smaller window may start native auto-compaction." : "Applies to this session; server access limits still apply.";
-      if (size < state.usedTokens) row.textContent += " · may compact";
-      const choose = () => chooseContextWindow(selection, size);
+      // The conversation no longer fits this size: the CLI will compact it
+      // before the next turn (the same "will" band contextWindowShrinkRisk asks about).
+      row.title = size < state.usedTokens ? "This conversation no longer fits in this size, so choosing it will trigger auto-compact on your next message." : "Applies to this session; server access limits still apply.";
+      if (size < state.usedTokens) row.textContent += " · will compact";
+      const choose = () => afterShrinkConfirmed(selection, size, () => chooseContextWindow(selection, size));
       row.onclick = (event) => { event.stopPropagation(); if (!locked) choose(); };
       row.onkeydown = (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); if (!locked) choose(); }
@@ -18244,7 +18283,7 @@
 
   function sendOrStop() {
     if (/^\/context-window(?:\s|$)/i.test(input.value.trim())) {
-      vscode.postMessage({ type: "send", text: input.value.trim(), bare: true });
+      sendContextWindowCommand(input.value.trim());
       return;
     }
     if (state.contextWindowSelection?.changing) return;
@@ -18793,7 +18832,7 @@
   // listening for the next utterance.
   function submitMessage(text) {
     if (/^\/context-window(?:\s|$)/i.test((text || "").trim())) {
-      vscode.postMessage({ type: "send", text: (text || "").trim(), bare: true });
+      sendContextWindowCommand((text || "").trim());
       return;
     }
     const t = (text || "").trim();

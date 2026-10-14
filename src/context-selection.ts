@@ -4,6 +4,9 @@ export function contextWindowSizes(raw: unknown, fallback?: unknown): number[] {
   return [...new Set(values.filter((n): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0))];
 }
 
+/** MIRRORED in media/webview-helpers.js, which reads a typed size to decide
+ *  whether a switch down asks first. KEEP THE TWO IN STEP:
+ *  test/context-selection.test.ts drives one fixture set through both. */
 export function parseContextWindowSize(text: string): number | undefined {
   const match = /^(\d+)(k)?$/i.exec(text.trim());
   if (!match) return undefined;

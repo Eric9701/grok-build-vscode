@@ -233,6 +233,34 @@
     return true;
   }
 
+  /** MIRRORED from src/context-selection.ts so the webview can read the size
+   *  in a typed `/context-window 256k` before deciding whether to ask first.
+   *  KEEP THE TWO IN STEP: test/context-selection.test.ts drives one fixture
+   *  set through both. */
+  function parseContextWindowSize(text) {
+    const match = /^(\d+)(k)?$/i.exec(String(text).trim());
+    if (!match) return undefined;
+    const value = Number(match[1]) * (match[2] ? 1000 : 1);
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  }
+
+  /**
+   * What switching DOWN to `size` costs a conversation using `used` tokens.
+   * The CLI accepts the smaller window at once and auto-compacts before the
+   * next turn when the conversation does not fit, so a switch that can do that
+   * asks first: "will" when the conversation is already larger than `size`,
+   * "may" above 70% of it, null otherwise -- and null for a larger size or an
+   * unknown usage, which switch as they always did. Deliberately not the CLI's
+   * own auto-compact threshold: that is configurable, and this errs early.
+   */
+  function contextWindowShrinkRisk(used, size, current) {
+    if (!(used > 0) || !(size > 0) || !(size < current)) return null;
+    if (used > size) return "will";
+    // Integer arithmetic: 0.7 * size is not exact at the boundary.
+    if (used * 10 > size * 7) return "may";
+    return null;
+  }
+
   /**
    * One pending user write. Paint immediately; the next frame that names
    * `key` is the authority and the overlay dies. Not a store — confirm,
@@ -3154,7 +3182,7 @@
     return n === 1 ? "Changed 1 file" : `Changed ${n.toLocaleString("en-US")} files`;
   }
 
-  const api = { WELCOME_TIPS, welcomeTipById, welcomeTipsFor, welcomeTipCopy, splitWelcomeTipCopy, addProjectMenuItems, addProjectFolderPreview, addProjectForm, parseCloneQuery, filterGithubRepos, githubRepoNameParts, formatWaitElapsed, FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, composerHasSendIntent, explicitVisibleChips, normalizeQueuedSends, queuedSendsText, queuedSendsChips, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, normalizeTurnEditPathKey, parseShellDeletePaths, aggregateTurnEdits, turnDiffSummaryTitle, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents, flattenHistoryMessages, splitHistoryWindow, countHistoryReplayCounters, partitionHistoryCards, GITHUB_FINE_GRAINED_TOKEN_URL, fillFineGrainedTokenHint };
+  const api = { WELCOME_TIPS, welcomeTipById, welcomeTipsFor, welcomeTipCopy, splitWelcomeTipCopy, addProjectMenuItems, addProjectFolderPreview, addProjectForm, parseCloneQuery, filterGithubRepos, githubRepoNameParts, formatWaitElapsed, FILE_EXTS, HOST_MESSAGE_TYPES, WEBVIEW_MESSAGE_TYPES, isKnownHostMessage, composerHasSendIntent, explicitVisibleChips, normalizeQueuedSends, queuedSendsText, queuedSendsChips, contextOverheadTokens, nextContextBreakdown, contextBreakdownIsCurrent, parseContextWindowSize, contextWindowShrinkRisk, createPendingOverlay, getMentionQuery, applyMentionPick, looksLikeFileRef, formatRelativeTime, modelPickerLabel, modelDisplayName, MIC_STATES, nextMicState, trailingSendPhrase, versionedSiblingUrl, buildQuestionAnswers, isFreeTextOptionLabel, isSubagentToolCall, subagentLabel, cleanSubagentOutput, parseSubagentTaskResult, shouldStickToBottom, stickThresholdPx, splitMath, stripUnsupportedTex, toolFailureText, isMediaGenToolCall, mediaGenZeroRetentionHint, TOOL_LABEL_MAX, middleElide, isAdvertisedSkill, getSlashQuery, applySlashPick, filterCommands, highlightQueryParts, appendHighlightedText, commandProgramLabel, commandTextPreview, MAX_COMMAND_OUTPUT_CHARS, capCommandOutput, extractToolResultOutput, commandOutputWasCancelled, commandOutputTruncationNote, computeLineDiff, normalizeTurnEditPathKey, parseShellDeletePaths, aggregateTurnEdits, turnDiffSummaryTitle, parseAttachmentContext, parseSelectionBlocks, parseImageTags, orderPermissionOptions, defaultPermissionIndex, shouldFocusPermissionCard, isTypeThroughKey, isInterjectionText, stripInterjectionEnvelope, spokenTextFromMarkdown, isRelaySendRejection, panelReclampOnResizeAllowed, wireFullscreenSafeReclamp, distributeSidePanelWidths, chatZoomFactor, unzoomClientPx, exportSessionMarkdown, exportSessionFilename, isExportableSessionEvent, replayedUserBubbleVerdict, truncateExportEvents, flattenHistoryMessages, splitHistoryWindow, countHistoryReplayCounters, partitionHistoryCards, GITHUB_FINE_GRAINED_TOKEN_URL, fillFineGrainedTokenHint };
 
   Object.assign(api, { PROVIDER_ACTIONS, providerSupports, clearHistoryConfirmation });
 
