@@ -127,9 +127,26 @@ export function normalizeAgySessionResponse(response: any, keyMode = false): any
     ? response.models.availableModels.map((entry: any) => entry?.modelId).filter((id: unknown): id is string => typeof id === "string")
     : [];
   const models = modelsFromAgyConfigOptions(response.configOptions, variantIds);
-  if (keyMode) models.availableModels = agyKeyChatModels(models.availableModels, models.currentModelId);
-  if (!models.availableModels.length) return response;
+  models.availableModels = keyMode
+    ? agyKeyChatModels(models.availableModels, models.currentModelId)
+    : models.availableModels.filter((model) => !isAgyGemini2(model.modelId));
+  if (!models.availableModels.length) {
+    const listed = response.models?.availableModels;
+    if (!Array.isArray(listed)) return response;
+    return { ...response, models: { ...response.models, availableModels: listed.filter((model: any) => !isAgyGemini2(String(model?.modelId ?? ""))) } };
+  }
   return { ...response, models };
+}
+
+/**
+ * Gemini 2 (2.0, 2.5 and their variants) is never offered, in either sign-in
+ * mode and not even as the model in use: the owner's call, 2026-10-15. A
+ * gateway session can start on the first model it lists, `gemini-2.5-flash`
+ * for the key measured, and keeping the model in use kept that row for the
+ * whole conversation after the move to Gemini 4 Argon.
+ */
+export function isAgyGemini2(modelId: string): boolean {
+  return /^gemini-2(?:[.-]|$)/.test(modelId);
 }
 
 /**
@@ -139,12 +156,13 @@ export function normalizeAgySessionResponse(response: any, keyMode = false): any
  * models, music (Lyria), robotics, computer-use and deep-research agents,
  * Gemma, and `-latest` aliases of models already listed. The picker keeps the
  * Gemini chat models: an id starting `gemini-` with none of those markers and
- * no `-latest`. Newest first, so Gemini 4 Argon leads.
+ * no `-latest`, and not Gemini 2 (`isAgyGemini2`). Newest first, so Gemini 4
+ * Argon leads.
  *
  * Only in key mode: an OAuth catalog can carry non-Gemini chat models
  * (Antigravity offers some on paid tiers), which this rule would hide. The
  * model in use is kept even when the rule would drop it, so the picker never
- * loses its own selection.
+ * loses its own selection -- except Gemini 2, which is never shown.
  */
 const NON_CHAT_MARKER = /(?:^|-)(?:tts|image|live|omni|embedding|transcribe|robotics|computer-use|native-audio|audio)(?:-|$)|nano-banana|deep-research/;
 
@@ -159,7 +177,7 @@ function agyModelVersion(modelId: string): number {
 
 export function agyKeyChatModels<T extends { modelId: string }>(models: readonly T[], currentModelId?: string): T[] {
   return models
-    .filter((model) => isAgyKeyChatModel(model.modelId) || model.modelId === currentModelId)
+    .filter((model) => !isAgyGemini2(model.modelId) && (isAgyKeyChatModel(model.modelId) || model.modelId === currentModelId))
     .map((model, index) => ({ model, index }))
     .sort((a, b) => agyModelVersion(b.model.modelId) - agyModelVersion(a.model.modelId) || a.index - b.index)
     .map(({ model }) => model);
@@ -680,9 +698,12 @@ export class AgyBackend implements AcpBackend<"agy"> {
   turnEnded(outcome: "completed" | "cancelled" | "failed"): any[] { return this.shapes.settle(outcome); }
   normalizePermissionParams(params: any): any { return normalizeAgyPermissionParams(params); }
 
-  /** A key's conversation starts on Gemini 4 Argon when nothing is remembered. */
+  /** A key's conversation starts on Gemini 4 Argon when nothing is remembered,
+   *  else on the newest model offered: the gateway's own start can be a Gemini
+   *  2 model (the first it lists), which the picker never shows. */
   defaultModelId(modelIds: readonly string[]): string | undefined {
-    return this.options.keyMode && modelIds.includes(AGY_KEY_DEFAULT_MODEL) ? AGY_KEY_DEFAULT_MODEL : undefined;
+    if (!this.options.keyMode) return undefined;
+    return modelIds.includes(AGY_KEY_DEFAULT_MODEL) ? AGY_KEY_DEFAULT_MODEL : modelIds.find((id) => !isAgyGemini2(id));
   }
 
   setModel(sessionId: string, modelId: string): { method: string; params: any } {

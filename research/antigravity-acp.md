@@ -143,7 +143,8 @@ aistudio.google.com/apikey). Vertex AI and Enterprise sign-in are not offered.
   thinking config. So key mode has no effort control: `AgyBackend` sends none
   and the picker shows none. The picker keeps the Gemini chat models (see the
   model filter below), newest first, and a conversation with no remembered
-  model starts on `gemini-4-argon` (`AgyBackend.defaultModelId`).
+  model starts on `gemini-4-argon`, else on the newest model offered
+  (`AgyBackend.defaultModelId`).
 - Modes: Agent and Auto accept (client-side, always `allow_once` --
   `allow_always` is saved with the conversation). No Plan: `/plan` waits for a
   "Proceed" click ACP cannot deliver. `/plan` and `/logout` are hidden from the
@@ -375,20 +376,29 @@ observable change that should make us look again.
   trajectory id or a `_meta` naming the subagent, or `invoke_subagent`
   completes with the child's result.
 
-### The model filter in key mode
+### The model filter
 
-- **Decision:** keep ids starting `gemini-` that carry none of `tts`, `image`,
-  `live`, `omni`, `embedding`, `transcribe`, `robotics`, `computer-use`,
-  `audio`, `nano-banana`, `deep-research`, and are not a `-latest` alias;
-  newest first; never drop the model in use. Only in key mode -- a Google
-  sign-in's catalog is shown as the server sends it.
+- **Decision:** in key mode, keep ids starting `gemini-` that carry none of
+  `tts`, `image`, `live`, `omni`, `embedding`, `transcribe`, `robotics`,
+  `computer-use`, `audio`, `nano-banana`, `deep-research`, and are not a
+  `-latest` alias; newest first; never drop the model in use. In BOTH modes,
+  never show Gemini 2 (`gemini-2.0-*`, `gemini-2.5-*` and their variants,
+  `isAgyGemini2`), not even as the model in use; a key with no remembered
+  model and no Argon starts on the newest model offered instead. Otherwise a
+  Google sign-in's catalog is shown as the server sends it.
 - **Why:** the 40 models measured for one key include speech, image, music
   (Lyria), robotics, computer-use and deep-research models, Gemma, and aliases
   of models already listed; none of those is a chat model this agent can work
-  with, and a picker of 40 hides the 14 that are.
+  with, and a picker of 40 hides the 14 that are. Gemini 2 is the owner's call
+  (2026-10-15): never offer it. The gateway can start a session on the first
+  model it lists (`gemini-2.5-flash` for the key measured), so keeping the
+  model in use kept that row in the picker after the move to Argon.
 - **Evidence:** the MODELS line of the live gateway session is a fixture in
   `test/agy-tool-shapes.test.ts`.
 - **Risk:** a new chat family outside `gemini-` (the `antigravity-preview-*`
-  ids are unknown) is hidden; a new non-chat marker shows up until added.
+  ids are unknown) is hidden; a new non-chat marker shows up until added. A
+  model remembered for a project from before this rule (a Gemini 2 pick) is
+  still applied to that project's new conversations, with no row in the
+  picker, until another model is picked.
 - **Revisit when:** a key's catalog shows a model this filter gets wrong, or
   the server starts filtering its gateway catalog itself.

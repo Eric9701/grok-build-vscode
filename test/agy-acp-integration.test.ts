@@ -218,8 +218,9 @@ describe("Antigravity over ACP (real subprocess, fake server)", () => {
     const methods = received().map((entry) => entry.method);
     expect(methods.indexOf("authenticate")).toBeLessThan(methods.indexOf("session/new"));
     expect(received().find((entry) => entry.method === "authenticate").params).toEqual({ methodId: "gateway", _meta: { gateway: { baseUrl: lease.baseUrl } } });
-    // Chat models only, newest first; the start moved to Argon by itself.
-    expect(agy.availableModels.map((model) => model.modelId)).toEqual(["gemini-4-argon", "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"]);
+    // Chat models only, newest first and never Gemini 2 (the gateway can start on
+    // gemini-2.5-flash, the first it lists); the start moved to Argon by itself.
+    expect(agy.availableModels.map((model) => model.modelId)).toEqual(["gemini-4-argon", "gemini-3.8-flash"]);
     expect(agy.currentModelId).toBe("gemini-4-argon");
     expect(agy.availableModels.every((model) => !model.supportsReasoningEffort)).toBe(true);
     // Gateway mode has no thinking_level: effort is not offered, nothing is sent.
