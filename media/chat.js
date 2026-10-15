@@ -6993,6 +6993,10 @@
     // broken on the project a machine boots into: the host stored the choice,
     // this returned false, and the row never moved.
     if (sameCwd(repo.cwd, state.selectedRepoCwd)) return false;
+    // You opened it here: its rows arrive because you asked for them, and the
+    // age rule moving it into Archive under your cursor would answer that by
+    // taking it away. (An explicit Archive, above, still wins.)
+    if (state.railCollapsed[cwdKey(repo.cwd)] === false) return false;
     // The age rule NEVER runs on a guess. Without the project's conversations we
     // do not know when it was last worked in: `repo.updatedAt` is the session
     // DIRECTORY's mtime, and that does not move when you continue an existing
@@ -7676,14 +7680,56 @@
    *  entirely until the host proves it answers — one probe for the first repo,
    *  and the rest only once a `repoSessions` frame has come back. Without this
    *  an old host would be sent one dead request per repo on every catalog push. */
+  /** Projects shown open until you fold or open them yourself. Beyond these
+   *  a project starts folded, and its conversations are fetched only when it
+   *  is opened: a phone opening every project at once asked the host for every
+   *  list at the same moment, and many came back as "Loading…" or "Couldn't
+   *  load these conversations". */
+  const RAIL_OPEN_BY_DEFAULT = 3;
+  /** railDefaultOpenKeys for the rows of one render pass, computed once. */
+  let railOpenKeysForRender = null;
+
+  /** The projects that are open when you have not said otherwise: the first
+   *  few available ones in Projects, and those in Project Archive while that
+   *  group is open (opening the group is the act that asks for them). */
+  function railDefaultOpenKeys() {
+    const sections = railSections();
+    const keys = new Set(sections.active.filter((r) => r.available)
+      .slice(0, RAIL_OPEN_BY_DEFAULT).map((r) => cwdKey(r.cwd)));
+    if (!railGroupIsCollapsed("archived")) for (const r of sections.archived) keys.add(cwdKey(r.cwd));
+    return keys;
+  }
+
+  /**
+   * Whether a project's section is open. `railCollapsed[key]` is your own
+   * choice -- `true` folded, `false` opened -- and is kept per viewer. Without
+   * one: the selected project, the one holding the live conversation, an
+   * unavailable one (it has nothing to fetch) and railDefaultOpenKeys are open,
+   * the rest folded.
+   */
+  function railRepoExpanded(repo, openKeys) {
+    const key = cwdKey(repo.cwd);
+    const choice = state.railCollapsed[key];
+    if (choice === true) return false;
+    if (choice === false) return true;
+    if (!repo.available) return true;
+    if (sameCwd(repo.cwd, state.selectedRepoCwd) || key === state.railLiveRepoKey) return true;
+    return (openKeys || railDefaultOpenKeys()).has(key);
+  }
+
   function requestRailPreviews() {
     if (!rail() || !state.reposKnown) return;
     // Before capability proof there is exactly one probe. If it failed, only
     // the visible Retry may send it again; catalog repaints are not retries.
     if (!state.repoPreviewsSupported && Object.keys(state.repoPreviewErrors).length) return;
+    // Only the open sections: a folded project's list is fetched when it opens
+    // (toggleRepoExpand). The wire is unchanged, so an older host answers the
+    // same way it always has.
+    const openKeys = railDefaultOpenKeys();
     const wanted = railRepos().filter(
       (r) => r.available
         && !sameCwd(r.cwd, state.selectedRepoCwd)
+        && railRepoExpanded(r, openKeys)
         && !state.repoPreviews[cwdKey(r.cwd)]
         && !state.repoPreviewErrors[cwdKey(r.cwd)],
     );
@@ -7957,7 +8003,9 @@
       if (open) {
         const list = document.createElement("div");
         list.className = "rail-list rail-projects";
+        railOpenKeysForRender = railDefaultOpenKeys();
         for (const repo of repos) list.appendChild(renderRailRepo(repo, false));
+        railOpenKeysForRender = null;
         root.appendChild(list);
         if (emptyProjects) root.appendChild(railNote("Every project is archived."));
         if (noProjects) root.appendChild(railNote(RAIL_NO_PROJECTS));
@@ -7987,7 +8035,9 @@
       if (open) {
         const list = document.createElement("div");
         list.className = "rail-list rail-archived";
+        railOpenKeysForRender = railDefaultOpenKeys();
         for (const repo of archived) list.appendChild(renderRailRepo(repo, true));
+        railOpenKeysForRender = null;
         root.appendChild(list);
       }
       shownAnything = true;
@@ -8099,6 +8149,8 @@
       // Toggle: currently open → collapse; currently closed → expand.
       setRailGroupCollapsed(opts.group, opts.open);
       renderRail();
+      // Opening Project Archive opens the projects in it, which fetches them.
+      if (!opts.open) requestRailPreviews();
     };
     head.appendChild(btn);
     if (opts.action) head.appendChild(opts.action());
@@ -8978,7 +9030,7 @@
     // the positive form so the icon cannot drift from the list (closed icon on
     // an open section was a real screenshot bug when the two read different
     // shapes of the same store).
-    const expanded = !state.railCollapsed[key];
+    const expanded = railRepoExpanded(repo, railOpenKeysForRender || undefined);
 
     // No marker for the selected or the live project. The conversation you are
     // reading is highlighted where it sits, which says which project you are in
@@ -9034,9 +9086,14 @@
     head.appendChild(name);
 
     const toggleRepoExpand = () => {
-      if (expanded) state.railCollapsed[key] = true;
-      else delete state.railCollapsed[key];
+      // Remembered either way, so a project you opened stays open on this
+      // device and one you folded stays folded.
+      state.railCollapsed[key] = expanded;
       saveRailShape();
+      if (!expanded && repo.available && !sameCwd(repo.cwd, state.selectedRepoCwd)
+        && !state.repoPreviews[key] && state.repoPreviewsSupported !== false) {
+        requestRailPreview(repo);
+      }
       renderRail();
     };
     head.onclick = (e) => {

@@ -11,6 +11,7 @@
 
 ### Fixed
 
+- **The phone loads a project's conversations when you open it.** The rail on the phone and in the desktop app opened every project and asked for all their conversations at once, so many showed "Loading…" or "Couldn't load these conversations". Now the first three projects start open and the rest folded, a folded project's conversations load when you open it, and each device remembers what you opened and folded.
 - **The model chip waits for the models.** While a conversation is starting, and its agent has not yet said which models it offers (Antigravity can take over a minute on Windows), the model and effort chip reads "Loading models…" and does not open, instead of opening on the previous conversation's models or a placeholder. It opens as soon as the models arrive, and also when the start fails or the agent needs signing in, so recovery stays one click away. Applies on every surface, including the phone and the Pick Model command.
 - **A click on a conversation always opens it.** Clicking a conversation that a phone or browser tab was still loading was refused with "already being opened in another tab or view", and the selection jumped back. The click now waits for that load and lands on the conversation, with the row reading "opening…" meanwhile. A slow open (Antigravity can take over a minute) no longer snaps the selection back after a few seconds either.
 

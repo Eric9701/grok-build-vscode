@@ -3112,3 +3112,75 @@ describe("Recent from the host", () => {
     expect(recentNames(doc)).toEqual(["listed only", "sent in"]);
   });
 });
+
+// The phone and the desktop rail fetch a project's conversations only when it
+// is open. Opening every project at once asked the host for every list at the
+// same moment, and many came back "Loading…" or "Couldn't load these
+// conversations". The first few start open, the rest folded, and your own
+// open/fold choice is remembered per viewer.
+describe("lazy project lists", () => {
+  const many = ["alpha", "beta", "delta", "epsilon", "gamma", "zeta"].map((name, i) =>
+    ({ cwd: `/work/${name}`, label: name, available: true, pinned: false, updatedAt: 10 + i }));
+  const asked = (posted: any[]) => posted.filter((m) => m.type === "listRepoSessions").map((m) => m.cwd);
+  const answer = (window: Window, cwd: string) =>
+    dispatch(window, { type: "repoSessions", cwd, entries: [row(`${cwd}-1`, cwd, `${cwd} chat`, Date.now())], dots: {}, total: 1 });
+  const head = (doc: Document, label: string) =>
+    [...doc.querySelectorAll(".rail-repo")].find((s) => s.querySelector(".rail-repo-label")?.textContent === label)!;
+  function bootMany(seed?: string) {
+    const h = bootWebview({ remote: true, beforeScripts: (w: any) => {
+      withRail(w);
+      if (seed) w.localStorage.setItem("grok.remote.railShape:default", seed);
+    } });
+    dispatch(h.window, { type: "repos", entries: many, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    return h;
+  }
+
+  it("asks only for the open sections, and a folded project when you open it", () => {
+    const { doc, window, posted } = bootMany();
+    // One probe before the host has shown it answers previews...
+    expect(asked(posted)).toEqual(["/work/beta"]);
+    answer(window, "/work/beta");
+    // ...then the rest of the OPEN ones: the first three (alpha is the selected
+    // project and lists through `sessions`). The folded three are not asked.
+    expect(asked(posted)).toEqual(["/work/beta", "/work/delta"]);
+    for (const name of ["epsilon", "gamma", "zeta"]) {
+      expect(head(doc, name).getAttribute("data-expanded")).toBe("0");
+      expect(head(doc, name).textContent).not.toContain("Loading…");
+    }
+    // A push the host makes on its own (activity elsewhere) is stored, and does
+    // not fan out to the folded projects.
+    answer(window, "/work/zeta");
+    expect(asked(posted)).toEqual(["/work/beta", "/work/delta"]);
+    // Opening a folded project asks for it.
+    click(window, head(doc, "gamma").querySelector(".rail-repo-head") as HTMLElement);
+    expect(asked(posted)).toEqual(["/work/beta", "/work/delta", "/work/gamma"]);
+    expect(head(doc, "gamma").getAttribute("data-expanded")).toBe("1");
+  });
+
+  it("remembers what you opened and folded on this device", () => {
+    const first = bootMany();
+    answer(first.window, "/work/beta");
+    click(first.window, head(first.doc, "gamma").querySelector(".rail-repo-head") as HTMLElement);
+    click(first.window, head(first.doc, "beta").querySelector(".rail-repo-head") as HTMLElement);
+    const saved = first.window.localStorage.getItem("grok.remote.railShape:default")!;
+    expect(JSON.parse(saved).collapsed).toMatchObject({ "/work/gamma": false, "/work/beta": true });
+
+    const again = bootMany(saved);
+    // The probe goes to the first open project, then the rest fan out.
+    answer(again.window, asked(again.posted)[0]);
+    expect(head(again.doc, "gamma").getAttribute("data-expanded")).toBe("1");
+    expect(head(again.doc, "beta").getAttribute("data-expanded")).toBe("0");
+    expect(asked(again.posted)).toContain("/work/gamma");
+    expect(asked(again.posted)).not.toContain("/work/beta");
+  });
+
+  it("keeps a project you opened out of Project Archive's age rule", () => {
+    const old = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    const { doc, window } = bootMany();
+    answer(window, "/work/beta");
+    click(window, head(doc, "zeta").querySelector(".rail-repo-head") as HTMLElement);
+    dispatch(window, { type: "repoSessions", cwd: "/work/zeta", entries: [row("z1", "/work/zeta", "old chat", old)], dots: {}, total: 1 });
+    const projects = [...doc.querySelectorAll(".rail-list.rail-projects .rail-repo-label")].map((e) => e.textContent);
+    expect(projects).toContain("zeta");
+  });
+});
