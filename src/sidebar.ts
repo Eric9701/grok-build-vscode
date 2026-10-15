@@ -17076,7 +17076,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       sites,
     });
     await this.openDiffTexts(session, filePath, sides.oldText, sides.newText,
-      `Grok proposed: ${path.basename(filePath)}`, sides.firstChangedLine, requestId);
+      `${providerDisplayName(session.provider)} proposed: ${path.basename(filePath)}`, sides.firstChangedLine, requestId);
   }
 
   // Both callers own complete sides at this point. Turn diffs must bypass
@@ -17796,7 +17796,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (bare) {
       this.emit(session, {
         type: "error",
-        text: "Grok is mid-turn — that command was not run. Try again when the turn finishes.",
+        text: `${providerDisplayName(session.provider)} is mid-turn — that command was not run. Try again when the turn finishes.`,
       });
       return;
     }

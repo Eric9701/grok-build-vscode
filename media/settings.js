@@ -605,7 +605,7 @@
       id: "showThinking",
       category: "general",
       title: "Show thinking traces",
-      description: "Show Grok's reasoning traces in chat, including on already-loaded sessions.",
+      description: "Show the agent's reasoning traces in chat, including on already-loaded sessions.",
       kind: "toggle",
       defaultValue: false,
       visible: (s) => purposeOf(s) === "coding",

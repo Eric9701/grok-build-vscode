@@ -576,6 +576,9 @@
     signInCardFor: "",
     currentModelId: null,
     activeProvider: "grok",
+    /** Whether the host named the conversation's agent (a session frame with a
+     *  provider), so copy can say which agent rather than guess Grok. */
+    activeProviderNamed: false,
     providersKnown: false,
     providers: [],
     // Settings → Providers re-observation in flight. Host-owned; see the
@@ -5214,6 +5217,7 @@
       state.offeredModes = original ? modelBaseline.modes : null;
       state.currentModeId = original ? modelBaseline.modeId : "agent";
       state.activeProvider = provider;
+      state.activeProviderNamed = true;
       // Nothing can take a mode until the new provider's session exists, so
       // show its modes but hold them; the host's modeChanged releases them.
       const waiting = `Available once ${providerDisplayName(provider)} has started`;
@@ -5515,6 +5519,14 @@
     if (provider === "muse") return "Muse Code";
     if (provider === "agy") return "Antigravity";
     return "Grok";
+  }
+
+  // The conversation's agent by name, once the host has named it. A host that
+  // did not is "the agent": this renderer is newer than any host, so a guess
+  // of Grok would be wrong for every other provider.
+  function agentName(capitalized) {
+    if (state.activeProviderNamed) return providerDisplayName(state.activeProvider);
+    return capitalized ? "The agent" : "the agent";
   }
 
   function providerLogoId(provider) {
@@ -9441,7 +9453,7 @@
    *  to it, and says the extra part out loud when a turn is still running. */
   function deleteSessionWarning(active) {
     if (!active) return "This cannot be undone.";
-    const stopping = state.busy ? " Grok is still working; that stops." : "";
+    const stopping = state.busy ? ` ${agentName(true)} is still working; that stops.` : "";
     return "This is the conversation you have open. It will close and a new one will start in the same project."
       + stopping + " This cannot be undone.";
   }
@@ -16368,11 +16380,7 @@
   }
 
   function activityAriaLabel() {
-    if (state.activeProvider === "codex") return "OpenAI is working";
-    if (state.activeProvider === "claude") return "Claude is working";
-    if (state.activeProvider === "muse") return "Muse Code is working";
-    if (state.activeProvider === "agy") return "Antigravity is working";
-    return "Grok is working";
+    return `${agentName(true)} is working`;
   }
 
   function syncProviderVoice() {
@@ -16397,7 +16405,7 @@
     const el = document.createElement("div");
     el.className = "thinking-indicator";
     el.innerHTML = `<span class="thinking-indicator-icon">${ICON.brain}</span><span class="thinking-indicator-label">Thinking</span>${BLINK_DOTS}`;
-    el.setAttribute("aria-label", "Grok is thinking");
+    el.setAttribute("aria-label", `${agentName(true)} is thinking`);
     appendTranscriptChild(el);
     state.thinkingIndicatorEl = el;
     scrollToBottom();
@@ -17002,7 +17010,7 @@
 
   // ---------- question card (ask_user_question) ----------
 
-  // A "Grok is asking" label + the question text, prominent. Shared by the live
+  // An "<agent> is asking" label + the question text, prominent. Shared by the live
   // and restored cards so they look identical.
   function buildQuestionHead(el, headingText) {
     const title = document.createElement("div");
@@ -17044,7 +17052,7 @@
     el.className = "card question";
     el.dataset.questionReqId = String(req.id);
 
-    const title = buildQuestionHead(el, "Grok is asking");
+    const title = buildQuestionHead(el, `${agentName(true)} is asking`);
 
     // selections[i] = array of chosen labels for question i.
     const selections = questions.map(() => []);
@@ -17512,7 +17520,7 @@
     feedback.className = "plan-feedback";
     feedback.rows = 2;
     feedback.setAttribute("dir", "auto");
-    feedback.placeholder = "Optional comment — Grok decides what to do with it";
+    feedback.placeholder = `Optional comment — ${agentName(true)} decides what to do with it`;
     el.appendChild(feedback);
 
     const actions = document.createElement("div");
@@ -18154,7 +18162,7 @@
       sendBtn.disabled = true;
     } else if (composerHasSendIntent(input.value, state.chips)) {
       sendBtn.innerHTML = ICON.arrowUp;
-      sendBtn.title = "Queue — sends when Grok finishes";
+      sendBtn.title = `Queue — sends when ${agentName()} finishes`;
       sendBtn.disabled = false;
     } else {
       sendBtn.innerHTML = ICON.square;
@@ -18177,7 +18185,7 @@
     // Everything or nothing: an older host would ignore extra chips and queue
     // the text alone. Refuse rather than silently drop attachments.
     if (chips.length && !(state.hostCaps && state.hostCaps.queueSendChips)) {
-      addError("This host cannot queue attachments. Wait until Grok finishes, then send.");
+      addError(`This host cannot queue attachments. Wait until ${agentName()} finishes, then send.`);
       return true;
     }
     stopVoiceForManualSend();
@@ -19067,7 +19075,7 @@
     tag.innerHTML = `${ICON.clock}<span>${state.queuedSubmissionRejected || rejected ? "Not sent" : "Queued"}</span>`;
     tag.title = state.queuedSubmissionRejected || rejected
       ? "The relay rejected this prompt. Edit it to retry, or remove it."
-      : "Sends when Grok finishes";
+      : `Sends when ${agentName()} finishes`;
     const actions = document.createElement("span");
     actions.className = "queued-actions";
     const editBtn = document.createElement("button");
@@ -19115,7 +19123,7 @@
     if (state.steerSupported && steerableProvider()) {
       const steerBtn = document.createElement("button");
       steerBtn.className = "queued-action queued-steer";
-      steerBtn.title = "Steer — submit now without interrupting Grok";
+      steerBtn.title = `Steer — submit now without interrupting ${agentName()}`;
       steerBtn.innerHTML = `${ICON.cornerDownRight}<span>Steer</span>`;
       // pointerdown, NOT click: the queued block is pinned to the end of the
       // chat and every streamed chunk runs scrollToBottom, so while the agent is
@@ -20751,6 +20759,7 @@
         state.currentModelId = msg.currentModelId;
         state.activeProvider = msg.provider === "codex" || msg.provider === "claude" || msg.provider === "muse" && museAvailable
           || msg.provider === "agy" && agyAdvertised ? msg.provider : "grok";
+        state.activeProviderNamed = typeof msg.provider === "string" && !!msg.provider;
         // modeChanged is posted before session, so the button was painted for
         // the previous provider. Repaint once this frame names the new one.
         updateModeBtn(state.currentModeId);
@@ -21428,7 +21437,7 @@
         if (!state.replaying && (msg.req.options || []).length > 0) {
           // Tool titles can expose commands or file operations. The accessibility
           // cue says what the user must do without reading tool details aloud.
-          speakWaitingPrompt("Grok is waiting for your permission. Review the request and choose an option.");
+          speakWaitingPrompt(`${agentName(true)} is waiting for your permission. Review the request and choose an option.`);
         }
         break;
       case "permissionOptions":
@@ -21475,7 +21484,7 @@
             .map((question) => questionText(question))
             .filter(Boolean)
             .join(" ");
-          speakWaitingPrompt(questions || "Grok is waiting for your answer.");
+          speakWaitingPrompt(questions || `${agentName(true)} is waiting for your answer.`);
         }
         break;
       case "planHistory":

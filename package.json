@@ -467,7 +467,7 @@
         "grok.showThinking": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show Grok's reasoning (thinking) traces in chat. Off by default — a lightweight \"Thinking…\" indicator stands in while Grok reasons. Also toggleable live from the gear menu → **Config & debug → Show thinking traces** (applies to already-loaded sessions too)."
+          "markdownDescription": "Show the agent's reasoning (thinking) traces in chat. Off by default — a lightweight \"Thinking…\" indicator stands in while the agent reasons. Also toggleable live from the gear menu → **Config & debug → Show thinking traces** (applies to already-loaded sessions too)."
         },
         "grok.expandCommandOutputs": {
           "type": "boolean",
@@ -497,22 +497,22 @@
         "grok.soundNotifications": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Play a short sound when Grok finishes a turn or hits an error — a rising chime on completion, a lower tone on error. Off by default. Plays **only when the AFK Pilot panel isn't focused** (you've switched to the editor or another window), so it notifies you when you've stepped away without beeping while you watch. Also toggleable live from the gear menu → **Config & debug → Sound notifications**."
+          "markdownDescription": "Play a short sound when the agent finishes a turn or hits an error — a rising chime on completion, a lower tone on error. Off by default. Plays **only when the AFK Pilot panel isn't focused** (you've switched to the editor or another window), so it notifies you when you've stepped away without beeping while you watch. Also toggleable live from the gear menu → **Config & debug → Sound notifications**."
         },
         "grok.processingSound": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Play a quiet repeating sound while Grok is still working. The first cue waits seven seconds, then repeats every eight seconds until the turn ends. Off by default and separate from the completion/error sound. Also toggleable live from the gear menu → **Config & debug → Still-processing sound**."
+          "markdownDescription": "Play a quiet repeating sound while the agent is still working. The first cue waits seven seconds, then repeats every eight seconds until the turn ends. Off by default and separate from the completion/error sound. Also toggleable live from the gear menu → **Config & debug → Still-processing sound**."
         },
         "grok.readRepliesAloud": {
           "type": "boolean",
           "default": false,
-          "description": "Read completed Grok replies aloud in the VS Code chat. Code blocks are skipped."
+          "description": "Read completed replies aloud in the VS Code chat. Code blocks are skipped."
         },
         "grok.summarizeRepliesAloud": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Read simplified summaries of spoken Grok replies. Each reply costs an extra xAI call and adds network delay; the full reply is used if summarization fails. Uses the same credential resolution as Voice input. AFK Pilot keeps its own per-device browser preference."
+          "markdownDescription": "Read simplified summaries of spoken replies. Each reply costs an extra xAI call and adds network delay; the full reply is used if summarization fails. Uses the same credential resolution as Voice input. AFK Pilot keeps its own per-device browser preference."
         },
         "grok.remote.keepAwake": {
           "type": "boolean",

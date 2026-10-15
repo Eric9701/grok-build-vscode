@@ -1810,7 +1810,7 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     dispatch(h.window, { type: "agentStart" });
     const el = grokking(h.doc)!;
     expect(el.querySelector(".grokking-label")?.textContent).toBe("Opening AI");
-    expect(el.getAttribute("aria-label")).toBe("OpenAI is working");
+    expect(el.getAttribute("aria-label")).toBe("Codex is working");
     expect(el.querySelector(".grokking-icon svg")).not.toBeNull();
   });
 
@@ -2671,11 +2671,33 @@ describe("thinking traces toggle (#26)", () => {
       options: [{ optionId: "allow", kind: "allow_once", name: "Allow once" }],
     } });
 
+    // No session frame named the agent, so the cue does not guess Grok.
     expect(spoken).toEqual([
       "Which database should I use?",
-      "Grok is waiting for your permission. Review the request and choose an option.",
+      "The agent is waiting for your permission. Review the request and choose an option.",
     ]);
     expect(spoken.join(" ")).not.toContain("private-file.txt");
+  });
+
+  // Copy about the agent names the conversation's own agent, and "the agent"
+  // when the host did not say which it is.
+  it.each([
+    ["claude", "Claude is asking", "Optional comment — Claude decides what to do with it"],
+    ["agy", "Antigravity is asking", "Optional comment — Antigravity decides what to do with it"],
+    [undefined, "The agent is asking", "Optional comment — The agent decides what to do with it"],
+  ])("names the conversation's agent in its cards (%s)", (provider, heading, placeholder) => {
+    const { window, doc } = bootWebview();
+    if (provider) {
+      dispatch(window, { type: "providerState", providers: [{ id: provider, connected: true }] });
+      dispatch(window, { type: "session", sessionId: "s", provider, models: [] });
+    }
+    dispatch(window, { type: "questionRequest", req: {
+      id: 3, questions: [{ question: "Which one?", options: [{ label: "A" }, { label: "B" }], multiSelect: false }],
+    } });
+    expect(doc.querySelector(".card.question .card-title")!.textContent).toBe(heading);
+    dispatch(window, { type: "exitPlanRequest", req: { id: 4, plan: "1. Do it" } });
+    expect((doc.querySelector(".card.plan .plan-feedback") as HTMLTextAreaElement).placeholder).toBe(placeholder);
+    expect(doc.body.textContent).not.toContain("Grok is asking");
   });
 
   it("never speaks a completed local reply inside a history replay bracket", () => {
