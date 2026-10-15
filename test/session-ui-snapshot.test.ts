@@ -4,7 +4,7 @@ import { Session, sessionUiSnapshot } from "../src/session";
 
 const OFFERED_MODES = {
   grok: ["agent", "plan", "yolo"],
-  claude: ["agent", "plan", "yolo"],
+  claude: ["agent", "auto", "plan", "yolo"],
   codex: ["agent", "yolo"],
   muse: ["yolo", "agent", "onRequest"],
   agy: ["agent", "yolo"],

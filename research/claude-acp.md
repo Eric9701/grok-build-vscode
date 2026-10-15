@@ -73,6 +73,30 @@ text block. The host lifts that with `planTextFromPermissionToolCall`
 and the webview shows grok's plan-review card plus Claude's mode options
 (`default` / `acceptEdits` / `auto` / `bypassPermissions` / keep planning).
 
+## Auto mode
+
+claude-agent-acp 0.76.0 offers `default` ("Manual"), `acceptEdits`, `plan`,
+`auto` ("Claude handles permission decisions", `_meta.kind: auto_review`) and
+`bypassPermissions`. `auto` is the host's **Auto mode** (`hasNativeAutoMode`),
+and a new conversation starts in it when `grok.defaultMode` is unset or
+`auto` (`startsInNativeAuto`); an explicit Agent or Auto accept is kept, and a
+resume keeps its own mode.
+
+- In Auto, Claude still asks about what it judges risky, so the host does
+  **not** auto-accept: `auto` is not in `ADAPTER_AUTO_ACCEPT_MODES`.
+- Auto needs a model (and account) that supports it, which ACP does not tell
+  the host in advance (`ModelInfo.supportsAutoMode` stays in the adapter).
+  Without it the adapter switches to `acceptEdits`, reports that as
+  `current_mode_update`, and posts "Auto mode unavailable". The host reads an
+  `acceptEdits` while it is in Auto as that fallback (`onNativeAutoMode`):
+  it settles once on Agent (`default`), not Accept edits, which it would treat
+  as Auto accept; remembers the model for the rest of the run so new
+  conversations on it start in Agent without asking again; and never retries
+  on its own. A hand-picked Auto that falls back says so.
+- Codex is deliberately left alone: its default `agent` is already its
+  auto-review mode ("Approve for me"), and its classic Auto preset is a second
+  candidate under the id `read-only`.
+
 ## Context usage
 
 `usage_update.used` is the **current assistant call's** billed total

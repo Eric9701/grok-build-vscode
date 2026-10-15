@@ -336,15 +336,17 @@
           "enum": [
             "",
             "agent",
+            "auto",
             "yolo"
           ],
           "enumDescriptions": [
-            "Agent mode (CLI default)",
+            "The agent's own default: Auto mode where the agent has one (Claude Code), Agent mode elsewhere",
             "Agent mode",
+            "Auto mode where the agent has one (Claude Code decides what is safe and asks about the rest); Agent mode elsewhere",
             "Auto accept — auto-approve every permission request"
           ],
           "default": "",
-          "description": "Mode for new sessions. Updated automatically to remember your last switch between Agent and Auto accept (Plan is never remembered). Empty = Agent."
+          "description": "Mode for new sessions. Updated automatically to remember your last switch between Agent, Auto and Auto accept (Plan is never remembered). Empty = Auto mode where the agent has one (Claude Code), Agent mode elsewhere. If Claude Code's Auto mode is not available for the model, the conversation stays in Agent mode."
         },
         "grok.includeActiveFileByDefault": {
           "type": "boolean",

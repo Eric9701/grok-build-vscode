@@ -1157,6 +1157,8 @@
 
   const MODE_META = {
     agent: { icon: ICON.bot, label: "Agent mode" },
+    // A provider's own Auto mode; only a host that advertises it offers it.
+    auto: { icon: ICON.shield, label: "Auto mode" },
     plan: { icon: ICON.listTree, label: "Plan mode" },
     yolo: { icon: ICON.zap, label: "Auto accept" },
   };
@@ -1401,7 +1403,7 @@
   function offeredModeIds() {
     if (Array.isArray(state.offeredModes)) return state.offeredModes;
     if (state.activeProvider === "muse") return [];
-    return Object.keys(MODE_META).filter((id) => id !== "plan" || state.activeProvider !== "codex");
+    return Object.keys(MODE_META).filter((id) => id !== "auto" && (id !== "plan" || state.activeProvider !== "codex"));
   }
 
   function offersMuseModes() {
@@ -1427,6 +1429,7 @@
       if (id === "agent") return `Follows ${name}'s own approval rules`;
       if (id === "yolo") return `Answers every approval ${name} raises. This may look the same as Agent, because ${name} asks rarely by default`;
     }
+    if (id === "auto") return `${name} decides which actions are safe to run and asks you about the rest`;
     if (id === "plan") return `${name} explores and proposes a plan; file writes and commands are blocked until you approve it`;
     if (id === "yolo") return `${name} automatically approves all permission requests (YOLO)`;
     return `${name} acts directly, asking approval only for changes it judges sensitive`;

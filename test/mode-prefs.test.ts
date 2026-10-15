@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { modeToRemember, rememberedEffort, sessionModes, startsInYolo, musePosture, museShellSandboxEnabled, usesClientAutoAccept } from "../src/mode-prefs";
+import { hasNativeAutoMode, isModeId, modeToRemember, rememberedEffort, sessionModes, startsInNativeAuto, startsInYolo, musePosture, museShellSandboxEnabled, usesClientAutoAccept } from "../src/mode-prefs";
 import { GrokSidebar } from "../src/sidebar";
 import { Session } from "../src/session";
 
@@ -39,9 +39,10 @@ describe("remembered mode preference (#25)", () => {
     expect(usesClientAutoAccept("muse")).toBe(false);
     for (const provider of ["grok", "codex", "claude"]) expect(usesClientAutoAccept(provider)).toBe(true);
   });
-  it("remembers a switch to Agent or Auto accept, but never Plan", () => {
+  it("remembers a switch to Agent, Auto or Auto accept, but never Plan", () => {
     expect(modeToRemember("agent")).toBe("agent");
     expect(modeToRemember("yolo")).toBe("yolo");
+    expect(modeToRemember("auto")).toBe("auto");
     // Plan is a transient per-task choice — leave the remembered preference alone.
     expect(modeToRemember("plan")).toBeNull();
     expect(modeToRemember("onRequest")).toBeNull();
@@ -60,9 +61,26 @@ describe("remembered mode preference (#25)", () => {
     expect(startsInYolo("agent", true)).toBe(false);
   });
 
+  // Claude Code's `auto` is the one unambiguous native Auto (claude-agent-acp
+  // 0.76.0: "Claude handles permission decisions"). Codex already starts in its
+  // auto-review mode; Grok, Muse and Antigravity's ACP server have none.
+  it("offers a native Auto only where the agent has one, and starts new sessions in it unless something else was chosen", () => {
+    expect(["claude", "codex", "grok", "muse", "agy"].filter(hasNativeAutoMode)).toEqual(["claude"]);
+    expect(isModeId("auto")).toBe(true);
+    expect(startsInNativeAuto("claude", undefined, false)).toBe(true);
+    expect(startsInNativeAuto("claude", "", false)).toBe(true);
+    expect(startsInNativeAuto("claude", "auto", false)).toBe(true);
+    // An explicit choice is kept, a resume keeps its own mode, and others have no Auto.
+    expect(startsInNativeAuto("claude", "agent", false)).toBe(false);
+    expect(startsInNativeAuto("claude", "yolo", false)).toBe(false);
+    expect(startsInNativeAuto("claude", undefined, true)).toBe(false);
+    for (const provider of ["codex", "grok", "muse", "agy"]) expect(startsInNativeAuto(provider, undefined, false)).toBe(false);
+    expect(startsInYolo("auto", false)).toBe(false);
+  });
+
   it("offers Plan to Grok and Claude only", () => {
     expect(sessionModes("grok")).toEqual(["agent", "plan", "yolo"]);
-    expect(sessionModes("claude")).toEqual(["agent", "plan", "yolo"]);
+    expect(sessionModes("claude")).toEqual(["agent", "auto", "plan", "yolo"]);
     expect(sessionModes("codex")).toEqual(["agent", "yolo"]);
     expect(sessionModes("muse")).toEqual(["yolo", "agent", "onRequest"]);
     expect(sessionModes("muse", true)).toEqual(["yolo", "agent"]);

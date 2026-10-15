@@ -740,7 +740,9 @@ describe("applyAgentModeToHostPlan", () => {
 
   it("follows the adapter's writable mode so the host stops saying Plan", () => {
     expect(applyAgentModeToHostPlan("default", false)).toEqual({ planActive: false, autoApprove: false });
-    expect(applyAgentModeToHostPlan("auto", false)).toEqual({ planActive: false, autoApprove: true });
+    // Claude's native Auto still asks the person about what it judges risky:
+    // answering for them would turn it into Bypass.
+    expect(applyAgentModeToHostPlan("auto", false)).toEqual({ planActive: false, autoApprove: false });
     expect(applyAgentModeToHostPlan("acceptEdits", false)).toEqual({ planActive: false, autoApprove: true });
     expect(applyAgentModeToHostPlan("bypassPermissions", false)).toEqual({ planActive: false, autoApprove: true });
     expect(applyAgentModeToHostPlan("agent-full-access", false)).toEqual({ planActive: false, autoApprove: true });

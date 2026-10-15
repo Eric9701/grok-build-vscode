@@ -809,10 +809,13 @@ export interface PermissionOptionLike {
   name?: string;
 }
 
-/** Claude/Codex modes that mean Auto accept in the host picker. */
+/**
+ * Claude/Codex modes that mean Auto accept in the host picker. Not Claude's
+ * native `auto`: there the agent decides what is safe and asks about the rest,
+ * and answering those questions for the person would turn it into Bypass.
+ */
 const ADAPTER_AUTO_ACCEPT_MODES = new Set([
   "yolo",
-  "auto",
   "acceptEdits",
   "bypassPermissions",
   "agent-full-access",

@@ -4,7 +4,8 @@
 import type { ConfigTarget } from "./host";
 
 export type MuseModeId = "agent" | "yolo" | "onRequest" | "denyUnmatched";
-export type ModeId = MuseModeId | "plan";
+/** `auto` is a provider's own Auto mode, offered only where one exists. */
+export type ModeId = MuseModeId | "plan" | "auto";
 export const MUSE_MODE_PREF_KEY = "grok.defaultMuseMode";
 export const MUSE_CLOUD_ON_REQUEST_UNAVAILABLE = "Muse On request is unavailable on cloud machines. Open this conversation on a desktop to change its mode, or start a new cloud conversation in Prompt unmatched.";
 export const MUSE_ON_REQUEST_UNAVAILABLE = "On request requires the shell sandbox. Switch to Prompt unmatched, enable Shell sandbox in Settings → Providers → Muse Code, then start a new conversation.";
@@ -14,7 +15,27 @@ export function isMuseModeId(value: unknown): value is MuseModeId {
 }
 
 export function isModeId(value: unknown): value is ModeId {
-  return value === "plan" || isMuseModeId(value);
+  return value === "plan" || value === "auto" || isMuseModeId(value);
+}
+
+/**
+ * The providers with a native Auto mode, where the agent itself decides which
+ * actions are safe and asks about the rest. Claude Code's `auto` ("Claude
+ * handles permission decisions") is the only unambiguous one: Codex's choices
+ * are its auto-review mode (already its default, `agent`) and the classic Auto
+ * preset; Grok, Muse and Antigravity's ACP server have none.
+ */
+export function hasNativeAutoMode(provider: string): boolean {
+  return provider === "claude";
+}
+
+/**
+ * Whether a brand-new session starts in the provider's native Auto: it has
+ * one, nothing else was chosen (an unset `grok.defaultMode`) or Auto was, and
+ * this is not a resume.
+ */
+export function startsInNativeAuto(provider: string, defaultMode: string | undefined, isResume: boolean): boolean {
+  return hasNativeAutoMode(provider) && !isResume && (!defaultMode || defaultMode === "auto");
 }
 
 export interface MuseSettings {
@@ -48,8 +69,8 @@ export function usesClientAutoAccept(provider: string): boolean {
  * shared preference unchanged. Plan is transient (#25); Muse-only modes belong
  * in MUSE_MODE_PREF_KEY, never in the shared grok.defaultMode enum.
  */
-export function modeToRemember(modeId: ModeId): "agent" | "yolo" | null {
-  return modeId === "agent" || modeId === "yolo" ? modeId : null;
+export function modeToRemember(modeId: ModeId): "agent" | "yolo" | "auto" | null {
+  return modeId === "agent" || modeId === "yolo" || modeId === "auto" ? modeId : null;
 }
 
 /**
@@ -66,6 +87,7 @@ export function startsInYolo(defaultMode: string | undefined, isResume: boolean)
 export function sessionModes(provider: string, isCloud = false): ModeId[] {
   // Deny unmatched stalls Muse's end-of-turn reminder agent; see research/muse-modes.md.
   if (provider === "muse") return isCloud ? ["yolo", "agent"] : ["yolo", "agent", "onRequest"];
+  if (hasNativeAutoMode(provider)) return ["agent", "auto", "plan", "yolo"];
   return provider === "codex" || provider === "agy"
     ? ["agent", "yolo"]
     : ["agent", "plan", "yolo"];

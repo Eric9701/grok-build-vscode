@@ -109,7 +109,7 @@ import { summarizeForSpeech } from "./speech-summary";
 import type { PromptResultMeta, PromptUsage, SessionInfoContext } from "./acp-dispatch";
 import { MediaRef, adapterCompactSignal, adapterContextOccupancy, agentTimestampMsFromMeta, autoCompactStartedNote, childStreamFromRoute, commandOutputForToolCall, commandOutputFromLiveTerminal, contextUsedFromCompactNotification, enforceCompleteSessionCost, errorDetail, gateZeroTokenMeta, isAuthErrorText, isCredentialError, isIncompatibleAgentError, isResumeNotFound, isRateLimitError, isSubagentLifecycleUpdate, occupancyFromAdapterTurn, parseSessionInfoContext, permissionOutcomeFor, promptErrorText, rateLimitNoticeText, sessionInfoCacheFresh, sumUsage, summarizeBackgroundCommand, usageIsRealMeasurement, type UpdateRoute } from "./acp-dispatch";
 import { createMcpPrepareState, prepareMcpToolCall } from "./mcp-tool";
-import { EFFORT_PREFS_KEY, MUSE_MODE_PREF_KEY, MUSE_ON_REQUEST_UNAVAILABLE, MUSE_CLOUD_ON_REQUEST_UNAVAILABLE, configWriteTarget, isMuseModeId, modeToRemember, rememberedEffort, sessionModes, startsInYolo, musePosture, museShellSandboxEnabled, usesClientAutoAccept, type ModeId, type MuseSettings, type EffortPrefs } from "./mode-prefs";
+import { EFFORT_PREFS_KEY, MUSE_MODE_PREF_KEY, MUSE_ON_REQUEST_UNAVAILABLE, MUSE_CLOUD_ON_REQUEST_UNAVAILABLE, configWriteTarget, isMuseModeId, modeToRemember, rememberedEffort, sessionModes, startsInNativeAuto, startsInYolo, musePosture, museShellSandboxEnabled, usesClientAutoAccept, type ModeId, type MuseSettings, type EffortPrefs } from "./mode-prefs";
 import { supportsApprovalModeSwitching } from "./acp-backend";
 import { beginAuthRecovery, oauthShadowsXaiApiKey } from "./auth-recovery";
 import {
@@ -1008,6 +1008,9 @@ export class GrokSidebar {
   private agyServerPath?: string;
   /** The one place a Gemini API key goes; see agy-key-relay.ts. */
   private agyRelay?: AgyKeyRelay;
+  /** Models whose agent answered an Auto request with its fallback, this run:
+   *  new conversations on them start in Agent mode without asking again. */
+  private nativeAutoUnavailable?: Set<string>;
   /** What is stored for each way of signing Antigravity in -- never the key. */
   private agySaved?: { google: boolean; apiKey: boolean };
   /** Why the last Antigravity credential was refused, for the choice card. */
@@ -3823,7 +3826,48 @@ See design doc for the full state machine diagram.`;
     if (session.provider === "muse") return session.client?.currentModeId ?? session.musePosture?.mode ?? "agent";
     if (session.planActive) return "plan";
     if (session.autoApprove) return "yolo";
+    if (session.nativeAuto) return "auto";
     return "agent";
+  }
+
+  /**
+   * Claude reported its native Auto, or answered an Auto request with its own
+   * fallback. Claude Code's Auto needs a model (and account) that supports it;
+   * without one the adapter switches to Accept edits instead -- which this host
+   * reads as Auto accept, answering every request. Settle once on Agent mode,
+   * the default before Auto, remember the model for this run so new
+   * conversations do not ask again, and never retry on its own.
+   */
+  private onNativeAutoMode(session: Session, client: AcpClient, modeId: "auto" | "acceptEdits"): void {
+    session.autoApprove = false;
+    if (modeId === "auto") {
+      // The Auto request's own reply, arriving after the fallback it caused.
+      if (!session.nativeAutoFellBack) session.nativeAuto = true;
+      this.setPlanActive(session, false);
+      return;
+    }
+    session.nativeAuto = false;
+    session.nativeAutoFellBack = true;
+    if (client.currentModelId) (this.nativeAutoUnavailable ??= new Set()).add(client.currentModelId);
+    this.setPlanActive(session, false);
+    void client.setMode("agent").catch(() => { /* stays in the adapter's fallback; gate is off either way */ });
+  }
+
+  /** A new Claude conversation's first mode: Auto, unless this run already
+   *  saw the model refuse it. */
+  private async startNativeAuto(session: Session, client: AcpClient): Promise<void> {
+    if (client.currentModelId && this.nativeAutoUnavailable?.has(client.currentModelId)) {
+      session.nativeAuto = false;
+      this.postMode(session);
+      return;
+    }
+    session.nativeAuto = true;
+    session.nativeAutoFellBack = false;
+    try { await client.setMode("auto"); }
+    catch {
+      session.nativeAuto = false;
+      this.postMode(session);
+    }
   }
 
   private postMode(session: Session = this.focused): void {
@@ -3998,7 +4042,7 @@ Only continue if you trust this code.`,
     if (!sessionModes(session.provider, session.museCloud).includes(modeId) && modeId !== "plan") return;
     // Muse switches approval without enabling the Plan path.
     if (!supportsModeSwitching(session.provider)) {
-      if (!supportsAutoAccept(session.provider)) return;
+      if (!supportsAutoAccept(session.provider) || modeId === "auto") return;
       if (modeId === "plan") {
         this.reportRequester(
           requester,
@@ -4074,6 +4118,27 @@ Only continue if you trust this code.`,
     if (remember) {
       void this.rememberGrokConfig("defaultMode", remember);
     }
+    if (modeId === "auto") {
+      // The agent's own Auto: it decides what is safe and asks about the
+      // rest, so those questions still reach the person (no client auto-accept).
+      const client = session.client;
+      session.autoApprove = false;
+      session.nativeAuto = true;
+      session.nativeAutoFellBack = false;
+      this.setPlanActive(session, false);
+      try { await client.setMode("auto"); }
+      catch (e) {
+        session.nativeAuto = false;
+        this.postMode(session);
+        this.reportRequester(requester, "error", `Couldn't switch mode: ${(e as Error).message}`);
+        return;
+      }
+      if (session.client === client && session.nativeAutoFellBack) {
+        this.reportRequester(requester, "warning", `${providerDisplayName(session.provider)}'s Auto mode isn't available for this model. Staying in Agent mode.`);
+      }
+      return;
+    }
+    session.nativeAuto = false;
     if (modeId === "yolo") {
       session.autoApprove = true;
       this.setPlanActive(session, false); // posts displayMode → "yolo"
@@ -10655,6 +10720,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // it so the button shows "Auto accept" instead of a misleading "Agent" (#31).
     // Applies to resumed sessions too (the config is global, not per-session).
     const configAutoApprove = session.provider === "grok" && this.configForcesAutoApprove(this.sessionCwd(session));
+    // A provider with its own Auto starts in it when nothing else was chosen
+    // (#25 still wins: an explicit Agent or Auto accept is kept). Set before the
+    // first paint so the badge does not flash Agent; the agent may still refuse.
+    const nativeAutoStart = !rememberedYolo && startsInNativeAuto(
+      session.provider,
+      this.host.getConfiguration("grok").get<string>("defaultMode", ""),
+      !!resumeId,
+    );
+    session.nativeAuto = nativeAutoStart;
+    session.nativeAutoFellBack = false;
     session.museCloud = session.provider === "muse" && isCloudEnvironment();
     session.musePosture = session.provider === "muse" ? musePosture(
       this.state.get<string>(MUSE_MODE_PREF_KEY) ?? (rememberedYolo ? "yolo" : "agent"), !!resumeId,
@@ -10706,7 +10781,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // calls startSession as its own retry, and a reset would let an entitlement
     // failure (#58) pay a full restart+resend cycle on every prompt. Only a clean
     // turn re-arms it.
-    this.emit(session, sessionModeMessage(session, session.musePosture?.mode ?? (session.autoApprove ? "yolo" : "agent")));
+    this.emit(session, sessionModeMessage(session, session.musePosture?.mode ?? (session.autoApprove ? "yolo" : session.nativeAuto ? "auto" : "agent")));
     if (configAutoApprove) this.noticeAlwaysApproveOnce(this.sessionCwd(session));
     if (resumeId) this.emit(session, { type: "clearMessages" });
 
@@ -10962,6 +11037,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // sessionId, so defer the unavailable-mode set_mode RPC to the existing
         // post-load restore block without ever leaving the gate down.
         session.autoApprove = false;
+        session.nativeAuto = false;
         this.setPlanActive(session, true);
         if (!session.planModeAvailable) {
           if (session.replaying) return;
@@ -10970,10 +11046,13 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         }
         // CLI entered plan mode (covers the agent self-initiating it from a
         // natural-language request). Raise our gate so the exit is enforced.
+      } else if (session.provider === "claude" && (id === "auto" || (id === "acceptEdits" && session.nativeAuto))) {
+        this.onNativeAutoMode(session, client, id === "auto" ? "auto" : "acceptEdits");
       } else if (!client.usesClientPlanGate) {
         // Claude ExitPlanMode / Codex plan approval switch to a writable mode
         // and then edit. Follow that mode so the button and permission filter
         // stop saying Plan. Grok's descriptive update must not do this.
+        session.nativeAuto = false;
         const next = applyAgentModeToHostPlan(id, false);
         if (next) {
           session.autoApprove = next.autoApprove;
@@ -11583,6 +11662,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         // line started accounting for its own total; `new` says which call.
         const newAt = clock.now();
         await client.newSession(defaultModel || undefined);
+        if (nativeAutoStart && gen === session.gen) await this.startNativeAuto(session, client);
         clock.record("new", clock.elapsed(newAt));
         clock.record("load", 0);
         clock.record("replay(post)", 0);

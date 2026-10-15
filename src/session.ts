@@ -131,6 +131,10 @@ export class Session {
 
   /** YOLO: auto-approve every permission request for this session. */
   autoApprove = false;
+  /** In the provider's native Auto mode (Claude): the agent decides, and asks. */
+  nativeAuto = false;
+  /** The agent answered an Auto request with its fallback; see onNativeAutoMode. */
+  nativeAutoFellBack = false;
   musePosture?: import("./mode-prefs").MusePosture;
   /** Launch fact, never changed by a live approval-mode switch. */
   museShellSandbox?: boolean;
