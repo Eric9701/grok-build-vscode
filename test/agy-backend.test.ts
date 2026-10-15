@@ -35,7 +35,8 @@ describe("Antigravity models and effort", () => {
       availableModels: [{
         modelId: "gemini-3.8-flash",
         name: "Gemini 3.8 Flash",
-        _meta: { supportsReasoningEffort: true, reasoningEfforts: [{ value: "low" }, { value: "medium" }, { value: "high" }], reasoningEffort: "high" },
+        // The catalog names no window: Gemini's, until a usage_update says it.
+        _meta: { totalContextTokens: 1_048_576, supportsReasoningEffort: true, reasoningEfforts: [{ value: "low" }, { value: "medium" }, { value: "high" }], reasoningEffort: "high" },
       }],
     });
   });

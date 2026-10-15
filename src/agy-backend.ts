@@ -74,6 +74,13 @@ function configOption(configOptions: unknown, id: string): any {
   return Array.isArray(configOptions) ? configOptions.find((option) => option?.id === id) : undefined;
 }
 
+/** The window the context meter shows before the server's first
+ *  `usage_update` says it: every one measured carried `size: 1048576`, and the
+ *  catalog names none, so the meter kept the last conversation's window
+ *  (200K, or a Grok conversation's 256K). The first `usage_update` replaces
+ *  it with the server's own figure. */
+export const AGY_DEFAULT_CONTEXT_WINDOW = 1_048_576;
+
 /** The server's own order for a thinking-level picker, least thinking first. */
 const LEVEL_ORDER = ["minimal", "low", "medium", "high", "xhigh", "extra_high", "max"];
 
@@ -112,6 +119,7 @@ export function modelsFromAgyConfigOptions(
         modelId,
         name: typeof entry?.name === "string" && entry.name.trim() ? entry.name : modelId,
         _meta: {
+          totalContextTokens: AGY_DEFAULT_CONTEXT_WINDOW,
           supportsReasoningEffort: levels.length > 0,
           reasoningEfforts: levels.map((value) => ({ value })),
           ...(modelId === currentModelId && currentLevel ? { reasoningEffort: currentLevel } : {}),

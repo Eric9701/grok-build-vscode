@@ -1353,7 +1353,12 @@
   document.addEventListener("pointerdown", unlockAudio, { passive: true });
   document.addEventListener("keydown", unlockAudio, { passive: true });
 
+  /** The meter's label: whole thousands below a million, and from a million up
+   *  millions to two decimals with trailing zeros gone -- 256K, 500K, 1M,
+   *  1.05M for Gemini's 1,048,576 (which read "1049K"). From 999,500, because
+   *  the K branch rounds that to "1000K": a million in the wrong unit. */
   function toK(n) {
+    if (Math.abs(n) >= 999_500) return (n / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M";
     return Math.round(n / 1000) + "K";
   }
 

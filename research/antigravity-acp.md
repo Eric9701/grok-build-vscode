@@ -151,6 +151,8 @@ aistudio.google.com/apikey). Vertex AI and Enterprise sign-in are not offered.
   command list. No `/compact`, no MCP connectors (`mcpServers: []`), no
   subscription meter (`/usage` is markdown only).
 - `usage_update {used, size: 1048576}` after every step feeds the context meter.
+  The catalog names no window, so until the first one the meter shows that
+  same 1,048,576 (`AGY_DEFAULT_CONTEXT_WINDOW`, read "1.05M").
 - `session/cancel` resolves the prompt `cancelled` within about 10 ms; the next
   prompt works. `session/load` replays user and agent text; context survives.
 
