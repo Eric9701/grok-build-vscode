@@ -58,26 +58,26 @@
       "secondarySidebar": [
         {
           "id": "grokSidebar",
-          "title": "Grok",
+          "title": "AFK Pilot",
           "icon": "resources/grok-icon.svg"
         }
       ],
       "activitybar": [
         {
           "id": "grokPrimary",
-          "title": "Grok",
+          "title": "AFK Pilot",
           "icon": "resources/grok-icon.svg"
         },
         {
           "id": "grokProjects",
-          "title": "Grok",
+          "title": "AFK Pilot",
           "icon": "resources/grok-icon.svg"
         }
       ],
       "panel": [
         {
           "id": "grokPanel",
-          "title": "Grok",
+          "title": "AFK Pilot",
           "icon": "resources/grok-icon.svg"
         }
       ]
@@ -87,7 +87,7 @@
         {
           "type": "webview",
           "id": "grok.chat",
-          "name": "Grok"
+          "name": "AFK Pilot"
         }
       ],
       "grokProjects": [
@@ -101,104 +101,150 @@
     "commands": [
       {
         "command": "grok.continueOnPhone",
-        "title": "Grok: Continue on Phone"
+        "title": "Continue on Phone",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.open",
-        "title": "Grok: Open"
+        "title": "Open",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.moveView",
-        "title": "Grok: Move Chat View"
+        "title": "Move Chat View",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.newSession",
-        "title": "Grok: New Session"
+        "title": "New Session",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.newWorktreeSession",
-        "title": "Grok: New Worktree Session"
+        "title": "New Worktree Session",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.applyWorktree",
-        "title": "Grok: Apply Worktree"
+        "title": "Apply Worktree",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.removeWorktree",
-        "title": "Grok: Remove Worktree"
+        "title": "Remove Worktree",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.rewind",
-        "title": "Grok: Rewind Conversation"
+        "title": "Rewind Conversation",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.compact",
-        "title": "Grok: Compact Conversation"
+        "title": "Compact Conversation",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.pickModel",
-        "title": "Grok: Pick Model"
+        "title": "Pick Model",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.toggleMode",
-        "title": "Grok: Toggle Plan / Agent Mode"
+        "title": "Toggle Plan / Agent Mode",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.sendSelection",
-        "title": "Add Selection to Grok"
+        "title": "Add Selection to AFK Pilot"
       },
       {
         "command": "grok.sendFile",
-        "title": "Add to Grok chat"
+        "title": "Add to AFK Pilot chat"
       },
       {
         "command": "grok.insertAtMention",
-        "title": "Grok: Insert @-Mention"
+        "title": "Insert @-Mention",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.showLogs",
-        "title": "Grok: Show Logs"
+        "title": "Show Logs",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.settings",
-        "title": "Grok: Settings",
+        "title": "Settings",
+
+        "category": "AFK Pilot",
         "icon": "$(gear)"
       },
       {
         "command": "grok.expandAllToolDetails",
-        "title": "Grok: Expand All Tool Details (This Session)"
+        "title": "Expand All Tool Details (This Session)",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.collapseAllToolDetails",
-        "title": "Grok: Collapse All Tool Details (This Session)"
+        "title": "Collapse All Tool Details (This Session)",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.findInSession",
-        "title": "Grok: Find in Conversation"
+        "title": "Find in Conversation",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.logout",
-        "title": "Grok: Log Out"
+        "title": "Log Out",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.linkRemote",
-        "title": "AFK Pilot: Link this device"
+        "title": "Link this device",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.unlinkRemote",
-        "title": "AFK Pilot: Unlink this device"
+        "title": "Unlink this device",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok._debugDummyPlan",
-        "title": "Grok: Debug — Show dummy plan card (for testing Approve/Reject/Cancel)"
+        "title": "Debug — Show dummy plan card (for testing Approve/Reject/Cancel)",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.composerForward",
-        "title": "Grok: Composer — Move Forward"
+        "title": "Composer — Move Forward",
+
+        "category": "AFK Pilot"
       },
       {
         "command": "grok.composerPreviousLine",
-        "title": "Grok: Composer — Move to Previous Line"
+        "title": "Composer — Move to Previous Line",
+
+        "category": "AFK Pilot"
       }
     ],
     "keybindings": [
@@ -274,7 +320,7 @@
       ]
     },
     "configuration": {
-      "title": "Grok",
+      "title": "AFK Pilot",
       "properties": {
         "grok.cliPath": {
           "type": "string",
@@ -451,7 +497,7 @@
         "grok.soundNotifications": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Play a short sound when Grok finishes a turn or hits an error — a rising chime on completion, a lower tone on error. Off by default. Plays **only when the Grok panel isn't focused** (you've switched to the editor or another window), so it notifies you when you've stepped away without beeping while you watch. Also toggleable live from the gear menu → **Config & debug → Sound notifications**."
+          "markdownDescription": "Play a short sound when Grok finishes a turn or hits an error — a rising chime on completion, a lower tone on error. Off by default. Plays **only when the AFK Pilot panel isn't focused** (you've switched to the editor or another window), so it notifies you when you've stepped away without beeping while you watch. Also toggleable live from the gear menu → **Config & debug → Sound notifications**."
         },
         "grok.processingSound": {
           "type": "boolean",
@@ -488,7 +534,7 @@
           "default": 100,
           "minimum": 60,
           "maximum": 300,
-          "markdownDescription": "Zoom for the Grok chat panel only, as a percent (100 = default). Scales the whole chat UI — text, icons, spacing — without affecting the rest of VS Code (unlike `Ctrl/Cmd+Shift+=`). Applies live, no reload needed. Supports User (global) and Workspace (local) scope."
+          "markdownDescription": "Zoom for the AFK Pilot chat panel only, as a percent (100 = default). Scales the whole chat UI — text, icons, spacing — without affecting the rest of VS Code (unlike `Ctrl/Cmd+Shift+=`). Applies live, no reload needed. Supports User (global) and Workspace (local) scope."
         },
         "grok.voiceApiKey": {
           "type": "string",

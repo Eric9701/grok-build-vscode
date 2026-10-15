@@ -136,7 +136,7 @@ describe("Move view menu (DOM)", () => {
     const tip = shown.doc.getElementById("welcome-tip");
     expect(tip).toBeTruthy();
     const text_ = (tip!.textContent || "").replace(/\s+/g, " ");
-    expect(text_).toContain("To move Grok to the right");
+    expect(text_).toContain("To move AFK Pilot to the right");
     // Two steps: the second cannot be automated — the host's picker command does
     // not wait for the pick, so revealing afterwards dismisses it instead.
     expect(text_).toContain("New Secondary Side Bar Entry");

@@ -1794,7 +1794,7 @@ describe("Grokking… indicator (waiting placeholder)", () => {
     dispatch(h.window, {
       type: "session", sessionId: "c1", models: [], currentModelId: "gpt-5.6-sol", provider: "codex",
     });
-    expect(input.placeholder).toBe("Ask GPT…");
+    expect(input.placeholder).toBe("Ask Codex…");
 
     dispatch(h.window, {
       type: "session", sessionId: "g1", models: [], currentModelId: "grok-build", provider: "grok",

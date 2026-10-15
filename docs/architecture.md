@@ -315,7 +315,7 @@ When the panel opens (or you click **+** for a new session):
 The composer keeps unsent text in webview-local, per-session drafts. Rail/history picks and New switch drafts at the gesture; transcript replay preserves them. Each New carries a `draftId`, and the host's targeted `composerDraftSession` reply binds that draft to its assigned session id even after another navigation or New. Drafts last for the lifetime of the webview. Edit delivers text and files together through targeted `restoreComposer`; restored file ids resolve against host-owned `Session.restoredChips`, outside the shared attachment buffer. If the requester leaves during rewind, `queuedDraft` and `queuedDraftChips` park together and `restorePersistedDraft` returns them to the next focusing surface.
 
 The composer unlocks as soon as the session is live. Its placeholder follows the
-session provider (**Ask Grok…** / **Ask GPT…** / **Ask Claude…** / **Ask Muse…**).
+session provider (**Ask Grok…** / **Ask Codex…** / **Ask Claude…** / **Ask Muse…**).
 While a user turn is waiting, the shared activity row uses provider-specific copy,
 then is replaced in place by the first thought / message / tool card.
 

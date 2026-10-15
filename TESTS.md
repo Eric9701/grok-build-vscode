@@ -222,7 +222,7 @@ The wire format is the highest-value test surface: ACP changes break everything 
 - Typing `@`/`@ch` posts `mentionQuery` per keystroke; a mid-word `@` (email) posts nothing
 - `mentionResults` renders name + dimmed-dir rows and shows the popover; stale replies (query moved on / popover closed) are dropped; an empty list hides the popover but keeps the token querying
 - ArrowDown + Enter picks the highlighted file (token rewritten, `addMentionFile` posted, popover hidden) without triggering send/queueSend; clicking a row picks too; Escape closes without touching the text
-- `agentStart` shows the shared waiting indicator with provider copy (Grokking / Opening AI), and the composer placeholder switches live between Ask Grok and Ask GPT
+- `agentStart` shows the shared waiting indicator with provider copy (Grokking / Opening AI), and the composer placeholder switches live between Ask Grok and Ask Codex
 
 ### `test/grok-config.test.ts` — config.toml permission-mode reader (24 tests)
 

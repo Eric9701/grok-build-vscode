@@ -132,7 +132,7 @@ describe("empty-state advice", () => {
     });
     settle(h);
     expect(tipId(h)).toBe("moveView");
-    expect(tipText(h)).toContain("To move Grok to the right");
+    expect(tipText(h)).toContain("To move AFK Pilot to the right");
     // Retracted → the slot falls through to advice without a reload.
     dispatch(h.window, { type: "moveViewHint", value: false });
     expect(tipId(h)).toBe("providers");

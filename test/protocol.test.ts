@@ -19,7 +19,7 @@ const sorted = (a: readonly string[]) => [...a].sort();
 
 describe("host <-> webview message contract (src/protocol.ts is the source of truth)", () => {
   it("contributes the phone handoff command and routes it through the chat host", () => {
-    expect(packageJson.contributes.commands).toContainEqual({ command: "grok.continueOnPhone", title: "Grok: Continue on Phone" });
+    expect(packageJson.contributes.commands).toContainEqual({ command: "grok.continueOnPhone", title: "Continue on Phone", category: "AFK Pilot" });
     const extension = readFileSync(new URL("../src/extension.ts", import.meta.url), "utf8");
     expect(extension).toContain('registerCommand("grok.continueOnPhone", () => sidebar.continueOnPhone())');
   });
@@ -111,7 +111,8 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
   it("contributes find-in-conversation as a palette command and a Cmd/Ctrl+F fallback", () => {
     expect(packageJson.contributes.commands).toContainEqual({
       command: "grok.findInSession",
-      title: "Grok: Find in Conversation",
+      title: "Find in Conversation",
+      category: "AFK Pilot",
     });
     expect(packageJson.contributes.keybindings).toContainEqual({
       command: "grok.findInSession",
@@ -124,7 +125,8 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
   it("contributes a native title-bar settings command on the chat view", () => {
     expect(packageJson.contributes.commands).toContainEqual({
       command: "grok.settings",
-      title: "Grok: Settings",
+      title: "Settings",
+      category: "AFK Pilot",
       icon: "$(gear)",
     });
     expect(packageJson.contributes.menus["view/title"]).toContainEqual({
@@ -137,11 +139,13 @@ describe("host <-> webview message contract (src/protocol.ts is the source of tr
   it("uses findable AFK Pilot titles without changing the remote command ids", () => {
     expect(packageJson.contributes.commands).toContainEqual({
       command: "grok.linkRemote",
-      title: "AFK Pilot: Link this device",
+      title: "Link this device",
+      category: "AFK Pilot",
     });
     expect(packageJson.contributes.commands).toContainEqual({
       command: "grok.unlinkRemote",
-      title: "AFK Pilot: Unlink this device",
+      title: "Unlink this device",
+      category: "AFK Pilot",
     });
   });
 

@@ -3256,7 +3256,7 @@ export class GrokSidebar {
       void this.onMessage(m, "local").catch((e) => {
         const msg = (e as Error)?.message ?? String(e);
         this.host.appendLine(`[webview] ${m.type} failed: ${msg}`);
-        void this.host.showErrorMessage(`Grok: ${m.type} failed — ${msg}`);
+        void this.host.showErrorMessage(`AFK Pilot: ${m.type} failed — ${msg}`);
       });
     });
     this.restorePersistedDraft(this.focused);
@@ -3444,7 +3444,7 @@ export class GrokSidebar {
       void this.onProjectsRailMessage(m).catch((e) => {
         const msg = (e as Error)?.message ?? String(e);
         this.host.appendLine(`[projects-rail] ${m.type} failed: ${msg}`);
-        void this.host.showErrorMessage(`Grok Projects: ${m.type} failed — ${msg}`);
+        void this.host.showErrorMessage(`AFK Pilot Projects: ${m.type} failed — ${msg}`);
       });
     });
   }
@@ -3537,7 +3537,7 @@ export class GrokSidebar {
         void this.trackAttach(this.pickFileFromComputer());
       } else {
         void this.host.showInformationMessage(
-          "Grok: open a file in the editor first, then run this command.",
+          "AFK Pilot: open a file in the editor first, then run this command.",
         );
       }
       return false;
@@ -6398,7 +6398,7 @@ Only continue if you trust this code.`,
     const wt = session.worktree;
     if (!wt) {
       return void this.host.showInformationMessage(
-        "This session is not in a worktree. Start one with Grok: New Worktree Session.",
+        "This session is not in a worktree. Start one with AFK Pilot: New Worktree Session.",
       );
     }
     if (!session.client?.sessionId) {
@@ -12864,7 +12864,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         term.show();
         // Windows ships a native CLI installed via PowerShell; the default VS Code
         // terminal there is PowerShell, so use its syntax. Everything else is POSIX.
-        const done = "Done. Click 'Re-check connection' in the Grok sidebar.";
+        const done = "Done. Click 'Re-check connection' in the AFK Pilot sidebar.";
         term.sendText(
           process.platform === "win32"
             ? `irm https://x.ai/cli/install.ps1 | iex; Write-Host "\`n${done}"`
@@ -15999,7 +15999,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       } catch (e) {
         // Per-file: one unreadable pick must not abort the rest of a multi-select.
         this.host.appendLine(`[image] could not attach ${filePath}: ${(e as Error).message}`);
-        void this.host.showErrorMessage(`Grok: could not attach ${path.basename(filePath)} — ${(e as Error).message}`);
+        void this.host.showErrorMessage(`AFK Pilot: could not attach ${path.basename(filePath)} — ${(e as Error).message}`);
       }
     }
     this.revealAndFocusComposer();
@@ -17609,20 +17609,20 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   ): Promise<void> {
     try {
       if (!isVisionMime(mimeType)) {
-        this.reportRequester(requester, "error", `Grok: unsupported image type ${mimeType} — use PNG, JPEG, GIF, or WebP.`);
+        this.reportRequester(requester, "error", `AFK Pilot: unsupported image type ${mimeType} — use PNG, JPEG, GIF, or WebP.`);
         return;
       }
       const bytes = Buffer.from(base64, "base64");
       if (bytes.length === 0) return;
       if (bytes.length > MAX_VISION_IMAGE_BYTES) {
-        this.reportRequester(requester, "error", "Grok: pasted image exceeds the 20 MiB vision limit.");
+        this.reportRequester(requester, "error", "AFK Pilot: pasted image exceeds the 20 MiB vision limit.");
         return;
       }
       const session = await this.stageImageAttachment(bytes, mimeType, undefined, owner, previewId);
       if (session === this.focused) this.revealAndFocusComposer();
     } catch (e) {
       this.host.appendLine(`[image] paste failed: ${(e as Error).message}`);
-      this.reportRequester(requester, "error", `Grok: could not attach the pasted image — ${(e as Error).message}`);
+      this.reportRequester(requester, "error", `AFK Pilot: could not attach the pasted image — ${(e as Error).message}`);
     }
   }
 
@@ -21976,7 +21976,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         this.host.appendLine(`[remote] ${m.type} failed: ${detail}`);
         this.sendRemoteRequester(requester, {
           type: "error",
-          text: `Grok: ${m.type} failed — ${detail}`,
+          text: `AFK Pilot: ${m.type} failed — ${detail}`,
         });
       });
     } catch (e) {
@@ -22632,7 +22632,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     }
     const panel = this.host.openEditorWebview({
       viewType: "grok.settings",
-      title: "Grok Settings",
+      title: "AFK Pilot Settings",
       localResourceRoots: [
         Uri.joinPath(this.context.extensionUri, "media"),
         Uri.joinPath(this.context.extensionUri, "resources"),
@@ -22972,9 +22972,9 @@ ${openMain}
 ${fileShellOpen}
   <main id="messages" class="messages">
     <div class="welcome" id="welcome">
-      <span class="welcome-mark" role="img" aria-label="Grok" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
-      <h2>${isCloudEnvironment() ? "AFK Pilot (Cloud)" : "Grok Build (Community)"}</h2>
-      <p class="welcome-byline muted">by Paweł Huryn (<a href="https://www.productcompass.pm/" class="muted-link">The Product Compass</a>)</p>
+      <span class="welcome-mark" role="img" aria-label="AFK Pilot" style="--welcome-mark:url('${resourceUri("grok-icon.svg")}')"></span>
+      <h2>${isCloudEnvironment() ? "AFK Pilot Cloud" : "AFK Pilot"}</h2>
+      ${isCloudEnvironment() ? "" : `<p class="welcome-byline muted">previously Grok Build (Community)</p>`}
       <p id="welcome-version" class="muted welcome-status-busy"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg><span>Starting</span></p>
       <div id="welcome-onboarding"></div>
     </div>

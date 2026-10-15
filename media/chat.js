@@ -525,7 +525,7 @@
   const CLAUDE_ACTIVITY_VERB = "Clauding";
   const COMPOSER_PLACEHOLDER = {
     grok: "Ask Grok\u2026",
-    codex: "Ask GPT\u2026",
+    codex: "Ask Codex\u2026",
     claude: "Ask Claude\u2026",
     muse: "Ask Muse…",
     agy: "Ask Antigravity…",
@@ -5839,7 +5839,7 @@
     if (!state.repos.length) {
       const empty = document.createElement("div");
       empty.className = "history-empty";
-      empty.textContent = "No repositories with Grok sessions.";
+      empty.textContent = "No repositories with AFK Pilot sessions.";
       repoPopover.appendChild(empty);
       return;
     }
@@ -9044,7 +9044,7 @@
         danger: true,
         disabled: !repo.available || knownEmpty || !reachable,
         title: !reachable
-          ? "Update Grok Build on your computer to clear another project's history from here"
+          ? "Update AFK Pilot (previously Grok Build) on your computer to clear another project's history from here"
           : knownEmpty
             ? "This project has no history"
             : "Delete supported providers' conversations in this repository",
@@ -9407,7 +9407,7 @@
       danger: true,
       disabled: activeUndeletable,
       title: activeUndeletable
-        ? "Update Grok Build on your computer to delete the conversation you have open"
+        ? "Update AFK Pilot (previously Grok Build) on your computer to delete the conversation you have open"
         : "Delete",
       onSelect: () => {
         uiConfirm({
@@ -9665,7 +9665,7 @@
     // exist. `role`/`tabindex`/keydown put back the semantics the anchor was
     // providing.
     tip.innerHTML =
-      `<span class="welcome-tip-bulb">${ICON.idea}</span> <b>To move Grok to the right</b>` +
+      `<span class="welcome-tip-bulb">${ICON.idea}</span> <b>To move AFK Pilot to the right</b>` +
       "<br>After moving, click <b>Toggle Agents Side Bar</b> to show it." +
       '<br><span id="welcome-tip-link" class="muted-link" role="button" tabindex="0">Click here</span>' +
       " and select <b>New Secondary Side Bar Entry</b>.";

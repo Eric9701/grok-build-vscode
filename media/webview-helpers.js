@@ -2055,7 +2055,7 @@
     },
     {
       id: "readAloud",
-      copy: "Grok can read its replies out loud — turn it on in {Voice settings}.",
+      copy: "AFK Pilot can read replies out loud — turn it on in {Voice settings}.",
       target: "settings:voice",
       requiresLocalSurface: false,
       eligible: (f) => !f.readRepliesAloud,
