@@ -1172,6 +1172,22 @@ export function statSessionActivity(
   }
 }
 
+/**
+ * How far back history is LISTED: Recent, a project's conversations and history
+ * search show nothing whose last activity is older (the owner, 2026-10-15).
+ * Older conversations stay on disk, untouched, and still open from a pin.
+ * Lists apply it before reading anything per conversation -- the Grok index by
+ * its stat mtime, an adapter's rows by the `updatedAt` its listing reports.
+ */
+export const HISTORY_HORIZON_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Inside {@link HISTORY_HORIZON_MS}. An unknown time (0, missing) stays in:
+ *  there is nothing to judge it by, and dropping it would hide a live row. */
+export function withinHistoryHorizon(at: number | undefined, now: number = Date.now()): boolean {
+  if (typeof at !== "number" || !Number.isFinite(at) || at <= 0) return true;
+  return at >= now - HISTORY_HORIZON_MS;
+}
+
 /** Cheap ordering pass: every session id newest-first by {@link statSessionActivity}
  *  mtime, WITHOUT reading or parsing any summary content. One or two `stat`s per
  *  dir instead of a `stat` + `read` + `JSON.parse`, so it stays fast even with

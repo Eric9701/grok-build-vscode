@@ -371,6 +371,8 @@ import {
   findSessionCatalogCwd,
   forkDisplayName,
   indexSessions,
+  withinHistoryHorizon,
+  HISTORY_HORIZON_MS,
   isEmptySession,
   isPathInside,
   isRepoColor,
@@ -14584,11 +14586,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
           ? { offset: 0, limit: Number.MAX_SAFE_INTEGER, query }
           : { offset: providerCursor.grokOffset, limit, query }, activeId);
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
-    const adapter: SessionListEntry[] = [];
-    if (providers.includes("codex")) adapter.push(...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? []));
-    if (providers.includes("muse")) adapter.push(...(this.museSessionCache?.get(projectProviderKey(cwd)) ?? []));
-    if (providers.includes("agy")) adapter.push(...(this.agySessionCache?.get(projectProviderKey(cwd)) ?? []));
-    if (providers.includes("claude")) adapter.push(...(this.claudeSessionCache.get(projectProviderKey(cwd)) ?? []));
+    const cached: SessionListEntry[] = [];
+    if (providers.includes("codex")) cached.push(...(this.codexSessionCache.get(projectProviderKey(cwd)) ?? []));
+    if (providers.includes("muse")) cached.push(...(this.museSessionCache?.get(projectProviderKey(cwd)) ?? []));
+    if (providers.includes("agy")) cached.push(...(this.agySessionCache?.get(projectProviderKey(cwd)) ?? []));
+    if (providers.includes("claude")) cached.push(...(this.claudeSessionCache.get(projectProviderKey(cwd)) ?? []));
+    // The adapters list everything, so the horizon (HISTORY_HORIZON_MS) is
+    // applied to their rows here. The caches keep every row: a pinned old
+    // conversation is still looked up in them.
+    const now = Date.now();
+    const adapter = cached.filter((entry) => withinHistoryHorizon(entry.updatedAt, now));
     for (const session of this.pool) {
       if (!usesAdapterHistory(session.provider) || !session.activeSessionId || !pathsEqual(this.sessionCwd(session), cwd)) continue;
       if (adapter.some((entry) => entry.id === session.activeSessionId)) continue;
@@ -14808,7 +14815,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (provider === "agy") {
       // A directory read; starting a server for it would cost more than the
       // listing is worth (see listAgySessions).
-      result = { sessions: listAgySessions(cwd, process.platform) };
+      // Old conversations are skipped on their transcript's mtime, before the
+      // metadata file that names their folder is read (HISTORY_HORIZON_MS).
+      // Pinned ones are still read: Pinned looks them up in this cache.
+      const pinned = new Set(Object.entries(this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {}))
+        .filter(([, o]) => typeof o?.pinnedAt === "number").map(([id]) => id));
+      result = { sessions: listAgySessions(cwd, process.platform, { since: Date.now() - HISTORY_HORIZON_MS, keepIds: pinned }) };
     } else {
       const client = await this.adapterHistoryClient(provider, cliPath);
       if (!client || signal.aborted) return;
@@ -14822,9 +14834,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // pinning is still what we want: an open must not promote the row.
     // Trade-off: work done outside this extension stops promoting the row.
     // Unlike grok, neither adapter has a load-stable on-disk file to rank by.
+    // A row older than the history horizon is listed nowhere, so it gets no
+    // metadata of its own from being listed (one it already has is kept).
+    const listedAt = Date.now();
+    const stampable = (entry: BackendSessionListEntry) => !!overrides[entry.sessionId]
+      || withinHistoryHorizon(adapterListEntry(entry, {}, provider, listedAt).updatedAt, listedAt);
     for (const entry of result.sessions) {
       const previous = stableOverrides[entry.sessionId] ?? {};
-      if (typeof previous.activeAt === "number") continue;
+      if (typeof previous.activeAt === "number" || !stampable(entry)) continue;
       stableOverrides[entry.sessionId] = {
         ...previous,
         activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt,
@@ -14846,6 +14863,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       let changed = false;
       const next = { ...current };
       for (const entry of result.sessions) {
+        if (!next[entry.sessionId] && !stampable(entry)) continue;
         const previous = next[entry.sessionId] ?? {};
         const title = typeof entry.title === "string" ? entry.title.trim() : "";
         const autoName = capAutoName(title);
@@ -14907,12 +14925,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // own), so a worktree session stays reachable after you leave it.
     const repoCwds = this.sessionCwdsForRepo(cwd, overrides);
     const repoCwdKeys = new Set(repoCwds.map(normalizeFsPath));
+    // The 30-day horizon is applied here, on stat mtimes, so an old conversation
+    // costs one stat and is never parsed, paged or searched.
+    const now = Date.now();
     const index = mergeSessionIndexes(
       repoCwds.map((c) => ({
         cwd: c,
         entries: indexSessions({ fs: defaultFs, grokHome, cwd: c, log }),
       })),
-    );
+    ).filter((e) => withinHistoryHorizon(e.mtimeMs, now));
     const mtimeById = new Map(index.map((e) => [e.id, e.mtimeMs]));
     const cwdById = new Map(index.map((e) => [e.id, e.cwd]));
 

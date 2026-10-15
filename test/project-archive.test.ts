@@ -67,7 +67,7 @@ describe("project archive presentation", () => {
     sidebar.dotForId = () => "idle";
     const row = {
       id: "conversation", cwd: app, provider, displayName: "Still reachable",
-      rawSummary: "Still reachable", createdAt: 1, updatedAt: 1, numMessages: 2,
+      rawSummary: "Still reachable", createdAt: 1, updatedAt: Date.now(), numMessages: 2,
     };
     sidebar.codexSessionCache = new Map(provider === "codex" ? [[normalizeRepoPath(app), [row]]] : []);
     sidebar.claudeSessionCache = new Map(provider === "claude" ? [[normalizeRepoPath(app), [row]]] : []);

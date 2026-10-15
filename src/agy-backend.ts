@@ -641,7 +641,16 @@ const realHistoryFs: AgyHistoryFs = {
 export function listAgySessions(
   cwd: string,
   platform: NodeJS.Platform = process.platform,
-  options: { env?: NodeJS.ProcessEnv; home?: string; fs?: AgyHistoryFs } = {},
+  options: {
+    env?: NodeJS.ProcessEnv;
+    home?: string;
+    fs?: AgyHistoryFs;
+    /** Skip a conversation whose transcript last changed before this (ms),
+     *  without reading its metadata -- the history horizon. */
+    since?: number;
+    /** Read these whatever their age (pinned conversations). */
+    keepIds?: ReadonlySet<string>;
+  } = {},
 ): BackendSessionListEntry[] {
   const io = options.fs ?? realHistoryFs;
   const dir = path.join(agyAcpDir(options.env, options.home), "conversations");
@@ -652,10 +661,12 @@ export function listAgySessions(
   for (const name of names) {
     if (!name.endsWith(".db")) continue;
     const sessionId = name.slice(0, -3);
+    const updatedAt = io.modifiedAt(path.join(dir, name));
+    if (options.since !== undefined && updatedAt !== undefined && updatedAt < options.since
+      && !options.keepIds?.has(sessionId)) continue;
     let sessionCwd: unknown;
     try { sessionCwd = JSON.parse(io.readFile(path.join(dir, `${sessionId}.meta`)))?.cwd; } catch { continue; }
     if (typeof sessionCwd !== "string" || agySessionPathKey(sessionCwd, platform) !== target) continue;
-    const updatedAt = io.modifiedAt(path.join(dir, name));
     sessions.push({ sessionId, cwd: sessionCwd, ...(updatedAt !== undefined ? { updatedAt } : {}) });
   }
   return sessions;

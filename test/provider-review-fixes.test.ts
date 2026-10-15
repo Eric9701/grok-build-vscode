@@ -98,7 +98,9 @@ describe("multi-provider review regressions", () => {
     const previousHome = process.env.GROK_HOME;
     try {
       process.env.GROK_HOME = grokHome;
-      for (const [id, mtime] of [["mtime-new", 2_000], ["mtime-old", 1_000]] as const) {
+      // Inside the 30-day history horizon: older rows are not listed at all.
+      const now = Date.now();
+      for (const [id, mtime] of [["mtime-new", now - 1_000], ["mtime-old", now - 2_000]] as const) {
         const dir = path.join(catalog, id);
         fs.mkdirSync(dir, { recursive: true });
         const summary = path.join(dir, "summary.json");
@@ -237,7 +239,9 @@ describe("multi-provider review regressions", () => {
     // the half that reads the catalog. The assertions are unchanged — no
     // provider carve-out on the pin — only the method that must satisfy them.
     const body = methodBody("private async listAdapterHistory(");
-    expect(body).toContain("if (typeof previous.activeAt === \"number\") continue");
+    // Rows older than the history horizon are not stamped at all (and are
+    // listed nowhere); a stamp, once there, is never moved.
+    expect(body).toContain("if (typeof previous.activeAt === \"number\" || !stampable(entry)) continue");
     expect(body).toContain("activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt");
     // No provider carve-out — Claude restamps on load, same pin Codex already had.
     expect(body).not.toContain('if (provider === "codex")');

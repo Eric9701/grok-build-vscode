@@ -191,7 +191,8 @@ describe("adapter history write site", () => {
       sessionId: "codex-1",
       title: FAT_TITLE,
       cwd: "/repo",
-      updatedAt: 1,
+      // Recent: a row older than the history horizon is not stamped.
+      updatedAt: Date.now(),
     }];
     await sidebar.refreshAdapterHistory("codex", "/repo");
     const stored = sidebar._memento[SESSION_META_KEY]["codex-1"];
