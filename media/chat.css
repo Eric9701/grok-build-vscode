@@ -4341,6 +4341,10 @@ textarea#input {
   font-size: 12px;
   font-weight: 500;
 }
+/* No catalog yet for this conversation (modelChipLoading): a closed door,
+   not a button -- no hover fill and no pointer. */
+#gear-btn.model-chip.model-chip-loading { cursor: default; opacity: .65; }
+#gear-btn.model-chip.model-chip-loading:hover { background: transparent; }
 .model-chip-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .model-chip-effort { flex: none; color: var(--vscode-descriptionForeground); }
 .model-chip-effort:empty { display: none; }

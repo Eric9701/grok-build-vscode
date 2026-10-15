@@ -940,6 +940,10 @@
     // priming spinner clears (setBusy:false). See the initialized/setBusy cases.
     cliVersion: "",
     startingPhase: false,
+    // The model chip has nothing real to offer until THIS conversation's
+    // provider has published its catalog (the `session` frame) -- from boot, and
+    // again from every `initialized`. See modelChipLoading.
+    modelCatalogPending: true,
     planModeAvailable: true,
     planModeUnavailableReason: "",
     // Unverified version probe: Plan row stays clickable so a pick re-probes.
@@ -4568,6 +4572,7 @@
     gearPopover.classList.remove("popover-centered");
     // The chip opens model + effort directly; the rail gear keeps the app menu.
     const surface = fromBtn && fromBtn.id === "rail-gear-btn" ? "rail" : "composer";
+    if (surface === "composer" && modelChipLoading()) return;
     // Clicking the button that is already showing closes it — clicking the OTHER
     // one switches to it. Closing on any open popover made the two surfaces
     // cost two clicks to move between: the first only dismissed the other menu.
@@ -5095,6 +5100,39 @@
       && (!m.provider || m.provider === state.activeProvider));
   }
 
+  /**
+   * The chip is a closed door while the catalog is on its way: a session is
+   * starting (Antigravity's server alone can take over a minute on Windows) and
+   * the picker could only show the previous conversation's models or a
+   * placeholder. Not while the agent cannot start at all -- signed out, not
+   * connected -- because the picker is where recovery lives, and not forever:
+   * the end of startup, an error, an exit or a long failsafe all open it again
+   * on whatever the picker shows on failure.
+   */
+  function modelChipLoading() {
+    if (!state.modelCatalogPending) return false;
+    if (!state.providersKnown) return true;
+    const active = state.providers.find((p) => p && p.id === state.activeProvider);
+    return !!(active && active.connected && !active.needsLogin);
+  }
+
+  const MODEL_CATALOG_FAILSAFE_MS = 150000;
+  let modelCatalogFailsafe = null;
+  function setModelCatalogPending(pending) {
+    state.modelCatalogPending = !!pending;
+    clearTimeout(modelCatalogFailsafe);
+    modelCatalogFailsafe = null;
+    if (pending) {
+      modelCatalogFailsafe = setTimeout(() => {
+        modelCatalogFailsafe = null;
+        setModelCatalogPending(false);
+      }, Number(window.__grokModelCatalogFailsafeMs) > 0 ? Number(window.__grokModelCatalogFailsafeMs) : MODEL_CATALOG_FAILSAFE_MS);
+      // A picker already open on the old catalog closes with it.
+      if (!gearPopover.hidden && state.gearSurface === "composer") closePopovers();
+    }
+    syncModelChip();
+  }
+
   function modelSelectionLocked() {
     if (state.activeProvider === "grok" && (state.busy || state.contextWindowSelection?.changing)) return true;
     return state.busy || !currentModel() || (state.providersKnown
@@ -5131,10 +5169,16 @@
     word.className = "model-chip-effort";
     word.textContent = effort;
     gearBtn.replaceChildren(model, word);
-    gearBtn.disabled = false; // Selection can lock; provider recovery cannot.
-    gearBtn.title = [name, effort, "Model and effort"].filter(Boolean).join(" · ")
-      + (modelSelectionLocked() ? " — selection available once the session is ready" : "");
-    gearBtn.setAttribute("aria-label", gearBtn.title);
+    // Selection can lock and stay openable, because provider recovery lives
+    // in there. Only a catalog still on its way closes the chip itself.
+    const loading = modelChipLoading();
+    gearBtn.disabled = loading;
+    gearBtn.setAttribute("aria-disabled", String(loading));
+    gearBtn.classList.toggle("model-chip-loading", loading);
+    gearBtn.title = loading ? "Loading models…"
+      : [name, effort, "Model and effort"].filter(Boolean).join(" · ")
+        + (modelSelectionLocked() ? " — selection available once the session is ready" : "");
+    gearBtn.setAttribute("aria-label", loading ? "Model and effort: loading models" : gearBtn.title);
   }
 
   function refreshModelControls() {
@@ -20764,6 +20808,7 @@
         if (!msg.info.provider || msg.info.provider === "grok") state.cliVersion = msg.info.version || "";
         state.startingPhase = true;
         state.onboardingMode = null;
+        setModelCatalogPending(true);
         if (!welcomeHoldActive()) setWelcomeStatus("Starting", true);
         const onb = $("welcome-onboarding");
         if (onb) onb.innerHTML = "";
@@ -20822,6 +20867,7 @@
         renderProviderSignInCard();
         const m = state.availableModels.find((x) => x.modelId === msg.currentModelId && (!x.provider || x.provider === state.activeProvider));
         if (m?.totalContextTokens) state.contextWindow = m.totalContextTokens;
+        setModelCatalogPending(false);
         state.contextBreakdown = null;
         updateDonut(0);
         reportRemotePreferences();
@@ -21693,6 +21739,7 @@
         speakCompletedTurn();
         break;
       case "exit":
+        if (state.modelCatalogPending) setModelCatalogPending(false);
         stopProcessingCue();
         hideGrokking();
         // A clean exit on an empty view is not an error: the composer's own
@@ -21857,6 +21904,9 @@
             if (!welcomeHoldActive()) setWelcomeStatus(`Connected${ver}`, false); // settled — no spinner
           }
         }
+        // The end of startup opens the chip whether or not a catalog came: on
+        // a failed start it shows what the picker shows on failure.
+        if (!state.busy && !state.replaying && state.modelCatalogPending) setModelCatalogPending(false);
         // Refresh the gear popover's model/effort lock state if it's open.
         if (!gearPopover.hidden) renderGearMain();
         syncModelChip();
@@ -21921,6 +21971,7 @@
           }
         break;
       case "error":
+        if (state.modelCatalogPending) setModelCatalogPending(false);
         // The host refused to restore a specific conversation, and named it.
         // Keeping that id meant the next reload asked for the same dead
         // session, drew the same error, and re-armed itself — the owner could

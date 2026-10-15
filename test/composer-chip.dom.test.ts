@@ -250,3 +250,82 @@ describe("context fullness", () => {
     );
   }
 });
+
+// The owner, 2026-10-15: "When model and effort are loading, don't make this
+// clickable as there is rubbish inside." Until THIS conversation's provider has
+// published its catalog the chip is a closed door, on every surface.
+describe("the model chip while models load", () => {
+  const chipOf = (h: ReturnType<typeof bootWebview>) => h.doc.getElementById("gear-btn") as HTMLButtonElement;
+  const popover = (h: ReturnType<typeof bootWebview>) => h.doc.getElementById("gear-popover")!;
+  function starting(surface: "vscode" | "remote", providers = [{ id: "grok", connected: true }, { id: "claude", connected: true }]) {
+    const h = bootWebview({ remote: surface === "remote", vscode: surface === "vscode" });
+    dispatch(h.window, { type: "initialState", appPurpose: "coding", capabilities: { settingsEditor: surface === "vscode" }, effort: "high" });
+    dispatch(h.window, { type: "providerState", providers });
+    dispatch(h.window, { type: "initialized", info: { provider: "grok", version: "1.0.0" } });
+    return h;
+  }
+  const expectClosedDoor = (h: ReturnType<typeof bootWebview>) => {
+    const chip = chipOf(h);
+    expect(chip.disabled).toBe(true);
+    expect(chip.getAttribute("aria-disabled")).toBe("true");
+    expect(chip.title).toBe("Loading models\u2026");
+    expect(chip.classList.contains("model-chip-loading")).toBe(true);
+    click(h.window, chip);
+    chip.dispatchEvent(new h.window.KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }) as any);
+    expect(popover(h).hidden).toBe(true);
+  };
+
+  it.each(["vscode", "remote"] as const)("stays shut while starting and opens on the catalog (%s)", (surface) => {
+    const h = starting(surface);
+    expectClosedDoor(h);
+    dispatch(h.window, { type: "session", provider: "grok", currentModelId: "grok-build", models: structuredClone(models) });
+    const chip = chipOf(h);
+    expect(chip.disabled).toBe(false);
+    expect(chip.getAttribute("aria-disabled")).toBe("false");
+    expect(chip.textContent).toBe("Grok BuildHigh");
+    click(h.window, chip);
+    expect(popover(h).hidden).toBe(false);
+  });
+
+  it("closes again when the conversation moves to another provider, until that provider's catalog arrives", () => {
+    const h = starting("vscode");
+    // Mid-load the host switches the conversation to Claude.
+    dispatch(h.window, { type: "initialized", info: { provider: "claude", version: "1.0.0" } });
+    expectClosedDoor(h);
+    dispatch(h.window, { type: "session", provider: "claude", currentModelId: "sonnet",
+      models: [{ provider: "claude", modelId: "sonnet", name: "Sonnet 5" }] });
+    expect(chipOf(h).disabled).toBe(false);
+    expect(chipOf(h).textContent).toContain("Sonnet 5");
+    // A later restart (another provider switch) shuts it, and an open picker
+    // on the old catalog closes with it.
+    click(h.window, chipOf(h));
+    expect(popover(h).hidden).toBe(false);
+    dispatch(h.window, { type: "initialized", info: { provider: "grok", version: "1.0.0" } });
+    expect(popover(h).hidden).toBe(true);
+    expectClosedDoor(h);
+  });
+
+  it("never stays shut: a failed start, a signed-out agent and the failsafe all open it", async () => {
+    const failed = starting("vscode");
+    dispatch(failed.window, { type: "error", text: "Failed to start" });
+    dispatch(failed.window, { type: "setBusy", value: false });
+    expect(chipOf(failed).disabled).toBe(false);
+
+    const ended = starting("vscode");
+    dispatch(ended.window, { type: "setBusy", value: false });
+    expect(chipOf(ended).disabled).toBe(false);
+
+    // Recovery lives in the picker: a signed-out agent keeps it reachable.
+    const signedOut = starting("vscode", [{ id: "grok", connected: true, needsLogin: true } as any]);
+    expect(chipOf(signedOut).disabled).toBe(false);
+    click(signedOut.window, chipOf(signedOut));
+    expect(popover(signedOut).hidden).toBe(false);
+
+    const silent = bootWebview({ vscode: true, beforeScripts: (w: any) => { w.__grokModelCatalogFailsafeMs = 5; } });
+    dispatch(silent.window, { type: "providerState", providers: [{ id: "grok", connected: true }] });
+    dispatch(silent.window, { type: "initialized", info: { provider: "grok", version: "1.0.0" } });
+    expect(chipOf(silent).disabled).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(chipOf(silent).disabled).toBe(false);
+  });
+});

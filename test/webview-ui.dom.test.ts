@@ -2318,6 +2318,9 @@ describe("gear menu — Other group + About / Settings", () => {
         ...extra,
       });
       dispatch(h.window, { type: "initialized", info: { version: "0.2.33" } });
+      // The remote reaches Settings through the model chip, which stays shut
+      // until the starting session has published its catalog.
+      dispatch(h.window, { type: "session", sessionId: "s", models: [] });
       h.posted.length = 0;
       openAbout(h);
       return h;

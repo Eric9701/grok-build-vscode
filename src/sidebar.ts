@@ -3589,7 +3589,9 @@ export class GrokSidebar {
 
   async pickModel(): Promise<void> {
     if (!this.focused.client || !this.focused.client.availableModels.length) {
-      this.host.showInformationMessage("Start a session first.");
+      // A starting session has a client and no catalog yet: the picker stays
+      // shut until it has one, the same as the composer's model chip.
+      this.host.showInformationMessage(this.focused.client ? "Models are still loading." : "Start a session first.");
       return;
     }
     const models = this.modelsForSession(
