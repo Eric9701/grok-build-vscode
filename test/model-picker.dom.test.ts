@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { bootWebview, click, dispatch } from "./webview-harness";
+import { normalizeClaudeSessionResponse } from "../src/claude-backend";
 
 const $ = (doc: Document, id: string) => doc.getElementById(id) as HTMLElement;
 const modelBtn = (doc: Document) => doc.querySelector(".model-picker-row") as HTMLButtonElement;
@@ -162,6 +163,27 @@ describe("model picker provider marks and manage-providers", () => {
     const sonnet = [...h.doc.querySelectorAll("#gear-popover .model-picker-row")]
       .find((el) => el.textContent?.includes("Sonnet 5"));
     expect(sonnet?.querySelector(".provider-glyph.provider-claude")).toBeTruthy();
+  });
+
+  // The owner, 2026-10-15: "'Default (recommended)' is not the information."
+  // The live catalog of a fresh Claude install, through the host's own
+  // normalisation: the default row says which model it resolves to, and keeps
+  // its value.
+  it("names the model Claude's default row resolves to, in the row and the chip", () => {
+    const live = JSON.parse(readFileSync(fileURLToPath(new URL("./fixtures/smoke-live-catalogs.json", import.meta.url)), "utf8")).claude.session;
+    const { models } = normalizeClaudeSessionResponse({ sessionId: "c", ...live });
+    const h = bootWebview();
+    dispatch(h.window, { type: "providerState", providers: [{ id: "claude", connected: true }] });
+    openModelPicker(h, models.availableModels.map((model: object) => ({ provider: "claude", ...model })),
+      { provider: "claude", currentModelId: models.currentModelId });
+    const rows = [...h.doc.querySelectorAll("#gear-popover .model-picker-row")];
+    const active = rows.find((row) => row.classList.contains("active"));
+    expect(active?.querySelector(".model-picker-name")?.textContent).toBe("Default (Opus 5.5)");
+    expect($(h.doc, "gear-btn").textContent).toContain("Default (Opus 5.5)");
+    expect(h.doc.getElementById("gear-popover")!.textContent).not.toContain("recommended");
+    // Only the label changed: the row is still the vendor's `default` value.
+    expect(models.currentModelId).toBe("default");
+    expect(models.availableModels[0]).toMatchObject({ modelId: "default", name: "Default (Opus 5.5)" });
   });
 });
 

@@ -3,6 +3,7 @@ import * as path from "node:path";
 import {
   ClaudeBackend,
   claudeModeId,
+  claudeDefaultModelName,
   claudeModelDescription,
   configStateFromClaudeOptions,
   isClaudeCredentialError,
@@ -125,6 +126,13 @@ describe("Claude session model mapping", () => {
       .toEqual(["default", "opus[1m]", "sonnet"]);
   });
 
+  // "Default (recommended)" says nothing; the row names what it resolves to,
+  // and its value stays the vendor's `default`.
+  it("labels the default row with the model it resolves to", () => {
+    const row = modelsFromClaudeConfigOptions(shippedOptions("default")).availableModels[0];
+    expect(row).toMatchObject({ modelId: "default", name: "Default (Opus 5)" });
+  });
+
   // The picker promotes a description's lead over the name when it spells the
   // name out more fully, so a capability qualifier there becomes the model's
   // visible name everywhere — picker row AND composer chip.
@@ -132,6 +140,35 @@ describe("Claude session model mapping", () => {
     const opus = modelsFromClaudeConfigOptions(shippedOptions("sonnet"))
       .availableModels.find((m) => m.modelId === "opus[1m]");
     expect(opus.description).toBe("Opus 5 · Best for everyday, complex tasks");
+  });
+});
+
+describe("claudeDefaultModelName", () => {
+  const rows = [
+    { value: "default", name: "Default (recommended)" },
+    { value: "opus[1m]", name: "Opus 5.5", description: "Opus 5.5 with 1M context · Best for everyday, complex tasks" },
+    { value: "opus", name: "Opus 5.5 (200K)", description: "Opus 5.5 with 200K context · x" },
+    { value: "claude-fable-5-1[1m]", name: "Fable 5.1", description: "Fable 5.1 · Most capable" },
+    { value: "sonnet", name: "Sonnet 5", description: "Sonnet 5 · Efficient for routine tasks" },
+  ];
+
+  it("names the row the adapter's description points at", () => {
+    // The family and its context size pick one of two Opus rows.
+    expect(claudeDefaultModelName("Opus (1M context)", rows)).toBe("Opus 5.5");
+    expect(claudeDefaultModelName("Sonnet", rows)).toBe("Sonnet 5");
+    expect(claudeDefaultModelName("Fable 5.1", rows)).toBe("Fable 5.1");
+    // An older SDK's wording.
+    expect(claudeDefaultModelName("Use the default model (currently Sonnet 5) · $3/$15 per Mtok", rows)).toBe("Sonnet 5");
+  });
+
+  it("falls back to the adapter's own words, never a guess", () => {
+    // Two Opus rows and no context size to choose between them.
+    expect(claudeDefaultModelName("Opus", rows)).toBe("Opus");
+    // No row shares the resolved model: the adapter sends its id.
+    expect(claudeDefaultModelName("claude-opus-6[1m]", rows)).toBe("claude-opus-6[1m]");
+    expect(claudeDefaultModelName("Haiku (200K context)", rows)).toBe("Haiku, 200K context");
+    expect(claudeDefaultModelName("", rows)).toBeUndefined();
+    expect(claudeDefaultModelName(undefined, rows)).toBeUndefined();
   });
 });
 

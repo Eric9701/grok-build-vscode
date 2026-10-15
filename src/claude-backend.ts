@@ -91,6 +91,33 @@ export function claudeModelDescription(description: unknown): string | undefined
  *  inside this picker, and `claude`'s own `/model` is the way back. */
 const CLAUDE_DEFAULT_MODEL_ID = "default";
 
+/** What the default row resolves to, for its label: "Default (Opus 5.5)", not
+ *  "Default (recommended)" (the owner, 2026-10-15). The adapter itself says it:
+ *  claude-agent-acp 0.76 (`buildModelConfigOption`) describes the row with the
+ *  SDK's display name of the model the default resolves to ("Opus (1M
+ *  context)"), or that model's id when no row shares it, while that model's own
+ *  row carries the versioned name ("Opus 5.5"). An older SDK said "Use the
+ *  default model (currently Sonnet 4.5) · …". So: the row whose name is the
+ *  description, else the one row of the description's family with its context
+ *  size, else the description itself. */
+export function claudeDefaultModelName(description: unknown, rows: readonly any[]): string | undefined {
+  if (typeof description !== "string") return undefined;
+  const text = (/\bcurrently\s+([^)·]+)/i.exec(description)?.[1] ?? description.split("·")[0]).trim();
+  if (!text) return undefined;
+  const named = rows.filter((row) => row?.value !== CLAUDE_DEFAULT_MODEL_ID && typeof row?.name === "string" && row.name.trim());
+  const exact = named.find((row) => row.name.trim().toLowerCase() === text.toLowerCase());
+  if (exact) return exact.name.trim();
+  const family = text.replace(/\s*\([^)]*\)\s*$/, "").trim().toLowerCase();
+  const context = /(\d+(?:\.\d+)?[KM])\s+context\b/i.exec(text)?.[1];
+  const same = named.filter((row) => {
+    const name = row.name.trim().toLowerCase();
+    if (!family || (name !== family && !name.startsWith(`${family} `))) return false;
+    return !context || new RegExp(`\\b${context.replace(".", "\\.")}\\s+context\\b`, "i").test(String(row.description ?? ""));
+  });
+  if (same.length === 1) return same[0].name.trim();
+  return text.replace(/\s*\(([^)]*)\)\s*$/, ", $1");
+}
+
 /** session/new returns configOptions, not the models envelope the host picker reads. */
 export function modelsFromClaudeConfigOptions(configOptions: any): { currentModelId?: string; availableModels: any[] } {
   const options = Array.isArray(configOptions) ? configOptions : [];
@@ -101,15 +128,17 @@ export function modelsFromClaudeConfigOptions(configOptions: any): { currentMode
   const effortValues = selectOptions(effort)
     .map((entry) => entry?.value)
     .filter((value): value is string => typeof value === "string" && value !== "default");
+  const rows = selectOptions(model);
   return {
     currentModelId,
-    availableModels: selectOptions(model).flatMap((entry) => {
+    availableModels: rows.flatMap((entry) => {
       const modelId = typeof entry?.value === "string" ? entry.value : "";
       if (!modelId) return [];
       if (modelId === CLAUDE_DEFAULT_MODEL_ID && currentModelId !== CLAUDE_DEFAULT_MODEL_ID) return [];
+      const resolved = modelId === CLAUDE_DEFAULT_MODEL_ID ? claudeDefaultModelName(entry?.description, rows) : undefined;
       return [{
         modelId,
-        name: typeof entry?.name === "string" && entry.name.trim() ? entry.name : modelId,
+        name: resolved ? `Default (${resolved})` : typeof entry?.name === "string" && entry.name.trim() ? entry.name : modelId,
         description: claudeModelDescription(entry?.description),
         _meta: {
           supportsReasoningEffort: effortValues.length > 0,
