@@ -31,6 +31,13 @@ import type { AcpProvider, BackendSessionListEntry } from "./acp-backend";
 import { usesAdapterHistory, isInternalProvider, INTERNAL_PROVIDERS, supportsSessionDeletion, supportsHistoryDeletion, supportsModeSwitching, supportsAutoAccept, supportsClientMcpServers, usesPerCallContextOccupancy } from "./acp-backend";
 import { CODEX_ACP_ADAPTER_VERSION, CodexBackend, isCodexCredentialError } from "./codex-backend";
 import { locateCodexCli, resolveCodexHome } from "./codex-cli-locator";
+import {
+  AUTOMATED_CLAUDE_ENTRYPOINT,
+  AUTOMATED_CODEX_ORIGINATOR,
+  claudeConfigDir,
+  claudeEntrypoint,
+  codexOriginators,
+} from "./automated-sessions";
 import { readCodexSubscriptionWindows } from "./codex-usage";
 import { CODEX_MANAGED_VERSION, codexManagedRoot, installManagedCodex } from "./codex-managed-installer";
 import { CLI_NPM_PACKAGE, cliUpdatePlan, selfUpdateArgs } from "./cli-update-plan";
@@ -67,6 +74,7 @@ import {
   validateRoutine,
   manualWindowKey,
   routineSessionName,
+  ROUTINE_SESSION_TAG,
   type Routine,
   type RoutineModelOption,
   type RoutineProjectOption,
@@ -373,6 +381,7 @@ import {
   indexSessions,
   withinHistoryHorizon,
   HISTORY_HORIZON_MS,
+  isRecentConversation,
   isEmptySession,
   isPathInside,
   isRepoColor,
@@ -4574,14 +4583,26 @@ Only continue if you trust this code.`,
    * case for archived, which is a client presentation concept and has no
    * business in the activity path.
    */
-  private noteSessionActivity(session: Session): void {
+  /** A conversation the person opened on purpose (`openedAt`), which keeps it
+   *  in Recent for a few days (RECENT_OPENED_MS). Never written by a listing. */
+  private async noteSessionOpened(id: string): Promise<void> {
+    const openedAt = Date.now();
+    await this.updateSessionMeta((current) => ({ ...current, [id]: { ...(current[id] ?? {}), openedAt } }));
+    this.postSessionsList();
+  }
+
+  private noteSessionActivity(session: Session, sent = false): void {
     const sid = session.activeSessionId ?? session.client?.sessionId;
     if (!sid) return;
     const activeAt = Date.now();
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const previous = overrides[sid] ?? {};
+    // `sentAt` is what puts a conversation in Recent (isRecentConversation).
+    // A routine's run is named before it sends, and is not the person.
+    const routineRun = (previous.customName ?? "").trim().startsWith(ROUTINE_SESSION_TAG);
     void this.state.update(SESSION_META_KEY, {
       ...overrides,
-      [sid]: { ...(overrides[sid] ?? {}), activeAt },
+      [sid]: { ...previous, activeAt, ...(sent && !routineRun ? { sentAt: activeAt } : {}) },
     });
     for (const provider of INTERNAL_PROVIDERS.filter(usesAdapterHistory)) {
       const history = this.adapterHistory(provider);
@@ -8752,6 +8773,92 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const dots: Record<string, Dot> = {};
     for (const e of filtered) dots[e.id] = this.dotForId(e.id);
     return { entries: filtered, dots };
+  }
+
+  /** Whether a conversation was started by automation (automated-sessions.ts),
+   *  per id: the marker is in a file the CLI wrote once, so it never changes. */
+  private automatedSessionCache?: Map<string, boolean>;
+
+  /**
+   * Recent: the conversations the person sent something in through this host,
+   * or opened here in the last few days (isRecentConversation) -- across every
+   * folder this host may list, including folders that are not projects -- minus
+   * anything automation started, newest first, inside the history horizon.
+   *
+   * Built from our own record (`grok.sessionMeta`), so a CLI history full of
+   * benchmark or `codex exec` runs adds nothing to it. Each candidate's folder
+   * is listed through `buildSessionsList`, so the rows are the same rows a
+   * project's list shows (titles, providers, live conversations, the horizon).
+   * Before `providerCwd` (stamped at every session start since 2026-08-13) a
+   * conversation names no folder; those predate the horizon anyway.
+   */
+  private buildRecentSessions(): { entries: SessionListEntry[]; dots: Record<string, Dot> } {
+    const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
+    const now = Date.now();
+    const authorized = this.authorizedSessionCwds();
+    const wanted = new Set<string>();
+    const folders = new Map<string, string>();
+    for (const [id, meta] of Object.entries(overrides)) {
+      if (!isRecentConversation(meta, now)) continue;
+      const where = meta.providerCwd;
+      if (!where || !authorizedListCwd(where, authorized, pathsEqual)) continue;
+      wanted.add(id);
+      folders.set(normalizeFsPath(where), where);
+    }
+    for (const session of this.pool ?? []) {
+      const id = session.activeSessionId;
+      if (id && isRecentConversation(overrides[id], now)) {
+        const where = this.sessionCwd(session);
+        if (where && authorizedListCwd(where, authorized, pathsEqual)) {
+          wanted.add(id);
+          folders.set(normalizeFsPath(where), where);
+        }
+      }
+    }
+    const byId = new Map<string, SessionListEntry>();
+    for (const cwd of folders.values()) {
+      for (const entry of this.buildSessionsList(cwd, { offset: 0, limit: SESSION_PAGE_SIZE }, null).entries) {
+        if (wanted.has(entry.id) && !byId.has(entry.id)) byId.set(entry.id, entry);
+      }
+    }
+    const ordered = [...byId.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id));
+    const entries: SessionListEntry[] = [];
+    for (const entry of ordered) {
+      if (entries.length >= GrokSidebar.RECENT_LIMIT) break;
+      if (!this.isAutomatedSession(entry, now)) entries.push(entry);
+    }
+    const dots: Record<string, Dot> = {};
+    for (const entry of entries) dots[entry.id] = this.dotForId(entry.id);
+    return { entries, dots };
+  }
+
+  /** Rows Recent sends; the renderers show up to this many. */
+  private static readonly RECENT_LIMIT = 10;
+
+  private isAutomatedSession(entry: SessionListEntry, now: number): boolean {
+    if (entry.automated) return true;
+    const cache = this.automatedSessionCache ??= new Map();
+    const known = cache.get(entry.id);
+    if (known !== undefined) return known;
+    let automated = false;
+    if (entry.provider === "codex") {
+      const days = Math.ceil(HISTORY_HORIZON_MS / (24 * 60 * 60 * 1000));
+      const originator = codexOriginators(resolveCodexHome(process.env), new Set([entry.id]), now, days).get(entry.id);
+      automated = originator === AUTOMATED_CODEX_ORIGINATOR;
+    } else if (entry.provider === "claude") {
+      automated = claudeEntrypoint(claudeConfigDir(process.env), entry.cwd, entry.id) === AUTOMATED_CLAUDE_ENTRYPOINT;
+    }
+    cache.set(entry.id, automated);
+    return automated;
+  }
+
+  private postRecentSessions(): void {
+    const hasRemote = this.remoteClients.clients().length > 0;
+    const hasLocalRail = this.host.canSwitchWorkspaceFolder || !!this.projectsRail;
+    if (!hasRemote && !hasLocalRail) return;
+    const message: HostMsg = { type: "recentSessions", ...this.buildRecentSessions() };
+    if (hasLocalRail) this.postLocal(message);
+    for (const id of this.remoteClients.clients()) this.sendRemoteClient(id, message);
   }
 
   private postPinnedSessions(clientId?: string, requestId?: string): void {
@@ -13277,8 +13384,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       case "resumeSession":
         if (origin === "remote" && clientId) {
           await this.openRemoteSession(clientId, msg.id, msg.cwd, true, msg.claim === true);
+          // A tap is the person choosing it; a reconnect restore is not.
+          if (msg.claim === true && this.remoteClients.active(clientId)?.activeSessionId === msg.id) {
+            void this.noteSessionOpened(msg.id);
+          }
+        } else {
+          await this.openSession(msg.id, msg.cwd);
+          if (this.focused.activeSessionId === msg.id) void this.noteSessionOpened(msg.id);
         }
-        else await this.openSession(msg.id, msg.cwd);
         break;
        case "renameSession":
           this.renameSession(msg.id, msg.name, origin, clientId, msg.cwd);
@@ -14532,6 +14645,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // think of. Cheap when nothing is pinned — the scan is over an in-memory map
     // and reads no disk until a pin actually exists.
     this.postPinnedSessions();
+    // Recent spans every folder, so it rides the same funnel as the pins.
+    this.postRecentSessions();
     for (const clientId of this.remoteClients.clients()) {
       // Per-tab cwd may still name a closed project after revoke leaves it for
       // selectRepo — buildSessionsList enforces the live authorized set.
@@ -18079,7 +18194,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.setStatus(session, "working");
     // The send IS the activity — the rail should not wait ~2s for the CLI to
     // write a transcript before admitting you are working in this conversation.
-    this.noteSessionActivity(session);
+    this.noteSessionActivity(session, true);
 
     try {
       session.adapterCompactThisTurn = false;
@@ -18730,6 +18845,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     "sessionOpening",
     "repoSessions",
     "pinnedSessions",
+    "recentSessions",
     "sessionDot",
     "session",
     "sessionName",
@@ -22669,6 +22785,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // pushed from there would simply never arrive on a fresh tab or a reconnect.
     // buildPinnedSessions filters to the live authorized set.
     snap.push({ type: "pinnedSessions", ...this.buildPinnedSessions(), pinRequests: true });
+    snap.push({ type: "recentSessions", ...this.buildRecentSessions() });
     const out: HostMsg[] = [];
     for (const m of snap) {
       const t = transformHostMsgForRemote(m, this.remoteMediaDeps);

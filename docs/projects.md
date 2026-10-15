@@ -154,6 +154,17 @@ rail, the chip above the message box, the project switcher, and the title above
 the file panel. The same project always shows the same glyph — that is the
 point of it.
 
+## Recent
+
+**Recent**, above the projects in the rail, is the short way back to what you
+were doing: the conversations you sent a message in through AFK Pilot (from VS
+Code, the desktop app or your phone), plus the ones you opened here in the last
+three days, newest first. It spans every folder, including a folder that is not
+one of your projects. A conversation that only exists in an agent's own history
+is not in it, and neither is one an automated run started: a headless Grok run,
+`codex exec`, a Claude Code SDK script, or a routine. The host builds the list
+(`buildRecentSessions`) from its own record of what you sent and opened.
+
 ## Removing a project
 
 The `⋯` on a project row offers **Remove**, which takes it out of the list and

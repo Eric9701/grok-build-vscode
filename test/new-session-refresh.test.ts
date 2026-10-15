@@ -81,7 +81,9 @@ describe("turn end refreshes the project preview", () => {
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, src.indexOf("\n  private ", start + 1));
     const prompt = body.indexOf("await client.prompt(");
-    const stamps = [...body.matchAll(/this\.noteSessionActivity\(session\)/g)].map((match) => match.index!);
+    // The one before the prompt is the send, and also stamps `sentAt`.
+    const stamps = [...body.matchAll(/this\.noteSessionActivity\(session(?:, true)?\)/g)].map((match) => match.index!);
+    expect(body).toMatch(/this\.noteSessionActivity\(session, true\)[\s\S]*await client\.prompt\(/);
     expect(stamps.length).toBeGreaterThanOrEqual(2);
     expect(stamps[0]).toBeLessThan(prompt);
     expect(stamps.some((index) => index > prompt)).toBe(true);

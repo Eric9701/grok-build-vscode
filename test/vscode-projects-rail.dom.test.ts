@@ -1295,3 +1295,16 @@ describe("a click the host is opening", () => {
     expect(active(silent.doc)).toBe("a1");
   });
 });
+
+describe("Recent from the host in the Projects view", () => {
+  it("shows exactly the host's list when it sends one, the loaded union otherwise", () => {
+    const { api } = (() => { const b = bootRail(); return { ...b, api: railApi(b.window) }; })();
+    loadCatalog(api);
+    loadSessions(api, [row("a1", "/work/alpha", "listed only", 9), row("a2", "/work/alpha", "sent in", 8)]);
+    expect(api.recentRows().map((s) => s.id)).toEqual(["a1", "a2"]);
+    api.onMessage({ type: "recentSessions", dots: {}, entries: [row("x1", "/scratch/notes", "outside", 10), row("a2", "/work/alpha", "sent in", 8)] });
+    expect(api.recentRows().map((s) => s.id)).toEqual(["x1", "a2"]);
+    api.onMessage({ type: "sessionRemoved", id: "x1", cwd: "/scratch/notes" });
+    expect(api.recentRows().map((s) => s.id)).toEqual(["a2"]);
+  });
+});

@@ -3078,3 +3078,37 @@ describe("a click the host is opening", () => {
     await vi.waitFor(() => expect(activeName(other.doc)).toBe("alpha one"));
   });
 });
+
+// Recent is the host's when the host builds one: what you sent in or opened,
+// across every folder (one that is not a project included), and nothing a
+// project's preview merely lists.
+describe("Recent from the host", () => {
+  const openRecent = (doc: Document, window: Window) => {
+    const btn = [...doc.querySelectorAll(".rail-head-btn")].find((b) => (b.textContent || "").includes("Recent")) as HTMLElement;
+    click(window, btn);
+  };
+  const recentNames = (doc: Document) =>
+    [...doc.querySelectorAll(".rail-list.rail-recent .rail-session-name")].map((e) => e.textContent);
+
+  it("shows exactly the host's list, and drops a removed conversation from it", () => {
+    const { doc, window } = boot();
+    dispatch(window, sessionsFrame([row("a1", "/work/alpha", "listed only", 9), row("a2", "/work/alpha", "sent in", 8)]));
+    dispatch(window, { type: "recentSessions", dots: {}, entries: [
+      row("x1", "/scratch/notes", "outside any project", 10),
+      row("a2", "/work/alpha", "sent in", 8),
+    ] });
+    openRecent(doc, window);
+    expect(recentNames(doc)).toEqual(["outside any project", "sent in"]);
+    // A folder that is not a project still says where the conversation lives.
+    expect(doc.querySelector(".rail-list.rail-recent .rail-session-repo")?.textContent).toBe("notes");
+    dispatch(window, { type: "sessionRemoved", id: "x1", cwd: "/scratch/notes" });
+    expect(recentNames(doc)).toEqual(["sent in"]);
+  });
+
+  it("without one (an older host) still composes Recent from what is loaded", () => {
+    const { doc, window } = boot();
+    dispatch(window, sessionsFrame([row("a1", "/work/alpha", "listed only", 9), row("a2", "/work/alpha", "sent in", 8)]));
+    openRecent(doc, window);
+    expect(recentNames(doc)).toEqual(["listed only", "sent in"]);
+  });
+});

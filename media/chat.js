@@ -766,6 +766,9 @@
     // pushes it; the client never has to ask, and an older host simply never
     // sends it, leaving the group absent rather than empty.
     pinnedSessions: [],
+    // The host's own Recent (`recentSessions`): null until a host that builds
+    // one says so, and then the rail shows exactly it. See railRecentRows.
+    recentSessions: null,
     // Capability latch: the host announces per-session pinning by sending the
     // frame at all — even empty. Without this the pin renders against a host
     // that drops `toggleSessionPin`, which is a control that looks broken
@@ -8360,6 +8363,10 @@
    * Newest first. The final rail render assigns every id to one visible group.
    */
   function railRecentRows() {
+    // A host that builds Recent itself (conversations you sent in or opened,
+    // across every folder, automation left out) is the whole answer: composing
+    // one from the loaded previews would add every listed conversation back.
+    if (Array.isArray(state.recentSessions)) return state.recentSessions.slice();
     const byId = new Map();
     for (const repo of state.repos || []) {
       const known = railKnownRows(repo);
@@ -22088,6 +22095,7 @@
         if (pendingPin) clearTimeout(pendingPin.timer);
         pendingPins.delete(msg.id);
         state.pinnedSessions = state.pinnedSessions.filter((s) => s.id !== msg.id);
+        if (Array.isArray(state.recentSessions)) state.recentSessions = state.recentSessions.filter((s) => s.id !== msg.id);
         for (const preview of Object.values(state.repoPreviews)) {
           const before = preview.entries.length;
           preview.entries = preview.entries.filter((s) => s.id !== msg.id);
@@ -22249,6 +22257,11 @@
         if (msg.activeId !== undefined && offset === 0) noteHostIdentityKnown(msg.activeId || null);
         break;
       }
+      case "recentSessions":
+        state.recentSessions = uniqueSessionRows(Array.isArray(msg.entries) ? msg.entries : []);
+        state.dots = Object.assign({}, state.dots, msg.dots || {});
+        renderRail();
+        break;
       case "pinnedSessions": {
         state.pinnedSessionsKnown = true;
         state.pinnedSessions = uniqueSessionRows(msg.entries);

@@ -1122,6 +1122,7 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   sessionOpening: "mirror",
   repoSessions: "mirror",
   pinnedSessions: "mirror",
+  recentSessions: "mirror",
   repos: "mirror",
   sessionDot: "mirror",
   queuedSends: "mirror",
@@ -1229,6 +1230,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   // History / session lists — empty entries are fine; a closed cwd in an entry is not.
   sessions: "entries",
   pinnedSessions: "entries",
+  recentSessions: "entries",
   sessionOpening: "none",
   repoSessions: "message-cwd",
   sessionName: "message-cwd",
@@ -1368,7 +1370,7 @@ export function mayDeliverRemoteHostMsg(
         );
       }
       const entries =
-        msg.type === "sessions" || msg.type === "pinnedSessions"
+        msg.type === "sessions" || msg.type === "pinnedSessions" || msg.type === "recentSessions"
           ? msg.entries
           : [];
       return entries.every(

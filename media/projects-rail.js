@@ -83,6 +83,9 @@
     pinnedKnown: false,
     showProviderGlyphs: false,
     dots: {},
+    // The host's own Recent (`recentSessions`); null until a host that builds one
+    // sends it. See recentRows.
+    recentSessions: null,
     filter: "",
     /** cwd-key → true when collapsed. Repositories start expanded. */
     collapsed: savedRailShape.collapsed,
@@ -877,6 +880,9 @@
    * Duplication with PINNED / project lists is intentional — a shortcut.
    */
   function recentRows() {
+    // A host that builds Recent itself (`recentSessions`) is the whole answer;
+    // the union below is only for one that does not.
+    if (Array.isArray(state.recentSessions)) return state.recentSessions.slice(0, RECENT_CAP);
     const byId = new Map();
     if (state.currentSessionsKnown) {
       for (const s of state.currentSessions) {
@@ -1941,6 +1947,11 @@
       case "sessionOpening":
         noteSessionOpening(msg);
         break;
+      case "recentSessions":
+        state.recentSessions = Array.isArray(msg.entries) ? msg.entries : [];
+        state.dots = Object.assign({}, state.dots, msg.dots || {});
+        render();
+        break;
       case "providerState":
         state.museAdvertised = Array.isArray(msg.providers) && msg.providers.some(p => p && p.id === "muse");
         state.agyAdvertised = Array.isArray(msg.providers) && msg.providers.some(p => p && p.id === "agy");
@@ -2052,6 +2063,7 @@
         if (pendingPin) clearTimeout(pendingPin.timer);
         pendingPins.delete(msg.id);
         state.pinnedSessions = state.pinnedSessions.filter((s) => s.id !== msg.id);
+        if (Array.isArray(state.recentSessions)) state.recentSessions = state.recentSessions.filter((s) => s.id !== msg.id);
         for (const preview of Object.values(state.previews)) {
           const before = preview.entries.length;
           preview.entries = preview.entries.filter((s) => s.id !== msg.id);

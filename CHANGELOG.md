@@ -5,6 +5,7 @@
 ### Changed
 
 - **The extension is now called AFK Pilot** (previously Grok Build (Community)). It runs Grok Build, Muse Code, Codex, Claude Code and, experimentally, Antigravity. Your settings, keybindings and conversations are unchanged.
+- **Recent shows what you actually did.** It lists the conversations you sent a message in through AFK Pilot, plus those you opened here in the last three days, across every folder, newest first. Conversations that only appear in an agent's own history no longer fill it, and neither do automated runs (headless Grok, `codex exec`, Claude Code SDK scripts, routines).
 - **Conversations older than 30 days are no longer listed.** Recent, each project's conversations and history search show the last 30 days of activity, for every agent. Older conversations stay on disk exactly as they were, a pinned one still opens from Pinned, and continuing one in its CLI brings it back. Skipping them before anything is read also makes long histories list faster.
 
 ### Fixed

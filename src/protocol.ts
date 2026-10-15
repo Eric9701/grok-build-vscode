@@ -1066,6 +1066,12 @@ export type HostMsg =
   // no repo-scoped frame can answer it. Entries carry their own `cwd`, which is
   // what lets a row name its repo and reopen in the right checkout.
   | { type: "pinnedSessions"; entries: SessionListEntry[]; dots: Record<string, Dot>; pinRequests?: boolean; requestId?: string }
+  /** Recent across every folder this host lists: conversations the person sent
+   *  something in here, or opened here lately, minus automation, newest first
+   *  (buildRecentSessions). Its arrival is what tells a renderer to show this
+   *  list as Recent instead of composing one from the project previews; an
+   *  older host never sends it. */
+  | { type: "recentSessions"; entries: SessionListEntry[]; dots: Record<string, Dot> }
   // `canAddProject` is how the VS Code projects rail learns it may offer "Add
   // project": that view is resolved on its own and gets no `initialState`, so it
   // has no `capabilities` to read. Optional and additive — a client that never
@@ -1612,7 +1618,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   xaiNotification: true, subagentUpdate: true, childStream: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true, promptNav: true, pinLiveWorkflows: true, expandDiffCard: true,
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, imageOriginal: true, moveComposerCaret: true, remoteStatus: true, showRemoteHandoff: true, remoteHandoff: true, hostReachable: true, hostLink: true,
   setAllToolDetails: true, focusInput: true, findInSession: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true, uiConfirmResolved: true,
-  sessions: true, sessionRemoved: true, sessionOpening: true, repoSessions: true, pinnedSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
+  sessions: true, sessionRemoved: true, sessionOpening: true, repoSessions: true, pinnedSessions: true, recentSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
   steerUnavailable: true, feedbackAvailability: true, turnFeedbackAck: true, usage: true,
 };
 
