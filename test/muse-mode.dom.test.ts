@@ -139,7 +139,8 @@ describe("Muse Agent / Auto accept", () => {
     expect(h.doc.getElementById("mode-btn")!.title).toContain("Auto accept");
     openModes(h);
     expect(descsOf(h.doc)[0]).toContain("asks for approval");
-    expect(descsOf(h.doc)[1]).toContain("full access (YOLO)");
+    expect(descsOf(h.doc)[1]).toContain("runs everything without asking (Allow all)");
+    expect(descsOf(h.doc).join(" ")).not.toContain("YOLO");
     expect(descsOf(h.doc)[1]).toContain("on reopen or in a new conversation");
     expect(labelsOf(h.doc)).toEqual(["Agent mode", "Auto accept"]);
   });

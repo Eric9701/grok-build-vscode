@@ -894,8 +894,23 @@ describe("mode picker (the plan-gate entry path)", () => {
     expect(labels).toEqual(["Agent mode", "Auto accept"]);
     expect([...$(doc, "mode-popover").querySelectorAll(".mode-item-desc")].map((label) => label.textContent)).toEqual([
       "Codex acts directly, asking approval only for changes it judges sensitive",
-      "Codex automatically approves all permission requests (YOLO)",
+      "Codex automatically approves all permission requests (Full access)",
     ]);
+  });
+
+  // YOLO is Grok Build's own word; other providers get their own name for the
+  // mode, or none.
+  it.each([
+    ["claude", "Claude automatically approves all permission requests (Bypass permissions)"],
+    ["agy", "Antigravity automatically approves all permission requests"],
+  ])("describes Auto accept for %s without YOLO", (provider, description) => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "providerState", providers: [{ id: provider, connected: true }] });
+    dispatch(window, { type: "session", sessionId: "s", provider, models: [] });
+    dispatch(window, { type: "modeChanged", modeId: "agent", modes: ["agent", "yolo"] });
+    click(window, $(doc, "mode-btn"));
+    const descriptions = [...$(doc, "mode-popover").querySelectorAll(".mode-item-desc")].map((label) => label.textContent);
+    expect(descriptions.at(-1)).toBe(description);
   });
 
   it("disables only Plan with the host's version reason, then re-enables it", () => {

@@ -1162,6 +1162,9 @@
     plan: { icon: ICON.listTree, label: "Plan mode" },
     yolo: { icon: ICON.zap, label: "Auto accept" },
   };
+  // Each provider's own name for what Auto accept runs it in. Antigravity's
+  // is not named here: the host answers its requests itself.
+  const AUTO_ACCEPT_NATIVE_NAMES = { grok: "YOLO", claude: "Bypass permissions", codex: "Full access" };
   const MUSE_MODE_META = {
     yolo: { icon: ICON.zap, label: "Allow all", description: "No prompts; everything runs." },
     agent: { icon: ICON.shieldQuestion, label: "Prompt unmatched", description: "Prompt for anything no rule matches (the interactive default)." },
@@ -1424,14 +1427,19 @@
     if (state.activeProvider === "muse") {
       if (state.hostCaps && state.hostCaps.museNativeModes) {
         if (id === "agent") return "Muse Code asks for approval. Sandbox and trust change on reopen or in a new conversation";
-        if (id === "yolo") return "Muse Code full access (YOLO). Sandbox and trust change on reopen or in a new conversation";
+        if (id === "yolo") return "Muse Code runs everything without asking (Allow all). Sandbox and trust change on reopen or in a new conversation";
       }
       if (id === "agent") return `Follows ${name}'s own approval rules`;
       if (id === "yolo") return `Answers every approval ${name} raises. This may look the same as Agent, because ${name} asks rarely by default`;
     }
     if (id === "auto") return `${name} decides which actions are safe to run and asks you about the rest`;
     if (id === "plan") return `${name} explores and proposes a plan; file writes and commands are blocked until you approve it`;
-    if (id === "yolo") return `${name} automatically approves all permission requests (YOLO)`;
+    // "YOLO" is Grok Build's own word for it; elsewhere the provider's name
+    // for the mode this runs in, or none.
+    if (id === "yolo") {
+      const native = AUTO_ACCEPT_NATIVE_NAMES[state.activeProvider];
+      return `${name} automatically approves all permission requests${native ? ` (${native})` : ""}`;
+    }
     return `${name} acts directly, asking approval only for changes it judges sensitive`;
   }
 
