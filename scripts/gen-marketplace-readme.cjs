@@ -17,13 +17,13 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 
-const header = `# GUI for Grok Build & Muse Code
+const header = `# AFK Pilot: GUI for Grok Build & Muse Code
 
-[![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](https://github.com/phuryn/grok-build-vscode/blob/main/LICENSE) ![Agents](https://img.shields.io/badge/Agents-Grok%20Build%20%C2%B7%20Codex%20%C2%B7%20Claude%20Code%20%C2%B7%20Muse%20Code-000000) [![VS Code](https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visualstudiocode&logoColor=white)](https://code.visualstudio.com) [![Cursor](https://badgen.net/badge/Cursor/Extension/007ACC)](https://cursor.com) [![The Product Compass](https://img.shields.io/badge/The%20Product%20Compass-productcompass.pm-FF6B35)](https://www.productcompass.pm)
+[![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](https://github.com/phuryn/grok-build-vscode/blob/main/LICENSE) ![Agents](https://img.shields.io/badge/Agents-Grok%20Build%20%C2%B7%20Codex%20%C2%B7%20Claude%20Code%20%C2%B7%20Muse%20Code%20%C2%B7%20Antigravity-000000) [![VS Code](https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visualstudiocode&logoColor=white)](https://code.visualstudio.com) [![Cursor](https://badgen.net/badge/Cursor/Extension/007ACC)](https://cursor.com) [![The Product Compass](https://img.shields.io/badge/The%20Product%20Compass-productcompass.pm-FF6B35)](https://www.productcompass.pm)
 
-> **GUI for Grok Build (incl. Grok 4.7) & Muse Code** — and for Codex and Claude Code in the same window. Not affiliated with or endorsed by SpaceXAI (formerly xAI), Meta, OpenAI or Anthropic. *Grok*, *Grok Build* and *xAI* are trademarks of xAI; *Muse Code* of Meta; *Codex* of OpenAI; *Claude Code* of Anthropic. This project uses those names only to describe what it is compatible with.
+> **GUI for Grok Build (incl. Grok 4.7) & Muse Code** — and for Codex, Claude Code and Google Antigravity (experimental) in the same window. Not affiliated with or endorsed by SpaceXAI (formerly xAI), Meta, OpenAI, Anthropic or Google. *Grok*, *Grok Build* and *xAI* are trademarks of xAI; *Muse Code* of Meta; *Codex* of OpenAI; *Claude Code* of Anthropic. *Antigravity* and *Gemini* are trademarks of Google. This project uses those names only to describe what it is compatible with.
 
-The GUI for **Grok Build CLI** (incl. **Grok 4.7**) and **Meta's Muse Code**, right in your editor. It drives **OpenAI's Codex** and **Anthropic's Claude Code** too: one window, one model picker, and every conversation keeps the agent it started with. And it comes with **Remote Control**: pair **[AFK Pilot](https://afkpilot.com)** once and watch, approve, and steer your agent from your phone or any browser while away from your desk. Drop open files in as \`@\`-context, run **multiple sessions** at once, keep **resumable chat history**, generate **images & video inline**, and dictate by **voice**. If you'd rather stay in VS Code than a terminal, this brings Grok Build's agent into your sidebar.
+The GUI for **Grok Build CLI** (incl. **Grok 4.7**) and **Meta's Muse Code**, right in your editor. It drives **OpenAI's Codex** and **Anthropic's Claude Code** too — and, experimentally, **Google's Antigravity** on your own computer: one window, one model picker, and every conversation keeps the agent it started with. **Remote Control** is built in: pair your phone at **[afkpilot.com](https://afkpilot.com)** once and watch, approve, and steer your agent from your phone or any browser while away from your desk. Drop open files in as \`@\`-context, run **multiple sessions** at once, keep **resumable chat history**, generate **images & video inline**, and dictate by **voice**. If you'd rather stay in VS Code than a terminal, this brings Grok Build's agent into your sidebar.
 
 No manual setup: the extension **walks you through installing the \`grok\` CLI and signing in** — with a **SuperGrok or X Premium+ subscription**, or an **xAI API key** — right from the sidebar, one click per step.
 
@@ -45,11 +45,11 @@ If you live in your editor, this puts Grok Build right next to your code — a g
 // Open VSX the way README.md does: this page IS the store page.
 const installBlock = `## Install
 
-**1. Install the extension.** In VS Code or Cursor, open **Extensions** (\`Ctrl/Cmd+Shift+X\`) and search **"GUI for Grok Build & Muse Code"**.
+**1. Install the extension.** In VS Code or Cursor, open **Extensions** (\`Ctrl/Cmd+Shift+X\`) and search **"AFK Pilot"**.
 
-**2. Open Grok and sign in.** Press \`Ctrl/Cmd+;\`. The sidebar **walks you through installing the \`grok\` CLI and signing in** — one click per step, with your SuperGrok / X Premium+ subscription or an xAI API key. That's the whole setup.
+**2. Open AFK Pilot and sign in.** Press \`Ctrl/Cmd+;\`. The sidebar **walks you through installing the \`grok\` CLI and signing in** — one click per step, with your SuperGrok / X Premium+ subscription or an xAI API key. That's the whole setup.
 
-Grok defaults to the **Secondary Side Bar** (right side, next to other AI tools). Cursor refuses that container, so a first installation moves the view to the Primary Side Bar. Use the editor's own Move View controls to relocate it; where the secondary container is unavailable, Settings → Advanced → **Move view…** opens that picker.
+AFK Pilot defaults to the **Secondary Side Bar** (right side, next to other AI tools). Cursor refuses that container, so a first installation moves the view to the Primary Side Bar. Use the editor's own Move View controls to relocate it; where the secondary container is unavailable, Settings → Advanced → **Move view…** opens that picker.
 
 > Prefer the terminal, building from source, or installing into several IDEs at once? See the project [INSTALL docs](https://github.com/phuryn/grok-build-vscode/blob/main/docs/INSTALL.md).
 
@@ -57,7 +57,7 @@ Grok defaults to the **Secondary Side Bar** (right side, next to other AI tools)
 
 ## Quick start
 
-1. **Open** the Grok view (\`Ctrl/Cmd+;\`, or **Grok: Open** from the command palette) — it lives in the Secondary Side Bar by default.
+1. **Open** the AFK Pilot view (\`Ctrl/Cmd+;\`, or **AFK Pilot: Open** from the command palette) — it lives in the Secondary Side Bar by default.
 2. **Type a prompt** and press **Enter**. Grok streams its answer, showing a *Thinking…* line while it reasons. Want the full reasoning inline? Turn on **Show thinking traces** in Settings.
 3. **Approve actions.** When Grok wants to write a file or run a command it may raise a permission card — preview an edit in the native **diff editor**, with full-file context focused on the first changed line, then *Allow once / always / Reject*.
 4. **Pick your mode** (Agent / Plan / Auto accept), **model**, and **reasoning effort** from the bottom toolbar and model chip.
@@ -67,24 +67,22 @@ Grok defaults to the **Secondary Side Bar** (right side, next to other AI tools)
 
 `;
 
-// The companions the listing may mention. The marketplace Install section is
-// extension-only, so this is the one place a reader learns AFK Pilot and the
-// desktop app exist. Generator-owned rather than carried from README.md,
-// because README.md covers the same ground inside `## Install` — the section
-// this file replaces wholesale.
+// The companion the listing may mention. The marketplace Install section is
+// extension-only, so this is the one place a reader learns the desktop app
+// exists. Generator-owned rather than carried from README.md, because
+// README.md covers the same ground inside `## Install` — the section this file
+// replaces wholesale. Remote Control is not a companion: it is built in.
 const companionBlock = `## Companion apps
 
-This extension is complete on its own. Two optional companions share the same
-chat UI and the same Grok Build CLI:
+This extension is complete on its own, Remote Control included: pair your phone
+at **[afkpilot.com](https://afkpilot.com)** from **Remote control** in the **+**
+menu. One optional companion shares the same chat UI and the same Grok Build CLI:
 
-- **[AFK Pilot](https://afkpilot.com)** — watch, approve, and steer this
-  extension's agent from your phone or any browser. Pair once from **Remote
-  control** in the **+** menu.
 - **[Grok Build Desktop (Community)](https://afkpilot.com/desktop)** — the same
   agent as a standalone app for Windows, macOS and Linux, for machines where you
   would rather not install an editor. Free.
 
-Neither is required, and nothing here depends on them.
+It is not required, and nothing here depends on it.
 
 ---
 
@@ -123,8 +121,8 @@ function buildMarketplaceReadme(githubReadme) {
   body = body.replace(/\n### Grok Build Desktop[\s\S]*?(?=\n### |\n## )/m, "\n");
   body = body.replace(/\n### VS Code \/ Cursor extension\n\n/m, "\n");
   body = body.replace(
-    /1\. \*\*Open\*\* Grok — in VS Code: `Ctrl\/Cmd\+;` \(Secondary Side Bar by default\); in Desktop: launch the app and add a project folder\./,
-    "1. **Open** the Grok view (`Ctrl/Cmd+;`, or **Grok: Open** from the command palette) — it lives in the Secondary Side Bar by default.",
+    /1\. \*\*Open\*\* AFK Pilot — in VS Code: `Ctrl\/Cmd\+;` \(Secondary Side Bar by default\); in Desktop: launch the app and add a project folder\./,
+    "1. **Open** the AFK Pilot view (`Ctrl/Cmd+;`, or **AFK Pilot: Open** from the command palette) — it lives in the Secondary Side Bar by default.",
   );
   body = body.replace(
     /preview an edit \(native diff in VS Code; in-app viewer on Desktop\)/,
@@ -138,6 +136,10 @@ function buildMarketplaceReadme(githubReadme) {
   );
   body = body.replace(
     /\]\((docs\/[^)]+)\)/g,
+    "](https://github.com/phuryn/grok-build-vscode/blob/main/$1)",
+  );
+  body = body.replace(
+    /\]\((research\/[^)]+)\)/g,
     "](https://github.com/phuryn/grok-build-vscode/blob/main/$1)",
   );
   body = body.replace(

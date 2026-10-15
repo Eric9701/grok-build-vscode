@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The extension is now called AFK Pilot** (previously Grok Build (Community)). It runs Grok Build, Muse Code, Codex, Claude Code and, experimentally, Antigravity. Your settings, keybindings and conversations are unchanged.
+
 ## 4.14.3 — 2026-10-14
 
 **Choose how much context Grok keeps.**

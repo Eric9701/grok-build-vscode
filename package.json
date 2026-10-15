@@ -1,7 +1,7 @@
 {
   "name": "grok-vscode-phuryn",
-  "displayName": "GUI for Grok Build & Muse Code",
-  "description": "GUI for Grok Build (incl. Grok 4.7) and Muse Code — and for Codex and Claude Code in the same window. Remote Control from your phone, voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT). Not affiliated with or endorsed by SpaceXAI (formerly xAI), Meta, OpenAI or Anthropic.",
+  "displayName": "AFK Pilot: GUI for Grok Build & Muse Code",
+  "description": "GUI for Grok Build (incl. Grok 4.7) and Muse Code — plus Codex, Claude Code and Google Antigravity (experimental) in the same window. Previously Grok Build (Community). Remote Control from your phone, voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT). Not affiliated with or endorsed by SpaceXAI (formerly xAI), Meta, OpenAI, Anthropic or Google.",
   "version": "4.14.3",
   "publisher": "PawelHuryn",
   "author": {
@@ -46,7 +46,12 @@
     "muse-code",
     "meta",
     "coding-agent",
-    "gui"
+    "gui",
+    "antigravity",
+    "gemini",
+    "afk-pilot",
+    "remote-control",
+    "multi-agent"
   ],
   "icon": "resources/grok-icon.png",
   "main": "./out/extension.js",
