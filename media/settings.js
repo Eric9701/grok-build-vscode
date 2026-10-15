@@ -1075,14 +1075,14 @@
       message: (s) => ({ type: providerConnectedNow(s, "muse") ? "logout" : "runGrokLogin", provider: "muse" }),
     },
     {
-      id: "museShellSandbox", category: "providers", title: "Shell sandbox",
+      id: "museShellSandbox", category: "providers", group: "museSettings", title: "Shell sandbox",
       description: "For new Muse Code conversations in Prompt unmatched. On request always uses the sandbox; Allow all disables it. On request is unavailable in a running process without the sandbox.", kind: "toggle", hostLocal: true,
       visible: (s) => !!s.museSettings && (s.providers || []).some(p => p.id === "muse"),
       defaultValue: true, get: (s) => s.museSettings.shellSandbox,
       message: (value) => ({ type: "setMuseSetting", key: "museShellSandbox", value }),
     },
     {
-      id: "museSandboxNetwork", category: "providers", title: "Sandbox network",
+      id: "museSandboxNetwork", category: "providers", group: "museSettings", title: "Sandbox network",
       description: "Sandbox network access for new Muse Code conversations in Prompt unmatched or On request.", kind: "select", hostLocal: true,
       visible: (s) => !!s.museSettings && (s.providers || []).some(p => p.id === "muse"),
       defaultValue: "proxy-only", get: (s) => s.museSettings.sandboxNetwork,
@@ -1090,7 +1090,7 @@
       message: (value) => ({ type: "setMuseSetting", key: "museSandboxNetwork", value }),
     },
     {
-      id: "museTrustWorkspaces", category: "providers", title: "Trust workspaces",
+      id: "museTrustWorkspaces", category: "providers", group: "museSettings", title: "Trust workspaces",
       description: "For new Muse Code conversations in Prompt unmatched or On request. Allow all always trusts the workspace. A trusted workspace also runs the repository's hooks.",
       kind: "toggle", hostLocal: true,
       visible: (s) => !!s.museSettings && (s.providers || []).some(p => p.id === "muse"),
@@ -3118,6 +3118,29 @@
     el.appendChild(form);
   }
 
+  /**
+   * Rows that belong to one provider sit in a collapsible group under it, so a
+   * setting like "Shell sandbox" is plainly that provider's. A native
+   * <details>, as for the provider config files: keyboard-operable, and the
+   * open state is announced. Collapsed by default.
+   */
+  const ROW_GROUPS = {
+    museSettings: { title: "Muse Code (Meta) settings" },
+  };
+
+  function renderRowGroup(id, open, onToggle) {
+    const el = document.createElement("details");
+    el.className = "settings-row-group";
+    el.dataset.group = id;
+    el.open = open;
+    el.ontoggle = () => onToggle(el.open);
+    const summary = document.createElement("summary");
+    summary.className = "settings-row-group-title";
+    summary.textContent = ROW_GROUPS[id].title;
+    el.appendChild(summary);
+    return el;
+  }
+
   function renderRow(row, snapshot, env, keyForm, githubTokenForm, githubCliStarted) {
     if (row.kind === "providerConfigs") {
       const el = document.createElement("details");
@@ -3325,6 +3348,8 @@
     let githubTokenForm = { open: false, value: "" };
     let githubCliStarted = false;
     let providerConfigsOpen = false;
+    /** Row groups the person opened, kept across repaints of this mount. */
+    const openRowGroups = new Set();
     let pendingRestore = null;
     let aboutChecked = false;
     let providersChecked = false;
@@ -3815,6 +3840,7 @@
         }
       } else {
         let lastSection = "";
+        let group = null;
         for (const row of rows) {
           const section = connectorSection(row, env);
           if (section && section !== lastSection) {
@@ -3824,7 +3850,17 @@
             heading.textContent = section;
             body.appendChild(heading);
           }
-          body.appendChild(renderRow(row, snapshot, env, keyForm, githubTokenForm, githubCliStarted));
+          // Search lists rows flat (above), so a match is never hidden in a group.
+          const groupId = row.group && Object.hasOwn(ROW_GROUPS, row.group) ? row.group : "";
+          if (!groupId) group = null;
+          else if (!group || group.dataset.group !== groupId) {
+            group = renderRowGroup(groupId, openRowGroups.has(groupId), (open) => {
+              if (open) openRowGroups.add(groupId);
+              else openRowGroups.delete(groupId);
+            });
+            body.appendChild(group);
+          }
+          (group || body).appendChild(renderRow(row, snapshot, env, keyForm, githubTokenForm, githubCliStarted));
         }
         if (categoryId === "about") {
           const disclaimer = document.createElement("p");

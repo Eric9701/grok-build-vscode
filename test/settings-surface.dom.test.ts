@@ -2237,6 +2237,74 @@ describe("Muse settings parity", () => {
     expect((h.root.querySelector('[data-id="museSandboxNetwork"] select') as HTMLSelectElement).value).toBe("enabled");
   });
 
+  // The three Muse rows sit in one collapsible group under the Muse row, so
+  // "Shell sandbox" is plainly Muse's; collapsed until opened.
+  const museGroup = (root: ParentNode) => root.querySelector('details.settings-row-group[data-group="museSettings"]') as HTMLDetailsElement | null;
+
+  it.each([true, false])("groups the Muse rows under Muse, collapsed by default (desktop=%s)", isDesktop => {
+    const h = mountAt("providers", { env: { isDesktop }, snapshot: { providers: [{ id: "muse", connected: true }], museSettings: museDefaults } });
+    const group = museGroup(h.root)!;
+    expect(group).not.toBeNull();
+    expect(group.open).toBe(false);
+    expect(group.querySelector("summary")!.textContent).toBe("Muse Code (Meta) settings");
+    // The summary leads, so the group is reached and opened from the keyboard.
+    expect(group.firstElementChild!.tagName).toBe("SUMMARY");
+    expect([...group.querySelectorAll(".settings-row")].map((row) => (row as HTMLElement).dataset.id))
+      .toEqual(["museShellSandbox", "museSandboxNetwork", "museTrustWorkspaces"]);
+    // Under the Muse row, and nothing else of Muse's outside it.
+    const ids = [...h.root.querySelectorAll(".settings-body > .settings-row, .settings-body > details")]
+      .map((el) => (el as HTMLElement).dataset.id ?? (el as HTMLElement).dataset.group);
+    expect(ids.indexOf("museSettings")).toBe(ids.indexOf("providerMuse") + 1);
+    expect(ids).not.toContain("museShellSandbox");
+  });
+
+  it("stays open across repaints once opened, and its rows still post", () => {
+    const h = mountAt("providers", { snapshot: { providers: [{ id: "muse", connected: true }], museSettings: museDefaults } });
+    const group = museGroup(h.root)!;
+    group.open = true;
+    group.dispatchEvent(new h.window.Event("toggle") as unknown as Event);
+    h.surface.update({ museSettings: { ...museDefaults, trustWorkspaces: true } });
+    const repainted = museGroup(h.root)!;
+    expect(repainted.open).toBe(true);
+    expect(repainted.querySelector('[data-id="museTrustWorkspaces"] [role="switch"]')!.getAttribute("aria-checked")).toBe("true");
+    (repainted.querySelector('[data-id="museShellSandbox"] [role="switch"]') as HTMLElement).click();
+    expect(h.posted).toContainEqual({ type: "setMuseSetting", key: "museShellSandbox", value: false });
+    repainted.open = false;
+    repainted.dispatchEvent(new h.window.Event("toggle") as unknown as Event);
+    h.surface.update({ museSettings: museDefaults });
+    expect(museGroup(h.root)!.open).toBe(false);
+  });
+
+  it.each([{}, { remote: true }])("groups them in the chat's own Settings too (%j)", surface => {
+    const h = bootWebview(surface);
+    seedChat(h);
+    dispatch(h.window, { type: "providerState", providers: [{ id: "muse", connected: true }] });
+    dispatch(h.window, { type: "museSettings", value: museDefaults });
+    openSettings(h);
+    clickSettingsNav(h, "Providers");
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    const group = museGroup(overlay);
+    // Remotes show no Muse settings at all; where the rows show, they are grouped.
+    if ("remote" in surface && !overlay.querySelector('[data-id="museShellSandbox"]')) return;
+    expect(group).not.toBeNull();
+    expect(group!.open).toBe(false);
+    expect(group!.querySelector('[data-id="museShellSandbox"]')).not.toBeNull();
+  });
+
+  it("lists a matching Muse row flat while searching, so a match is never hidden", () => {
+    const h = bootWebview();
+    seedChat(h);
+    dispatch(h.window, { type: "providerState", providers: [{ id: "muse", connected: true }] });
+    dispatch(h.window, { type: "museSettings", value: museDefaults });
+    openSettings(h);
+    const search = h.doc.getElementById("settings-search") as HTMLInputElement;
+    search.value = "sandbox";
+    search.dispatchEvent(new h.window.Event("input", { bubbles: true }));
+    const overlay = h.doc.getElementById("settings-overlay")!;
+    expect(overlay.querySelector('[data-id="museShellSandbox"]')).not.toBeNull();
+    expect(museGroup(overlay)).toBeNull();
+  });
+
   it("hides settings on older hosts, without Muse, and on remotes", () => {
     for (const opts of [
       { snapshot: { providers: [{ id: "muse", connected: true }] } },
