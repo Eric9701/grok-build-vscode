@@ -19,7 +19,7 @@ const require = createRequire(import.meta.url);
 export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) {
   const { AcpClient } = require("../out/acp.js");
   const { AgyBackend, agySessionPathKey, listAgySessions } = require("../out/agy-backend.js");
-  const { agyGoogleSignInPresent, agyStartupAuth } = require("../out/agy-auth.js");
+  const { agyGoogleAuth, agyGoogleSignInPresent } = require("../out/agy-auth.js");
   const { locateAgyServer } = require("../out/agy-managed-installer.js");
   const server = process.env.AGY_SERVER_PATH || locateAgyServer({ managedStorageRoot: process.env.AGY_STORAGE_ROOT });
   assert(server && fs.existsSync(server), "no Antigravity server: set AGY_SERVER_PATH, or AGY_STORAGE_ROOT to the extension's global storage");
@@ -39,7 +39,7 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
       timeouts: { requestTimeoutMs: rpcMs, promptIdleTimeoutMs: turnMs },
       // As the host starts it: the chosen method, stated on every start. With
       // the stored token the server refreshes silently; it never opens a browser.
-      startupAuth: agyStartupAuth("google"),
+      startupAuth: agyGoogleAuth(),
     });
     clients.push(made);
     return made;
@@ -81,11 +81,15 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
         agy.respondPermission(request.id, request.options.find((o) => o.kind === "allow_once").optionId);
       };
       agy.on("permissionRequest", answer);
+      const calls = [];
       const updates = [];
+      const onCall = (call) => calls.push(call);
       const onUpdate = (update) => updates.push(update);
+      agy.on("toolCall", onCall);
       agy.on("toolCallUpdate", onUpdate);
       await timed(agy.prompt("Run the shell command `echo agy-smoke` with your command tool, then reply DONE."), "permission turn", turnMs);
       agy.off("permissionRequest", answer);
+      agy.off("toolCall", onCall);
       agy.off("toolCallUpdate", onUpdate);
       const command = seen.find((entry) => entry.kind === "execute");
       assert(command, `no execute permission request; saw ${JSON.stringify(seen)}`);
@@ -93,7 +97,14 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
       assert.equal(agySessionPathKey(command.cwd, process.platform), agySessionPathKey(scratch, process.platform),
         `command Cwd ${command.cwd} is not the project folder ${scratch}`);
       assert(updates.some((update) => update.status === "completed"), "the approved command never completed");
-      return `execute asked with ${command.options.join("/")}; answered allow_once; Cwd=${command.cwd} (project folder)`;
+      // The card shows what ran and what came back: the renderer reads
+      // rawInput.command and rawOutput.output, which AgyBackend fills in.
+      const card = calls.find((call) => call.kind === "execute");
+      assert(card && /echo agy-smoke/.test(card.rawInput?.command ?? ""), `the command card carries no command: ${JSON.stringify(card?.rawInput)}`);
+      assert.equal(card.title, "Run command", `the command card is titled ${JSON.stringify(card.title)}`);
+      const output = updates.filter((update) => update.toolCallId === card.toolCallId).map((update) => update.rawOutput?.output).find((value) => typeof value === "string");
+      assert(output && output.includes("agy-smoke"), `the command card carries no output: ${JSON.stringify(output)}`);
+      return `execute asked with ${command.options.join("/")}; answered allow_once; Cwd=${command.cwd} (project folder); card command=${JSON.stringify(card.rawInput.command)} output=${JSON.stringify(output.trim())}`;
     });
     await check("tool call", async () => {
       const calls = [];
@@ -115,6 +126,24 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
       assert.equal(final?.status, "completed", `the approved edit card ended ${final?.status}: ${JSON.stringify(final?.rawOutput)}`);
       assert(!updates.some((update) => update.status === "failed"), "a failed tool card reached the client");
       return "one edit card, approved and completed; no red duplicate; file written in the project folder";
+    });
+    await check("tool shapes", async () => {
+      fs.writeFileSync(path.join(scratch, "notes.txt"), "smoke notes\n");
+      const calls = [];
+      const onCall = (call) => calls.push(call);
+      const answer = (request) => agy.respondPermission(request.id, request.options.find((o) => o.kind === "allow_once").optionId);
+      agy.on("toolCall", onCall);
+      agy.on("permissionRequest", answer);
+      await timed(agy.prompt("Read the file notes.txt with your view_file tool, not the shell, then reply with its first word."), "read turn", turnMs);
+      agy.off("toolCall", onCall);
+      agy.off("permissionRequest", answer);
+      const read = calls.find((call) => call.tool === "view_file");
+      assert(read, `no view_file card; saw ${JSON.stringify(calls.map((call) => [call.title, call.tool]))}`);
+      assert(/notes\.txt$/i.test(String(read.rawInput?.file_path ?? "")), `the read card carries no file_path: ${JSON.stringify(read.rawInput)}`);
+      // grep_search, find_by_name and list_dir are not registered for a Google
+      // sign-in on 1.4.0 (the model says so and uses the shell), so there is
+      // nothing live to check for them.
+      return `view_file card file_path=${path.basename(read.rawInput.file_path)}`;
     });
     await check("cancellation", async () => {
       let first;

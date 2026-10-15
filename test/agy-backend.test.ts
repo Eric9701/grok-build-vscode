@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AgyBackend,
   AgyToolCallMerger,
+  AgyToolCallShapes,
   agyGeminiHome,
   agyServerArgs,
   agySessionParams,
@@ -168,14 +169,17 @@ describe("Antigravity updates", () => {
 
   const run = (updates: any[]) => {
     const merger = new AgyToolCallMerger();
-    return updates.map((update) => normalizeAgyUpdate(update, undefined, merger).update).filter(Boolean);
+    const shapes = new AgyToolCallShapes();
+    return updates.map((update) => normalizeAgyUpdate(update, undefined, merger, shapes).update).filter(Boolean);
   };
+  // The renderer's tool name and field names ride along (agy-tool-shapes.test.ts).
+  const shaped = { ...approved, tool: "write_file", rawInput: { ...approved.rawInput, file_path: file } };
 
   it("folds an approved edit's execution into the approved card and drops the false failure", () => {
     expect(run([approved, running, done, sweep])).toEqual([
-      approved,
-      { sessionUpdate: "tool_call_update", toolCallId: approved.toolCallId, status: "in_progress" },
-      { ...done, toolCallId: approved.toolCallId },
+      shaped,
+      { sessionUpdate: "tool_call_update", toolCallId: approved.toolCallId, status: "in_progress", tool: "write_file" },
+      { ...done, toolCallId: approved.toolCallId, tool: "write_file" },
     ]);
   });
 
@@ -190,14 +194,17 @@ describe("Antigravity updates", () => {
 
   it("keeps a denied edit's failure, and an edit that really never ran", () => {
     const denied = { toolCallId: approved.toolCallId, status: "failed", rawOutput: "Denied", sessionUpdate: "tool_call_update" };
-    expect(run([approved, denied])).toEqual([approved, denied]);
-    expect(run([approved, sweep])).toEqual([approved, sweep]);
+    expect(run([approved, denied])).toEqual([shaped, { ...denied, tool: "write_file" }]);
+    expect(run([approved, sweep])).toEqual([shaped, { ...sweep, tool: "write_file" }]);
   });
 
-  it("leaves command calls, which update in place, untouched", () => {
+  it("updates command calls in place, under a neutral title", () => {
     const command = { toolCallId: "cmd", kind: "execute", status: "pending", title: "echo done", sessionUpdate: "tool_call" };
     const progress = { toolCallId: "cmd", status: "completed", sessionUpdate: "tool_call_update" };
-    expect(run([command, progress])).toEqual([command, progress]);
+    expect(run([command, progress])).toEqual([
+      { ...command, title: "Run command", tool: "run_command" },
+      { ...progress, tool: "run_command" },
+    ]);
   });
 
   it("hides /logout and /plan, keeps /usage, and ignores server mode changes", () => {

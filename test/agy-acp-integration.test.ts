@@ -1,10 +1,13 @@
 import * as fs from "node:fs";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AcpClient, type PermissionRequest } from "../src/acp";
 import { AgyBackend, agyWorkingFolderPrompt } from "../src/agy-backend";
-import { agyGoogleSignInPresent, agyStartupAuth, runAgySignIn } from "../src/agy-auth";
+import { agyGatewayAuth, agyGatewayEnv, agyGoogleAuth, agyGoogleSignInPresent, runAgySignIn } from "../src/agy-auth";
+import { AgyKeyRelay } from "../src/agy-key-relay";
 
 const FAKE = path.join(__dirname, "fixtures", "fake-agy-acp.cjs");
 
@@ -21,11 +24,11 @@ describe("Antigravity over ACP (real subprocess, fake server)", () => {
   let sink: string;
   const clients: AcpClient[] = [];
 
-  function client(extraEnv: NodeJS.ProcessEnv = {}, startupAuth?: { methodId: string; meta?: Record<string, unknown> }): AcpClient {
+  function client(extraEnv: NodeJS.ProcessEnv = {}, startupAuth?: { methodId: string; meta?: Record<string, unknown> }, keyMode = false): AcpClient {
     const made = new AcpClient({
       cliPath: FAKE,
       cwd,
-      backend: new AgyBackend({ env: { GEMINI_HOME: home } }),
+      backend: new AgyBackend({ env: { GEMINI_HOME: home }, keyMode }),
       env: { ...process.env, GEMINI_HOME: home, FAKE_AGY_SINK: sink, ...extraEnv },
       log: () => {},
       ...(startupAuth ? { startupAuth } : {}),
@@ -170,43 +173,97 @@ describe("Antigravity over ACP (real subprocess, fake server)", () => {
     expect(done.output).toContain("Onboarding failed");
   });
 
-  it("authenticates a key start in _meta before the session, and offers the key catalog", async () => {
-    const agy = client({}, agyStartupAuth("api-key", "AIza-good"));
+  // Key sign-in end to end: the real relay between the server and a local
+  // stand-in for Google, which records what reached it.
+  async function fakeGoogle() {
+    const seen: { method: string; path: string; key: unknown }[] = [];
+    const server = http.createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        seen.push({ method: req.method ?? "", path: (req.url ?? "").split("?")[0], key: req.headers["x-goog-api-key"] });
+        if (req.method === "GET") {
+          res.writeHead(200, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ models: [
+            "gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-flash-preview-tts", "gemma-4-31b-it", "gemini-flash-latest",
+            "nano-banana-pro-preview", "gemini-3.8-flash", "gemini-4-argon",
+          ].map((id) => ({ name: `models/${id}`, supportedGenerationMethods: ["generateContent"] }))
+            .concat([{ name: "models/gemini-embedding-001", supportedGenerationMethods: ["embedContent"] }]) }));
+        }
+        if (req.headers["x-goog-api-key"] !== "AIza-good") {
+          res.writeHead(400, { "content-type": "application/json" });
+          return res.end(JSON.stringify({ error: { code: 400, message: "API key not valid. Please pass a valid API key.", status: "INVALID_ARGUMENT" } }));
+        }
+        const model = /models\/([^:]+):/.exec(req.url ?? "")?.[1];
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: `Hello from ${model}` }] } }] })}\r\n\r\n`);
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+    const relay = new AgyKeyRelay({
+      upstream: (url, options) => http.request({ host: "127.0.0.1", port, path: url.pathname + url.search, method: options.method, headers: options.headers }),
+    });
+    cleanups.push(async () => { await relay.close(); await new Promise<void>((resolve) => server.close(() => resolve())); });
+    return { seen, relay };
+  }
+  const cleanups: (() => Promise<void>)[] = [];
+  afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
+
+  it("signs a key in as a gateway at the relay, which alone presents the key, and starts on Gemini 4 Argon", async () => {
+    const { seen, relay } = await fakeGoogle();
+    const lease = await relay.acquire("AIza-good");
+    const agy = client(agyGatewayEnv({}), agyGatewayAuth(lease.baseUrl), true);
     await agy.start();
     await agy.newSession();
     const methods = received().map((entry) => entry.method);
-    expect(methods.indexOf("authenticate")).toBeGreaterThan(methods.indexOf("initialize"));
     expect(methods.indexOf("authenticate")).toBeLessThan(methods.indexOf("session/new"));
-    expect(received().find((entry) => entry.method === "authenticate").params)
-      .toEqual({ methodId: "gemini-api-key", _meta: { "api-key": "AIza-good" } });
-    // One row per family, effort as each family's own levels; no Gemini 4 Argon.
-    expect(agy.availableModels.map((model) => model.modelId))
-      .toEqual(["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-pro"]);
-    expect(agy.availableModels.find((model) => model.modelId === "gemini-3.1-pro")?.reasoningEfforts).toEqual(["low", "high"]);
-    expect(agy.availableModels[0].reasoningEfforts).toEqual(["low", "medium", "high"]);
-    expect(agy.availableModels.some((model) => /argon/i.test(model.modelId))).toBe(false);
-    await agy.setModel("gemini-3.1-pro");
-    expect(agy.currentModelId).toBe("gemini-3.1-pro");
+    expect(received().find((entry) => entry.method === "authenticate").params).toEqual({ methodId: "gateway", _meta: { gateway: { baseUrl: lease.baseUrl } } });
+    // Chat models only, newest first; the start moved to Argon by itself.
+    expect(agy.availableModels.map((model) => model.modelId)).toEqual(["gemini-4-argon", "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.5-pro"]);
+    expect(agy.currentModelId).toBe("gemini-4-argon");
+    expect(agy.availableModels.every((model) => !model.supportsReasoningEffort)).toBe(true);
+    // Gateway mode has no thinking_level: effort is not offered, nothing is sent.
+    await expect(agy.setReasoningEffort("high")).resolves.toBe(false);
+    expect(received().filter((entry) => entry.params?.configId === "thinking_level")).toEqual([]);
+    const chunks: string[] = [];
+    agy.on("messageChunk", (text) => chunks.push(text));
+    await agy.prompt("hello");
+    expect(chunks.join("")).toBe("Hello from gemini-4-argon");
+    expect(seen.map(({ method, path: route }) => `${method} ${route}`)).toEqual([
+      "GET /v1beta/models", "POST /v1beta/models/gemini-4-argon:streamGenerateContent",
+    ]);
+    // The harness's own credential never reached Google; the key went only there.
+    expect(seen.every((request) => request.key === "AIza-good")).toBe(true);
+    expect(fs.readFileSync(sink, "utf8")).not.toContain("AIza-good");
   });
 
-  it("states the Google method on every start, whatever settings.json was left saying", async () => {
-    signIn(home);
-    fs.writeFileSync(path.join(home, "antigravity-acp", "settings.json"), JSON.stringify({ auth: { type: "gemini-api-key" } }));
-    const agy = client({}, agyStartupAuth("google"));
-    await agy.start();
-    await agy.newSession();
-    expect(received().find((entry) => entry.method === "authenticate").params).toEqual({ methodId: "oauth-personal" });
-    expect(agy.availableModels.map((model) => model.modelId)).toEqual(["gemini-3.8-flash"]);
+  it("is refused as a gateway without the rollout flag", async () => {
+    const { relay } = await fakeGoogle();
+    const lease = await relay.acquire("AIza-good");
+    const agy = client({}, agyGatewayAuth(lease.baseUrl), true);
+    await expect(agy.start()).rejects.toMatchObject({ code: -32602 });
   });
 
-  it("reports a key Google refuses mid-turn as a rejected credential", async () => {
-    const agy = client({}, agyStartupAuth("api-key", "bad-key"));
+  it("reports a key Google refuses as a rejected credential", async () => {
+    const { relay } = await fakeGoogle();
+    const lease = await relay.acquire("AIza-bad");
+    const agy = client(agyGatewayEnv({}), agyGatewayAuth(lease.baseUrl), true);
     await agy.start();
     await agy.newSession();
     let rejected = 0;
     agy.on("credentialRejected", () => { rejected += 1; });
     await agy.prompt("hello");
     expect(rejected).toBe(1);
+  });
+
+  it("states the Google method on every start, whatever settings.json was left saying", async () => {
+    signIn(home);
+    fs.writeFileSync(path.join(home, "antigravity-acp", "settings.json"), JSON.stringify({ auth: { type: "gemini-api-key" } }));
+    const agy = client({}, agyGoogleAuth());
+    await agy.start();
+    await agy.newSession();
+    expect(received().find((entry) => entry.method === "authenticate").params).toEqual({ methodId: "oauth-personal" });
+    expect(agy.availableModels.map((model) => model.modelId)).toEqual(["gemini-3.8-flash"]);
   });
 
   it("lists the project's conversations from disk", async () => {

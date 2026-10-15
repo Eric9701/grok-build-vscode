@@ -9,9 +9,11 @@ Settings -> Advanced (`setExperimentalAntigravity`, host-local, written
 globally); the switch reads its state from that same `providerState`, so it
 needs no frame of its own and is hidden on a remote.
 
-Measured against `agy_acp_server` **1.4.0** on Windows 11, 2026-10-14. The
-server's Python source (unpacked from the Linux bundle) was read rather than
-guessed at; handler names below are its own.
+Measured against `agy_acp_server` **1.4.0** on Windows 11, 2026-10-14 and -15.
+The server's Python source (unpacked from the Linux bundle) was read rather than
+guessed at; handler names below are its own. The choices that rest on 1.4.0's
+behaviour, and what should make us look again, are collected at the end under
+[Decisions to revisit](#decisions-to-revisit).
 
 ## What runs
 
@@ -80,31 +82,35 @@ aistudio.google.com/apikey). Vertex AI and Enterprise sign-in are not offered.
   Choosing Google with a token adopts the account with nothing started; without
   one, `runAgySignIn` runs `authenticate` in a short-lived server shaped as a
   device login: the dialog shows the stderr link, Cancel stops the server.
-- **Gemini API key** (`gemini-api-key`): the key goes in `authenticate`
-  `_meta` as `{"api-key": key}` (the server also reads `apiKey`/`api_key`, as a
-  string or an object with `apiKey`/`api_key`/`api-key`/`key`, then falls back
-  to `GEMINI_API_KEY`). The server holds it in memory only, and redacts those
-  three `_meta` names from its own log line. The host keeps it in HostSecrets
-  (`grok.agy.geminiApiKey`: VS Code SecretStorage, or the desktop's safe
-  storage) and nowhere else -- not settings, state, logs, telemetry or
+- **Gemini API key**: the server runs in its **custom-gateway mode**, pointed at
+  a relay the host runs on 127.0.0.1 (`agy-key-relay.ts`), and the relay alone
+  holds the key. The server is spawned with `AGY_ACP_ENABLE_GATEWAY_AUTH=1` and
+  authenticates `{methodId: "gateway", _meta: {gateway: {baseUrl:
+  "http://127.0.0.1:<port>/<prefix>"}}}`; no key reaches it. Why gateway mode
+  and why a relay are under [Decisions to revisit](#decisions-to-revisit).
+  The host keeps the key in HostSecrets (`grok.agy.geminiApiKey`: VS Code
+  SecretStorage, or the desktop's safe storage) and in the relay's memory while
+  a key's server runs -- not settings, state, logs, telemetry or
   `providerState`, which carries only which ways are saved. `agySignIn` is
-  host-local and refused from a remote.
+  host-local and refused from a remote. Gateway auth is per connection and,
+  unlike the other methods, never written to the shared `settings.json`.
 - **Never put the key in the server's environment.** The server's environment
   reaches the agent's shell commands: a marker variable set on the spawn was
   echoed back by a command the agent ran (measured, 1.4.0, Windows). A key in
-  `GEMINI_API_KEY` would be readable by any command in any project.
-- **A rejected key is only visible on the first turn.** In key mode
-  `session/new` lists a hardcoded catalog and calls no API, so `authenticate`
-  and `session/new` both succeed with any string. Google's refusal arrives as
-  ordinary agent text ("API key not valid. Please pass a valid API key.") and
-  the turn ends normally. That chunk is the whole message
-  (`format_execution_error`), so `isAgyRejectedCredentialText` matches the
-  API's refusals only at the start of a chunk -- an agent quoting the same
-  error from someone's code mid-reply is not a refusal of ours -- and the
-  client emits `credentialRejected`; the host marks the
-  account as needing sign-in and opens the choice again with "Google rejected
-  this API key." (Not observed live: there was no key to test with. The
-  phrases are Google's documented API error messages.)
+  `GEMINI_API_KEY` would be readable by any command in any project. With the
+  relay, a command that counted environment values containing part of the key
+  found none.
+- **A rejected key is only visible on the first turn.** Model discovery sends
+  no credential the API checks, so `authenticate` and `session/new` succeed
+  with any key. Google's refusal arrives as ordinary agent text and the turn
+  ends normally: a 400 API_KEY_INVALID from the API becomes exactly "API key
+  not valid. Please pass a valid API key." as one chunk (measured: the real
+  server in gateway mode against a local stand-in for the API). That chunk is
+  the whole message (`format_execution_error`), so `isAgyRejectedCredentialText`
+  matches the API's refusals only at the start of a chunk -- an agent quoting
+  the same error from someone's code mid-reply is not a refusal of ours -- and
+  the client emits `credentialRejected`; the host marks the account as needing
+  sign-in and opens the choice again with "Google rejected this API key."
 - **Disconnect** keeps both the Google sign-in and the saved key; Connect then
   offers the choice again, marking which way was last used and which are
   saved. **Sign out** (`Grok: Log Out`) clears only the current method's
@@ -123,17 +129,21 @@ aistudio.google.com/apikey). Vertex AI and Enterprise sign-in are not offered.
   `auth {logout}`, `_meta.antigravity.systemPrompt.append`. The host advertises
   **no client fs or terminal**: with fs the server swaps its own file tools for
   callbacks into ours, which is not the server measured here.
-- `configOptions` carry the model families and `thinking_level` -- but only
-  the *current* family's levels -- while `models.availableModels` lists every
-  family-level pair as its own model. `normalizeAgySessionResponse` shows one
-  row per family, each with its own levels (from the listed `<family>-<level>`
-  ids) as its effort ladder, and effort is `set_config_option thinking_level`
-  (none/minimal -> low, xhigh -> high).
-  - Google sign-in on this account: one family, Gemini 3.8 Flash
-    (low/medium/high). Other ids are -32602.
-  - API key: the server's hardcoded catalog (`model_selection.py`) -- Gemini
-    3.8, 3.7, 3.6 and 3.5 Flash (low/medium/high) and Gemini 3.1 Pro (low/high).
-    Gemini 4 Argon is agent-platform only and is not in it.
+- Google sign-in: `configOptions` carry the model families and
+  `thinking_level` -- but only the *current* family's levels -- while
+  `models.availableModels` lists every family-level pair as its own model.
+  `normalizeAgySessionResponse` shows one row per family, each with its own
+  levels (from the listed `<family>-<level>` ids) as its effort ladder, and
+  effort is `set_config_option thinking_level` (none/minimal -> low, xhigh ->
+  high). On this account: one family, Gemini 3.8 Flash (low/medium/high).
+- Key (gateway mode): the server lists what `<baseUrl>/v1beta/models` offers
+  the key -- 40 models for the key measured, Gemini 4 Argon among them -- with
+  **no `thinking_level`** (a gateway's models are listed exactly as declared,
+  `server.py` `_thinking_variants`), and a turn's generate call carries no
+  thinking config. So key mode has no effort control: `AgyBackend` sends none
+  and the picker shows none. The picker keeps the Gemini chat models (see the
+  model filter below), newest first, and a conversation with no remembered
+  model starts on `gemini-4-argon` (`AgyBackend.defaultModelId`).
 - Modes: Agent and Auto accept (client-side, always `allow_once` --
   `allow_always` is saved with the conversation). No Plan: `/plan` waits for a
   "Proceed" click ACP cannot deliver. `/plan` and `/logout` are hidden from the
@@ -170,6 +180,50 @@ the approved card (matched by file, else the only waiting edit) and drops that
 sweep for a card whose execution it saw. Commands update in place and need
 nothing.
 
+### Tool calls: the server's field names, the renderer's
+
+The server names a tool only in a call's title -- `Run edit_file?` awaiting
+approval, `Running edit_file` as it runs and in replayed history -- and titles a
+command with its command line. Its arguments use the harness's own names, which
+the renderer (shared with the phone) does not read: a command row showed "Run"
+with no command and no output, and a PowerShell line containing backticks and
+quotes turned into a row like `Run ''"]([^`, because the renderer reads a path
+out of a title. `AgyToolCallShapes` maps each call onto the fields every other
+provider already sends, keeping the server's own beside them:
+
+| Tool (live shape) | Added |
+|---|---|
+| `run_command`: `CommandLine`/`Cwd` pending, `command_line`/`working_dir` running; output in `rawOutput.combinedOutput`/`formatted_output`, `exitCode`/`exit_code` | `command`, `cwd`, `rawOutput.output`, `exit_code`; title "Run command" |
+| `view_file`: `absolute_path`, or `AbsolutePath` with `StartLine`/`EndLine` | `file_path`, `start_line`, `end_line` |
+| `edit_file`/`replace_file_content`/`multi_replace_file_content`, `create_file`/`write_to_file`: `TargetFile` (pending), `file_path` (running) | `file_path` |
+| `read_url_content`: `Url`, then `url` | `url` (renders as "Fetch", not the renderer's "Generate" for kind `fetch`) |
+| `search_web`: `query` | `query` |
+| `list_dir`/`grep_search`/`find_by_name`: `DirectoryPath`, `Query`+`SearchPath`, `Pattern`+`SearchDirectory` | `target_directory`, `pattern`, `path` |
+
+Each call also gets the renderer's tool name (`tool`). Replayed history sends
+`rawInput` as the JSON text the model wrote, which is parsed first. An approval
+card keeps the server's title (the command line is the useful thing there) and
+gains the same fields. `list_dir`, `grep_search` and `find_by_name` are not
+registered for a Google sign-in on 1.4.0 -- asked to call them, the model said
+so and used the shell -- so their row is built from the field names the
+server's own location helper reads (`tools.py`) and is not observed live.
+
+### Subagents
+
+`invoke_subagent` arrives as `Run invoke_subagent?` with `rawInput.Subagents:
+[{Role, Prompt, TypeName, Model, Workspace}]`, needs approval, then completes at
+once -- its `rawOutput` ("Invoke subagent", "Start subagent") is the model's own
+summary of the call, like an edit's ("Update const a in app.js"), not a
+result. After that the server reports nothing about the child: no child session
+id, no `_meta`, no progress, no completion. It suppresses the child's text
+(only the root trajectory streams), and the child's tool calls arrive on the
+parent session with ids shaped like the parent's (measured, waited and
+"background" launches alike). The card therefore shows the role as its title
+and the prompt as its task, and says "in background" -- the launch receipt,
+as for Claude's receipt-only background agents -- and the child's calls stay
+ordinary rows. The parent's reply carries the result. A replayed launch settles
+as done.
+
 ### History
 
 `session/list` is a directory listing with placeholder titles
@@ -182,6 +236,135 @@ come from the host's first-prompt name.
 ## Not in v1
 
 Cloud machines, MCP connectors, Plan mode, Vertex AI and Enterprise sign-in,
-signing in from a phone, a usage meter, workflow cards for subagents
-(`invoke_subagent` renders as an ordinary tool call; its children arrive on the
-parent session unattributed).
+signing in from a phone, a usage meter, effort control on a key, and a
+subagent card that shows its child's work.
+
+## Decisions to revisit
+
+Each choice below rests on how server 1.4.0 behaves. The trigger is the
+observable change that should make us look again.
+
+### The pinned server version
+
+- **Decision:** a pinned `agy_acp_server` 1.4.0, downloaded into extension
+  storage (`agy-managed-installer.ts`, `AGY_MANAGED_VERSION`), never the latest.
+- **Why:** everything in this document -- the working-folder append, the edit
+  merge, the field names, gateway mode's flag -- was measured against 1.4.0,
+  and several of them are workarounds a newer server could make wrong.
+- **Evidence:** the ACP registry publishes no checksums, so the SHA-256 and
+  size of every target's zip are our own, computed on download; a mismatch
+  refuses the install. Observed cadence: 1.2.1 on 23 Sep, 1.3.0 on 2 Oct,
+  1.4.0 on 14 Oct 2026 -- roughly every 10 to 12 days.
+- **Risk:** the pin falls behind fixes and models Google ships; an old pin can
+  stop working if Google retires what it talks to.
+- **Upgrade procedure:** download every target's zip from
+  `https://dl.google.com/agy-extensions/releases/{macos|linux|windows}/agy-acp-server-<version>-<target>.zip`,
+  record each SHA-256 and size into `RELEASES` and bump `AGY_MANAGED_VERSION`;
+  read the new server's source for the behaviours below; run
+  `npm run smoke:acp -- --provider=agy` (Google) and a key session by hand.
+- **Revisit when:** the registry lists a version above 1.4.0.
+
+### Key sign-in through gateway mode, behind its rollout flag
+
+- **Decision:** a key's server runs in custom-gateway mode with
+  `AGY_ACP_ENABLE_GATEWAY_AUTH=1`, instead of the server's own
+  `gemini-api-key` method.
+- **Why:** `gemini-api-key` offers a hardcoded catalog without Gemini 4 Argon
+  (`model_selection.py`: Argon is `agent_platform_only`). Gateway mode lists
+  what the API offers the key, Argon included, and Argon answered in a live
+  session with the owner's key.
+- **Evidence:** `gateway/gateway.py` `auth_enabled`: "Disabled by default while
+  the gateway contract is not yet ratified ... a temporary rollout gate intended
+  to be removed once the contract is confirmed." Without the flag,
+  `authenticate {methodId: "gateway"}` is -32602 "Unsupported auth method".
+- **Risk:** an unratified contract can change shape, or the flag can be
+  removed with the method still gated, in any release.
+- **Revisit when:** Google ratifies gateway auth or removes the flag; or
+  `gemini-api-key` mode lists Argon (then the relay can go).
+
+### The key relay
+
+- **Decision:** the host runs one relay per window on 127.0.0.1, on a random
+  port with a random 24-byte path prefix, started when a key's server is
+  spawned and closed when none remains. It replaces whatever credential arrives
+  with the key and forwards only to `generativelanguage.googleapis.com`;
+  anything without the prefix is 403. Its log names status, method and path,
+  never the key, the prefix, a query or a body, and the server's own output is
+  redacted for the prefix (it logs its gateway address).
+- **Why:** gateway mode cannot carry the key itself. The harness sends its own
+  `x-goog-api-key: dummy_api_key` on every generate call (`server.py`
+  `_create_agent_config`, the gateway branch), so a key given as a gateway
+  header is overridden and Google answers 400 API_KEY_INVALID (measured). Model
+  discovery sends no credential at all. The relay also keeps the key out of
+  the server, its harness and the agent's commands.
+- **Evidence:** the server keeps a baseUrl's path for discovery
+  (`gateway/model_discovery.py` `_discovery_endpoints`) and for generate calls
+  (measured against a local stand-in, with and without a trailing slash); the
+  generate call is `POST <baseUrl>/v1beta/models/<model>:streamGenerateContent?alt=sse`.
+- **Risk, including quota:** any process of the same user that learns the port
+  and prefix can spend the key's quota while a key's server runs; the prefix
+  is never written to our logs, and the agent's commands can already spend it
+  by asking the agent. Every request and its usage count against the person's
+  own Gemini API quota and billing, exactly as a direct call would, and the
+  relay adds no rate limiting of its own.
+- **Revisit when:** the harness stops overriding `x-goog-api-key` (then the key
+  could go in `_meta.gateway.headers` and the relay could go), or gateway mode
+  gains a credential field of its own.
+
+### The working-folder system-prompt append
+
+- **Decision:** every `session/new` and `session/load` carries the server's
+  `systemPrompt.append` naming the project folder as the working directory.
+- **Why:** the harness sorts its workspace roots alphabetically and runs
+  commands in the first, so for a project under the home folder the skills
+  folder under `~/.gemini` won and commands ran and files landed there.
+- **Evidence:** reproduced live; the smoke asserts a command's `Cwd` and an
+  edit's file in a scratch folder under the home folder.
+- **Risk:** it is prompt-level, so a model can still ignore it.
+- **Revisit when:** Google fixes the workspace ordering (the smoke passes
+  without the append), or the server lets a client name its working root.
+
+### Desk only, no MCP connectors, no Plan
+
+- **Decision:** Antigravity is offered at a desk only, never on a cloud
+  machine or signed in from a phone; it gets `mcpServers: []`; it has no Plan
+  mode.
+- **Why:** signing in opens a browser or takes a key at the computer, which an
+  unattended desk cannot do; the server swaps its file tools for ours when a
+  client advertises fs, which is not the server measured here, and MCP through
+  it was not measured at all; `/plan` waits for a "Proceed" click ACP cannot
+  deliver.
+- **Risk:** the provider is narrower than the others.
+- **Revisit when:** a cloud machine has a way to sign in without a desk; the
+  server's MCP path is measured; ACP can deliver a plan approval.
+
+### How subagents are shown
+
+- **Decision:** `invoke_subagent` is a subagent card with the role and the
+  task, "in background", and the child's calls stay ordinary rows.
+- **Why:** the server reports nothing after the launch (see Subagents above).
+  Attributing calls by timing would put the parent's own calls inside the card
+  whenever the two run at once, which they do for a background launch.
+- **Risk:** a waited subagent also reads "in background", and its work is not
+  grouped under it.
+- **Revisit when:** a child's updates carry a child session id, a parent
+  trajectory id or a `_meta` naming the subagent, or `invoke_subagent`
+  completes with the child's result.
+
+### The model filter in key mode
+
+- **Decision:** keep ids starting `gemini-` that carry none of `tts`, `image`,
+  `live`, `omni`, `embedding`, `transcribe`, `robotics`, `computer-use`,
+  `audio`, `nano-banana`, `deep-research`, and are not a `-latest` alias;
+  newest first; never drop the model in use. Only in key mode -- a Google
+  sign-in's catalog is shown as the server sends it.
+- **Why:** the 40 models measured for one key include speech, image, music
+  (Lyria), robotics, computer-use and deep-research models, Gemma, and aliases
+  of models already listed; none of those is a chat model this agent can work
+  with, and a picker of 40 hides the 14 that are.
+- **Evidence:** the MODELS line of the live gateway session is a fixture in
+  `test/agy-tool-shapes.test.ts`.
+- **Risk:** a new chat family outside `gemini-` (the `antigravity-preview-*`
+  ids are unknown) is hidden; a new non-chat marker shows up until added.
+- **Revisit when:** a key's catalog shows a model this filter gets wrong, or
+  the server starts filtering its gateway catalog itself.

@@ -661,11 +661,12 @@ export class AcpClient extends EventEmitter {
     }
     this.emit("session", res);
 
-    if (modelId && modelId !== this.currentModelId) {
+    const wantedModel = modelId || this.backend.defaultModelId?.(this.availableModels.map((m) => m.modelId));
+    if (wantedModel && wantedModel !== this.currentModelId) {
       try {
-        await this.setModel(modelId);
+        await this.setModel(wantedModel);
       } catch (err) {
-        this.opts.log(`[acp] Failed to set model to ${modelId}: ${(err as Error).message}. Falling back to default model ${this.currentModelId}.`);
+        this.opts.log(`[acp] Failed to set model to ${wantedModel}: ${(err as Error).message}. Falling back to default model ${this.currentModelId}.`);
       }
     }
     // Spawn `--reasoning-effort` is grok-only. Adapters take effort as a

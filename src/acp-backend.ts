@@ -190,6 +190,11 @@ export interface AcpBackend<Provider extends string = AcpProvider> {
   /** Extra `session/new` and `session/load` params beyond cwd and mcpServers. */
   sessionParams?(cwd: string): Record<string, unknown>;
   /**
+   * The model a new session moves to when the host remembers none, or
+   * undefined to keep the agent's own default.
+   */
+  defaultModelId?(modelIds: readonly string[]): string | undefined;
+  /**
    * Ask the spawned process to exit cleanly, in place of waiting for it to
    * notice stdin closing. Dispose still kills it if it has not exited in time.
    */

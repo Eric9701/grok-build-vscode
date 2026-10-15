@@ -26,6 +26,7 @@ const startControl = {
   catalogs: {} as Record<string, { modelId: string; name: string }[]>,
   startWait: undefined as Promise<void> | undefined,
   startupAuths: [] as unknown[],
+  startEnvs: [] as Array<NodeJS.ProcessEnv | undefined>,
 };
 
 vi.mock("../src/acp", async (importOriginal) => {
@@ -42,9 +43,10 @@ vi.mock("../src/acp", async (importOriginal) => {
     fsRead?: unknown;
     fsWrite?: unknown;
     terminal?: unknown;
-    constructor(opts: { log: (msg: string) => void; effort?: string; backend?: any; startupAuth?: unknown }) {
+    constructor(opts: { log: (msg: string) => void; effort?: string; backend?: any; startupAuth?: unknown; env?: NodeJS.ProcessEnv }) {
       super();
       startControl.startupAuths.push(opts.startupAuth);
+      startControl.startEnvs.push(opts.env);
       this.provider = opts.backend?.provider ?? "grok";
       this.availableModels = startControl.catalogs[this.provider] ?? [];
       this.currentModelId = this.availableModels[0]?.modelId ?? "fake-model";
@@ -816,15 +818,16 @@ describe("startSession bounded spawn retry", () => {
     sidebar.connectedProviders = vi.fn(() => ["agy"]);
     sidebar.usableProviders = vi.fn(() => ["agy"]);
     sidebar.focused.provider = "agy";
-    const auth = { methodId: "gemini-api-key", meta: { "api-key": "key-1" } };
-    sidebar.agyStartupAuthFor = vi.fn(async () => stored ? auth : undefined);
+    sidebar.agyCredentialFor = vi.fn(async () => stored ? { method: "google" } : undefined);
     sidebar.rejectAgyCredential = vi.fn(async () => {});
     startControl.startupAuths = [];
+    startControl.startEnvs = [];
     const client = await sidebar.startSession(undefined, sidebar.focused);
     if (stored) {
       expect(client?.provider).toBe("agy");
       expect(startControl.starts).toBe(1);
-      expect(startControl.startupAuths).toEqual([auth]);
+      expect(startControl.startupAuths).toEqual([{ methodId: "oauth-personal" }]);
+      expect(startControl.startEnvs[0]?.AGY_ACP_ENABLE_GATEWAY_AUTH).toBeUndefined();
       // A refusal reported mid-turn goes back to the choice of how to sign in.
       sidebar.focused.client.emit("credentialRejected");
       expect(sidebar.rejectAgyCredential).toHaveBeenCalledTimes(1);
@@ -835,6 +838,34 @@ describe("startSession bounded spawn retry", () => {
     expect(sidebar.setProviderNeedsLogin).toHaveBeenCalledWith("agy", true);
     expect(onboardings(sidebar)).toEqual([expect.objectContaining({ state: "agy-login", provider: "agy" })]);
     expect(startErrors(sidebar)).toEqual([]);
+  });
+
+  // A key's server gets the relay's address and the rollout flag -- never the
+  // key -- and holds a lease on the relay until it exits.
+  it("starts a key's Antigravity server in gateway mode at the relay", async () => {
+    const sidebar = makeSidebar("/repo");
+    sidebar.providerConnectionState = { agy: true };
+    sidebar.connectedProviders = vi.fn(() => ["agy"]);
+    sidebar.usableProviders = vi.fn(() => ["agy"]);
+    sidebar.focused.provider = "agy";
+    sidebar.agyCredentialFor = vi.fn(async () => ({ method: "api-key", key: "AIza-session-key" }));
+    const release = vi.fn();
+    sidebar.agyRelay = {
+      acquire: vi.fn(async () => ({ baseUrl: "http://127.0.0.1:4321/prefix", release })),
+      redact: (text: string) => text,
+    };
+    startControl.startupAuths = [];
+    startControl.startEnvs = [];
+    const client = await sidebar.startSession(undefined, sidebar.focused);
+    expect(client?.provider).toBe("agy");
+    expect(sidebar.agyRelay.acquire).toHaveBeenCalledWith("AIza-session-key");
+    expect(startControl.startupAuths).toEqual([{ methodId: "gateway", meta: { gateway: { baseUrl: "http://127.0.0.1:4321/prefix" } } }]);
+    expect(startControl.startEnvs[0]?.AGY_ACP_ENABLE_GATEWAY_AUTH).toBe("1");
+    expect(JSON.stringify(startControl.startupAuths)).not.toContain("AIza-session-key");
+    expect(Object.values(startControl.startEnvs[0] ?? {})).not.toContain("AIza-session-key");
+    expect(release).not.toHaveBeenCalled();
+    sidebar.focused.client.emit("exit", 0);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("emits onboarding on the first credential failure and does not retry", async () => {

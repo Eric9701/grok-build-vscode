@@ -121,15 +121,52 @@ export function modelsFromAgyConfigOptions(
   };
 }
 
-export function normalizeAgySessionResponse(response: any): any {
+export function normalizeAgySessionResponse(response: any, keyMode = false): any {
   if (!response || typeof response !== "object") return response;
   const variantIds = Array.isArray(response.models?.availableModels)
     ? response.models.availableModels.map((entry: any) => entry?.modelId).filter((id: unknown): id is string => typeof id === "string")
     : [];
   const models = modelsFromAgyConfigOptions(response.configOptions, variantIds);
+  if (keyMode) models.availableModels = agyKeyChatModels(models.availableModels, models.currentModelId);
   if (!models.availableModels.length) return response;
   return { ...response, models };
 }
+
+/**
+ * Key sign-in runs the server in gateway mode, which offers every model the
+ * key may call `generateContent` on -- 40 for the key it was measured with,
+ * among them speech (tts, transcribe), image (nano-banana), live and omni
+ * models, music (Lyria), robotics, computer-use and deep-research agents,
+ * Gemma, and `-latest` aliases of models already listed. The picker keeps the
+ * Gemini chat models: an id starting `gemini-` with none of those markers and
+ * no `-latest`. Newest first, so Gemini 4 Argon leads.
+ *
+ * Only in key mode: an OAuth catalog can carry non-Gemini chat models
+ * (Antigravity offers some on paid tiers), which this rule would hide. The
+ * model in use is kept even when the rule would drop it, so the picker never
+ * loses its own selection.
+ */
+const NON_CHAT_MARKER = /(?:^|-)(?:tts|image|live|omni|embedding|transcribe|robotics|computer-use|native-audio|audio)(?:-|$)|nano-banana|deep-research/;
+
+export function isAgyKeyChatModel(modelId: string): boolean {
+  return /^gemini-/.test(modelId) && !NON_CHAT_MARKER.test(modelId) && !/-latest$/.test(modelId);
+}
+
+function agyModelVersion(modelId: string): number {
+  const version = /^gemini-(\d+(?:\.\d+)?)/.exec(modelId)?.[1];
+  return version ? Number(version) : 0;
+}
+
+export function agyKeyChatModels<T extends { modelId: string }>(models: readonly T[], currentModelId?: string): T[] {
+  return models
+    .filter((model) => isAgyKeyChatModel(model.modelId) || model.modelId === currentModelId)
+    .map((model, index) => ({ model, index }))
+    .sort((a, b) => agyModelVersion(b.model.modelId) - agyModelVersion(a.model.modelId) || a.index - b.index)
+    .map(({ model }) => model);
+}
+
+/** Where a key's conversation starts when nothing is remembered. */
+export const AGY_KEY_DEFAULT_MODEL = "gemini-4-argon";
 
 export function configStateFromAgyOptions(response: any, fallback: BackendConfigState): BackendConfigState {
   const model = optionValue(configOption(response?.configOptions, "model"));
@@ -245,7 +282,194 @@ export class AgyToolCallMerger {
   }
 }
 
-export function normalizeAgyUpdate(update: any, meta: any, toolCalls: AgyToolCallMerger): BackendUpdate {
+/**
+ * Antigravity names its tool only in a call's title -- "Run edit_file?" while
+ * it awaits approval, "Running edit_file" as it runs and in replayed history --
+ * and a command is titled with the command line itself.
+ */
+export function agyToolNameFromTitle(title: unknown): string | undefined {
+  if (typeof title !== "string") return undefined;
+  const match = /^(?:Run ([a-z][a-z0-9_]*)\?|Running ([a-z][a-z0-9_]*))$/.exec(title.trim());
+  return match ? match[1] ?? match[2] : undefined;
+}
+
+/** The renderer's own names for what an Antigravity tool does. */
+const RENDERER_TOOL: Record<string, string> = {
+  run_command: "run_command", shell: "run_command",
+  view_file: "view_file", read_file: "view_file", client_view_file: "view_file",
+  edit_file: "edit_file", replace_file_content: "edit_file", multi_replace_file_content: "edit_file", client_edit_file: "edit_file",
+  create_file: "write_file", write_to_file: "write_file", write_file: "write_file", client_create_file: "write_file",
+  list_dir: "list_dir", list_directory: "list_dir",
+  grep_search: "grep",
+  find_by_name: "search_files", find_file: "search_files",
+  read_url_content: "web_fetch",
+  search_web: "search_web",
+};
+
+function firstText(raw: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return undefined;
+}
+
+function firstNumber(raw: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = raw[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return undefined;
+}
+
+/** A replayed call's arguments arrive as the JSON text the model wrote. */
+function agyRawInput(raw: unknown): Record<string, unknown> | undefined {
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : undefined;
+    } catch { return undefined; }
+  }
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined;
+}
+
+/**
+ * Antigravity's arguments in the field names the renderer reads, which every
+ * other provider already sends: `command`/`cwd` for a command, `file_path` for
+ * a file, `target_directory`, `pattern` and `path`, `url`, `query`. Its own
+ * names (`CommandLine`/`command_line`, `AbsolutePath`/`absolute_path`,
+ * `TargetFile`, ...) stay beside them.
+ */
+export function agyRendererInput(tool: string | undefined, raw: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...raw };
+  const add = (key: string, value: unknown) => { if (value !== undefined && out[key] === undefined) out[key] = value; };
+  switch (tool ? RENDERER_TOOL[tool] : undefined) {
+    case "run_command":
+      add("command", firstText(raw, "CommandLine", "command_line", "commandLine"));
+      add("cwd", firstText(raw, "Cwd", "working_dir", "workingDir"));
+      break;
+    case "view_file":
+      add("file_path", firstText(raw, "AbsolutePath", "absolute_path", "FilePath"));
+      add("start_line", firstNumber(raw, "StartLine"));
+      add("end_line", firstNumber(raw, "EndLine"));
+      break;
+    case "edit_file":
+    case "write_file":
+      add("file_path", firstText(raw, "TargetFile", "target_file", "FilePath", "AbsolutePath"));
+      break;
+    case "list_dir":
+      add("target_directory", firstText(raw, "DirectoryPath", "directory_path", "SearchDirectory"));
+      break;
+    case "grep":
+      add("pattern", firstText(raw, "Query", "query", "Pattern"));
+      add("path", firstText(raw, "SearchPath", "SearchDirectory", "search_path"));
+      break;
+    case "search_files":
+      add("pattern", firstText(raw, "Pattern", "pattern", "Query"));
+      add("path", firstText(raw, "SearchDirectory", "SearchPath", "search_directory"));
+      break;
+    case "web_fetch":
+      add("url", firstText(raw, "Url"));
+      break;
+    case "search_web":
+      add("query", firstText(raw, "Query"));
+      break;
+  }
+  return out;
+}
+
+/** A finished command's output where the renderer reads it (`output`). */
+function agyCommandOutput(rawOutput: unknown): unknown {
+  if (!rawOutput || typeof rawOutput !== "object" || Array.isArray(rawOutput)) return rawOutput;
+  const raw = rawOutput as Record<string, unknown>;
+  const output = firstText(raw, "combinedOutput", "formatted_output", "combined_output") ?? (typeof raw.output === "string" ? raw.output : undefined);
+  const exitCode = firstNumber(raw, "exit_code", "exitCode");
+  return { ...raw, ...(output !== undefined ? { output } : {}), ...(exitCode !== undefined ? { exit_code: exitCode } : {}) };
+}
+
+/**
+ * `invoke_subagent` as the subagent card every other provider gets. Its
+ * arguments name each child (`Subagents: [{Role, Prompt, TypeName, Model}]`),
+ * but nothing after the launch does: the call completes at once, the server
+ * reports no child id, no progress and no completion, suppresses the child's
+ * text, and the child's own tool calls arrive on the parent session with
+ * nothing to tell them apart (measured, 1.4.0). So the card shows what was
+ * asked and says the work is in the background -- a launch receipt, exactly
+ * as for Claude's receipt-only background agents -- and claims nothing about
+ * progress. The parent's reply carries the result.
+ */
+function agySubagentInput(raw: Record<string, unknown>): { description?: string; prompt?: string; subagent_type?: string } | undefined {
+  const entries = Array.isArray(raw.Subagents) ? raw.Subagents.filter((entry) => entry && typeof entry === "object") as Record<string, unknown>[] : [];
+  if (!entries.length) return undefined;
+  const roles = entries.map((entry) => firstText(entry, "Role")).filter((role): role is string => !!role);
+  const prompts = entries.map((entry) => firstText(entry, "Prompt")).filter((prompt): prompt is string => !!prompt);
+  return {
+    ...(roles.length ? { description: roles.length > 1 ? `${roles[0]} and ${roles.length - 1} more` : roles[0] } : {}),
+    ...(prompts.length ? { prompt: prompts.join("\n\n") } : {}),
+    ...(firstText(entries[0], "TypeName") ? { subagent_type: firstText(entries[0], "TypeName") } : {}),
+  };
+}
+
+/** What each call is, remembered across the updates that do not say. */
+export class AgyToolCallShapes {
+  private readonly tools = new Map<string, string>();
+  /** Subagent calls first seen finished: replayed history, not a launch. */
+  private readonly replayed = new Set<string>();
+
+  normalize(update: any): any {
+    const id = typeof update?.toolCallId === "string" ? update.toolCallId : undefined;
+    if (!id) return update;
+    const titled = agyToolNameFromTitle(update.title);
+    if (titled) this.tools.set(id, titled);
+    else if (update.kind === "execute" && !this.tools.has(id)) this.tools.set(id, "run_command");
+    const tool = this.tools.get(id);
+    if (!tool) return update;
+    const raw = agyRawInput(update.rawInput);
+    if (tool === "invoke_subagent") return this.subagent(update, id, raw);
+    const out: any = { ...update, tool: RENDERER_TOOL[tool] ?? tool };
+    if (raw) out.rawInput = agyRendererInput(tool, raw);
+    if (RENDERER_TOOL[tool] === "run_command") {
+      // The server titles a command with the command line, and the renderer
+      // reads a path out of a title (backticks, a leading verb). A PowerShell
+      // line is full of both: "Run ''\"]([^" was such a path. The label comes
+      // from `rawInput.command`.
+      if (out.title !== undefined) out.title = "Run command";
+      if (update.rawOutput !== undefined) out.rawOutput = agyCommandOutput(update.rawOutput);
+    }
+    return out;
+  }
+
+  private subagent(update: any, id: string, raw: Record<string, unknown> | undefined): any {
+    const input = raw ? agySubagentInput(raw) : undefined;
+    const finished = update.status === "completed";
+    if (update.sessionUpdate === "tool_call" && finished) this.replayed.add(id);
+    const out: any = { ...update, kind: "subagent", tool: "invoke_subagent" };
+    if (input) {
+      out.rawInput = { ...raw, ...input };
+      out.title = input.description ?? "Subagent";
+    } else {
+      // The running update carries `rawInput: {}` and the generic title.
+      delete out.rawInput;
+      delete out.title;
+    }
+    if (finished) {
+      // Its "output" is the model's own summary of the call ("Invoke subagent").
+      out.rawOutput = { output: "" };
+      if (!this.replayed.has(id)) out.status = "background";
+    }
+    return out;
+  }
+}
+
+export function normalizeAgyPermissionParams(params: any): any {
+  const toolCall = params?.toolCall;
+  const raw = agyRawInput(toolCall?.rawInput);
+  if (!raw) return params;
+  const tool = agyToolNameFromTitle(toolCall.title) ?? (toolCall.kind === "execute" ? "run_command" : undefined);
+  return { ...params, toolCall: { ...toolCall, rawInput: agyRendererInput(tool, raw) } };
+}
+
+export function normalizeAgyUpdate(update: any, meta: any, toolCalls: AgyToolCallMerger, shapes = new AgyToolCallShapes()): BackendUpdate {
   if (!update || typeof update !== "object") return { update, meta };
   if (update.sessionUpdate === "available_commands_update" && Array.isArray(update.availableCommands)) {
     return { update: { ...update, availableCommands: update.availableCommands.filter((command: any) => !HIDDEN_COMMANDS.has(command?.name)) }, meta };
@@ -258,7 +482,7 @@ export function normalizeAgyUpdate(update: any, meta: any, toolCalls: AgyToolCal
   }
   if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
     const merged = toolCalls.accept(update);
-    return merged ? { update: merged, meta } : { meta };
+    return merged ? { update: shapes.normalize(merged), meta } : { meta };
   }
   if (update.sessionUpdate === "agent_message_chunk" && isAgyRejectedCredentialText(update.content?.text)) {
     return { update, meta, credentialRejected: true };
@@ -348,6 +572,8 @@ export function listAgySessions(
 }
 
 export interface AgyBackendOptions {
+  /** Signed in with a Gemini API key: the server runs in gateway mode. */
+  keyMode?: boolean;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   home?: string;
@@ -360,6 +586,9 @@ export class AgyBackend implements AcpBackend<"agy"> {
   readonly processName = "Antigravity ACP server";
   readonly usesClientPlanGate = false;
   private readonly toolCalls = new AgyToolCallMerger();
+  private readonly shapes = new AgyToolCallShapes();
+  /** Whether the server offers `thinking_level`; gateway mode does not. */
+  private thinkingLevels = true;
 
   constructor(private readonly options: AgyBackendOptions = {}) {}
 
@@ -378,16 +607,27 @@ export class AgyBackend implements AcpBackend<"agy"> {
     if ((this.options.platform ?? process.platform) !== "win32" || !/\.exe$/i.test(command)) return;
     await stopAgyServerTree(pid, command, this.options.run);
   }
-  normalizeSessionResponse(response: any): any { return normalizeAgySessionResponse(response); }
+  normalizeSessionResponse(response: any): any {
+    if (Array.isArray(response?.configOptions)) this.thinkingLevels = !!configOption(response.configOptions, "thinking_level");
+    return normalizeAgySessionResponse(response, this.options.keyMode === true);
+  }
   normalizePromptResult(result: any): any { return result; }
-  normalizeUpdate(update: any, meta: any): BackendUpdate { return normalizeAgyUpdate(update, meta, this.toolCalls); }
-  normalizePermissionParams(params: any): any { return params; }
+  normalizeUpdate(update: any, meta: any): BackendUpdate { return normalizeAgyUpdate(update, meta, this.toolCalls, this.shapes); }
+  normalizePermissionParams(params: any): any { return normalizeAgyPermissionParams(params); }
+
+  /** A key's conversation starts on Gemini 4 Argon when nothing is remembered. */
+  defaultModelId(modelIds: readonly string[]): string | undefined {
+    return this.options.keyMode && modelIds.includes(AGY_KEY_DEFAULT_MODEL) ? AGY_KEY_DEFAULT_MODEL : undefined;
+  }
 
   setModel(sessionId: string, modelId: string): { method: string; params: any } {
     return { method: "session/set_config_option", params: { sessionId, configId: "model", value: modelId } };
   }
 
   setReasoningEffort(sessionId: string, _modelId: string | undefined, level: string): { method: string; params: any } | null {
+    // Gateway mode lists each model as the gateway declares it and offers no
+    // thinking_level (server.py `_thinking_variants`): no effort control.
+    if (!this.thinkingLevels) return null;
     const value = agyThinkingLevel(level);
     return value ? { method: "session/set_config_option", params: { sessionId, configId: "thinking_level", value } } : null;
   }

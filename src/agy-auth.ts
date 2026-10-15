@@ -6,8 +6,16 @@ import type { DeviceLoginCallbacks, DeviceLoginHandle } from "./device-login-run
 
 /** Google sign-in: the server's `oauth-personal` method. */
 export const AGY_SIGN_IN_METHOD = "oauth-personal";
-/** A pasted Gemini API key: the server's `gemini-api-key` method. */
-export const AGY_API_KEY_METHOD = "gemini-api-key";
+/**
+ * A pasted Gemini API key runs the server in its custom-gateway mode, pointed
+ * at the host's key relay (`agy-key-relay.ts`): the plain `gemini-api-key`
+ * method offers a hardcoded catalog without Gemini 4 Argon. Gateway mode is
+ * behind a rollout flag in 1.4.0 ("not yet ratified"); the flag is not a
+ * secret, so it rides the spawn environment. The key itself goes nowhere but
+ * the relay.
+ */
+export const AGY_GATEWAY_METHOD = "gateway";
+export const AGY_GATEWAY_FLAG_ENV = "AGY_ACP_ENABLE_GATEWAY_AUTH";
 /** The server waits 300 s on its loopback redirect; allow for its start. */
 export const AGY_SIGN_IN_TIMEOUT_MS = 330_000;
 /** Gemini keys are about 40 characters; anything near this is not one. */
@@ -20,18 +28,26 @@ export function isAgySignInMethod(value: unknown): value is AgySignInMethod {
   return value === "google" || value === "api-key";
 }
 
-/** What a server start authenticates with. The key travels in `_meta`, never
- *  in the server's environment: that environment reaches every command the
- *  agent runs, so `echo $GEMINI_API_KEY` would put it in a transcript. */
+/** What a server start authenticates with. Nothing secret travels here: a
+ *  key's server is handed only the relay's address. */
 export interface AgyStartupAuth {
   methodId: string;
   meta?: Record<string, unknown>;
 }
 
-export function agyStartupAuth(method: AgySignInMethod, apiKey?: string): AgyStartupAuth {
-  return method === "api-key"
-    ? { methodId: AGY_API_KEY_METHOD, meta: { "api-key": apiKey ?? "" } }
-    : { methodId: AGY_SIGN_IN_METHOD };
+export function agyGoogleAuth(): AgyStartupAuth {
+  return { methodId: AGY_SIGN_IN_METHOD };
+}
+
+export function agyGatewayAuth(baseUrl: string): AgyStartupAuth {
+  return { methodId: AGY_GATEWAY_METHOD, meta: { gateway: { baseUrl } } };
+}
+
+/** The spawn environment for a key's server: the person's own, plus the
+ *  rollout flag. Gateway mode sends the harness a dummy credential, so a
+ *  GEMINI_API_KEY of their own is neither used nor sent. */
+export function agyGatewayEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...env, [AGY_GATEWAY_FLAG_ENV]: "1" };
 }
 
 /** A pasted key, trimmed, or the sentence that says why it is not one. */

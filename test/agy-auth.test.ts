@@ -2,8 +2,8 @@ import { EventEmitter } from "node:events";
 import * as path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
-  AGY_SIGN_IN_METHOD, AGY_SIGN_IN_TIMEOUT_MS, MAX_AGY_API_KEY_CHARS, agyGoogleSignInPresent, agySignInUrl, agyStartupAuth,
-  isAgySignInMethod, normalizeAgyApiKey, runAgySignIn,
+  AGY_SIGN_IN_METHOD, AGY_SIGN_IN_TIMEOUT_MS, MAX_AGY_API_KEY_CHARS, agyGatewayAuth, agyGatewayEnv, agyGoogleAuth,
+  agyGoogleSignInPresent, agySignInUrl, isAgySignInMethod, normalizeAgyApiKey, runAgySignIn,
 } from "../src/agy-auth";
 
 const home = "/home/me";
@@ -41,9 +41,15 @@ describe("Antigravity stored Google sign-in", () => {
 });
 
 describe("Antigravity sign-in methods", () => {
-  it("authenticates Google as oauth-personal and a key as gemini-api-key with the key in _meta", () => {
-    expect(agyStartupAuth("google")).toEqual({ methodId: AGY_SIGN_IN_METHOD });
-    expect(agyStartupAuth("api-key", "AIza-test")).toEqual({ methodId: "gemini-api-key", meta: { "api-key": "AIza-test" } });
+  it("authenticates Google as oauth-personal, and a key's server as a gateway at the relay", () => {
+    expect(agyGoogleAuth()).toEqual({ methodId: AGY_SIGN_IN_METHOD });
+    expect(agyGatewayAuth("http://127.0.0.1:5000/p")).toEqual({ methodId: "gateway", meta: { gateway: { baseUrl: "http://127.0.0.1:5000/p" } } });
+  });
+
+  it("turns gateway mode on in the spawn environment and leaves the person's own untouched", () => {
+    const own = { PATH: "/bin", GEMINI_API_KEY: "their-own" };
+    expect(agyGatewayEnv(own)).toEqual({ PATH: "/bin", GEMINI_API_KEY: "their-own", AGY_ACP_ENABLE_GATEWAY_AUTH: "1" });
+    expect(own).not.toHaveProperty("AGY_ACP_ENABLE_GATEWAY_AUTH");
   });
 
   it("takes a pasted key trimmed, and says plainly why it is not one", () => {

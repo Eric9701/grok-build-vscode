@@ -235,7 +235,7 @@ describe("Sign in with Google", () => {
 });
 
 describe("Use a Gemini API key", () => {
-  it("keeps a pasted key in HostSecrets only, and starts with it in authenticate _meta", async () => {
+  it("keeps a pasted key in HostSecrets only, and hands it to a server start as a credential", async () => {
     const sidebar = host();
     await sidebar.onMessage({ type: "agySignIn", method: "api-key", key: `  ${KEY}  ` }, "local");
     expect(sidebar.secrets.get("grok.agy.geminiApiKey")).toBe(KEY);
@@ -243,7 +243,8 @@ describe("Use a Gemini API key", () => {
     expect(sidebar.providerConnectionState.agy).toBe(true);
     expect(sidebar.providerNeedsLogin.agy).toBe(false);
     expect(sidebar.adoptSessionsForConnectedProvider).toHaveBeenCalledWith("agy", sidebar.focused);
-    expect(await sidebar.agyStartupAuthFor()).toEqual({ methodId: "gemini-api-key", meta: { "api-key": KEY } });
+    // The start hands it to the relay alone (session-start-retry.test.ts).
+    expect(await sidebar.agyCredentialFor()).toEqual({ method: "api-key", key: KEY });
     // Nowhere else: not in state, not in a frame, not in the log.
     expect(JSON.stringify(sidebar.memento)).not.toContain(KEY);
     expect(JSON.stringify([...frames(sidebar.postLocal), ...frames(sidebar.post)])).not.toContain(KEY);
@@ -298,8 +299,8 @@ describe("Use a Gemini API key", () => {
 
   it("a session start with nothing stored for the chosen way starts no server", async () => {
     signIn();
-    expect(await host({ method: "api-key" }).agyStartupAuthFor()).toBeUndefined();
-    expect(await host({ method: "google" }).agyStartupAuthFor()).toEqual({ methodId: "oauth-personal" });
+    expect(await host({ method: "api-key" }).agyCredentialFor()).toBeUndefined();
+    expect(await host({ method: "google" }).agyCredentialFor()).toEqual({ method: "google" });
   });
 });
 

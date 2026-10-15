@@ -6,7 +6,8 @@ import { MuseBackend, withMuseCredentialBackend } from "./muse-backend";
 import { locateMuseCli, parseMuseVersionOutput } from "./muse-cli-locator";
 import { museInstallCommand } from "./muse-install";
 import { AgyBackend, agyAcpDir, listAgySessions } from "./agy-backend";
-import { agyGoogleSignInPresent, agyStartupAuth, isAgySignInMethod, normalizeAgyApiKey, runAgySignIn, type AgySignInMethod, type AgyStartupAuth } from "./agy-auth";
+import { agyGatewayAuth, agyGatewayEnv, agyGoogleAuth, agyGoogleSignInPresent, isAgySignInMethod, normalizeAgyApiKey, runAgySignIn, type AgySignInMethod } from "./agy-auth";
+import { AgyKeyRelay, type AgyRelayLease } from "./agy-key-relay";
 import { installManagedAgy, locateAgyServer } from "./agy-managed-installer";
 import type {
   Host,
@@ -1005,6 +1006,8 @@ export class GrokSidebar {
   private museSessionCacheAt = new Map<string, number>();
   private museSessionRefresh = new Map<string, Promise<void>>();
   private agyServerPath?: string;
+  /** The one place a Gemini API key goes; see agy-key-relay.ts. */
+  private agyRelay?: AgyKeyRelay;
   /** What is stored for each way of signing Antigravity in -- never the key. */
   private agySaved?: { google: boolean; apiKey: boolean };
   /** Why the last Antigravity credential was refused, for the choice card. */
@@ -2141,7 +2144,7 @@ export class GrokSidebar {
     // costs a 15-25 s start on Windows, and with a saved method but no token
     // its session/new opens the browser.
     if (provider === "agy") {
-      const present = !!(await this.agyStartupAuthFor());
+      const present = !!(await this.agyCredentialFor());
       if (signal.aborted) return false;
       this.setProviderNeedsLogin("agy", !present);
       void this.refreshAgySaved();
@@ -2695,17 +2698,20 @@ export class GrokSidebar {
   }
 
   /**
-   * The `authenticate` a server start sends for the chosen way, or undefined
-   * when that way holds no credential. Every start states its method: the
-   * server's settings.json is shared with other ACP clients on the machine,
-   * and a key sign-in rewrites it.
+   * What a server start signs in with for the chosen way, or undefined when
+   * that way holds nothing. Every start states its method: the server's
+   * settings.json is shared with other ACP clients on the machine.
    */
-  private async agyStartupAuthFor(): Promise<AgyStartupAuth | undefined> {
+  private async agyCredentialFor(): Promise<{ method: "google" } | { method: "api-key"; key: string } | undefined> {
     if (this.agyMethod() === "api-key") {
       const key = await this.agySavedKey();
-      return key ? agyStartupAuth("api-key", key) : undefined;
+      return key ? { method: "api-key", key } : undefined;
     }
-    return (await this.agyGoogleSignedIn()) ? agyStartupAuth("google") : undefined;
+    return (await this.agyGoogleSignedIn()) ? { method: "google" } : undefined;
+  }
+
+  private agyKeyRelay(): AgyKeyRelay {
+    return this.agyRelay ??= new AgyKeyRelay({ log: (line) => this.host.appendLine(line) });
   }
 
   /** The choice of how to sign in, answering a press at the desk. */
@@ -2738,7 +2744,7 @@ export class GrokSidebar {
     this.setProviderNeedsLogin("agy", true);
     await this.setProviderConnected("agy", true);
     if (!this.hasProviderConsent("agy")) return;
-    const ready = !!(await this.agyStartupAuthFor());
+    const ready = !!(await this.agyCredentialFor());
     await this.refreshAgySaved();
     if (ready) {
       this.setProviderNeedsLogin("agy", false);
@@ -9477,6 +9483,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.codexInstallAbort = undefined;
     this.agyInstallAbort?.abort(new Error("Installation cancelled."));
     this.agyInstallAbort = undefined;
+    void this.agyRelay?.close();
     try { this.keepAwake.stop(); } catch { /* the pid watcher reaps it anyway */ }
     try { this.settingsEditor?.dispose(); } catch { /* tab already gone */ }
     this.settingsEditor = undefined;
@@ -10728,8 +10735,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // server's own session/new start Google's browser sign-in, which on a
     // phone-driven start opens at an empty desk. Signing in stays a press at
     // the computer.
-    const agyAuth = session.provider === "agy" ? await this.agyStartupAuthFor() : undefined;
-    if (session.provider === "agy" && !agyAuth) {
+    const agyCredential = session.provider === "agy" ? await this.agyCredentialFor() : undefined;
+    if (session.provider === "agy" && !agyCredential) {
       if (gen !== session.gen) return undefined;
       this.pool.delete(session);
       session.priming = false;
@@ -10798,22 +10805,28 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const startSpawnAttempts = 3;
     const startSpawnBackoffMs = [300, 900] as const;
     const runSignal = this.providerRunSignal(session.provider);
-    const createBoundClient = (): AcpClient => {
-    runSignal.throwIfAborted();
+    // A key's server reaches Google only through the relay, so each spawn
+    // holds a lease on it until that process exits. The server logs its
+    // gateway address, so its output is redacted for the relay's prefix.
+    const createBoundClient = (relay?: AgyRelayLease): AcpClient => {
+    try { runSignal.throwIfAborted(); } catch (error) { relay?.release(); throw error; }
+    const redact = (text: string) => relay ? this.agyKeyRelay().redact(text) : text;
     const client = new AcpClient({
       signal: runSignal,
       cliPath,
       cwd,
-      env,
+      env: relay ? agyGatewayEnv(env) : env,
       effort,
-      log: (msg) => this.host.appendLine(msg),
+      log: (msg) => this.host.appendLine(redact(msg)),
       timeouts: this.acpClientTimeouts(),
       mcpServers: (onDispose) => supportsClientMcpServers(session.provider) ? this.hostMcpServersFor(session, onDispose) : [],
-      ...(agyAuth ? { startupAuth: agyAuth } : {}),
+      ...(relay ? { startupAuth: agyGatewayAuth(relay.baseUrl) } : agyCredential ? { startupAuth: agyGoogleAuth() } : {}),
       ...(session.provider === "grok"
         ? { grokVersion: grokHandshakeVersion, grokVersionVerified }
-        : { backend: session.provider === "muse" ? new MuseBackend(session.musePosture, session.museCloud) : this.createProviderBackend(session.provider) }),
+        : { backend: session.provider === "muse" ? new MuseBackend(session.musePosture, session.museCloud)
+          : session.provider === "agy" ? new AgyBackend({ keyMode: !!relay }) : this.createProviderBackend(session.provider) }),
     });
+    if (relay) client.once("exit", () => relay.release());
     session.client = client;
     this.syncHumanWait(session);
     // A replacement process may have gained the capability after a CLI update.
@@ -11410,14 +11423,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       this.detachClient(session);
       void client.dispose();
     });
-    client.on("stderr", (text: string) => this.host.append(text));
+    client.on("stderr", (text: string) => this.host.append(redact(text)));
     return client;
     };
 
     for (let attempt = 1; attempt <= startSpawnAttempts; attempt++) {
       if (gen !== session.gen) return undefined;
       this.setStartupStage(session, "starting");
-      const client = createBoundClient();
+      const client = createBoundClient(agyCredential?.method === "api-key"
+        ? await this.agyKeyRelay().acquire(agyCredential.key)
+        : undefined);
       // Version probe done to the first spawn attempt: resolving the
       // environment (which on Windows can shell out to locate a shell) AND
       // building the ACP client with its handlers. Recorded after
