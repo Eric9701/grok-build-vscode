@@ -9062,6 +9062,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     const folders = new Map<string, string>();
     for (const [id, meta] of Object.entries(overrides)) {
       if (!isRecentConversation(meta, now)) continue;
+      // Our own last word on it must be inside the horizon too, before any
+      // folder is listed: this runs with every history refresh, and most
+      // conversations ever sent in are months old. (One with no time of ours
+      // predates these stamps, 2026-08, so it is older than the horizon.)
+      const ours = Math.max(meta.sentAt ?? 0, meta.activeAt ?? 0, meta.openedAt ?? 0);
+      if (!(ours > 0) || ours < now - HISTORY_HORIZON_MS) continue;
       const where = meta.providerCwd;
       if (!where || !authorizedListCwd(where, authorized, pathsEqual)) continue;
       wanted.add(id);

@@ -141,10 +141,14 @@ describe("buildRecentSessions", () => {
       headless: { provider: "grok", providerCwd: "/a", sentAt: t },
       routine: { provider: "grok", providerCwd: "/a", sentAt: t, customName: `${ROUTINE_SESSION_TAG} nightly` },
       unplaced: { usageLog: [{}] as any },
+      // Sent in, but our last word on it is outside the horizon: its folder is
+      // not even listed.
+      ancient: { provider: "grok", providerCwd: "/c", sentAt: t - 40 * DAY },
     };
     const sidebar = makeSidebar(overrides, {
       "/a": [row("headless", "/a", t, { automated: true }), row("sent", "/a", t - DAY), row("listedOnly", "/a", t - 10), row("routine", "/a", t)],
       "/b": [row("opened", "/b", t - 3 * DAY, { provider: "codex" }), row("legacy", "/b", t - 2 * DAY), row("openedLongAgo", "/b", t - 4 * DAY, { provider: "codex" })],
+      "/c": [row("ancient", "/c", t - 40 * DAY)],
     });
     sidebar.isAutomatedSession = vi.fn((entry: SessionListEntry) => !!entry.automated);
     const { entries } = sidebar.buildRecentSessions();
