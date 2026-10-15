@@ -111,38 +111,114 @@ describe("Antigravity tool calls, normalised for the renderer", () => {
   });
 });
 
-describe("Antigravity subagents, as subagent cards", () => {
-  const launch = { Subagents: [{ Model: "inherit", Prompt: "List the files and read notes.txt.", Role: "Project File Reader", TypeName: "research", Workspace: "inherit" }] };
+describe("Antigravity subagents, as subagent cards with their own work inside", () => {
+  const launchId = "24ac72049c3b49ecac09e055152210cf";
+  const child = (id: string) => `agy-subagent:${id}`;
+  const launch = (id: string, role: string) => [
+    { sessionUpdate: "tool_call", toolCallId: id, title: "Run invoke_subagent?", kind: "other", status: "pending",
+      rawInput: { Subagents: [{ Model: "inherit", Prompt: `${role}: list the files and read notes.txt.`, Role: role, TypeName: "research", Workspace: "inherit" }] } },
+    { sessionUpdate: "tool_call_update", toolCallId: id, title: "Running invoke_subagent", kind: "other", status: "in_progress", rawInput: {} },
+    { sessionUpdate: "tool_call_update", toolCallId: id, status: "completed", rawOutput: "Invoke subagent" },
+  ];
+  const read = (id: string, file: string) => ({ sessionUpdate: "tool_call", toolCallId: id, title: "Running view_file", kind: "read", status: "in_progress", rawInput: { absolute_path: `${WS}/${file}` } });
+  const done = (id: string) => ({ sessionUpdate: "tool_call_update", toolCallId: id, status: "completed" });
+  const text = (value: string) => ({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: value } });
 
-  it("shows the role and the task, and says the work is in the background: the server reports nothing after the launch", () => {
-    const id = "24ac72049c3b49ecac09e055152210cf";
-    const [pending, running, done, child] = run([
-      { sessionUpdate: "tool_call", toolCallId: id, title: "Run invoke_subagent?", kind: "other", status: "pending", rawInput: launch },
-      { sessionUpdate: "tool_call_update", toolCallId: id, title: "Running invoke_subagent", kind: "other", status: "in_progress", rawInput: {} },
-      { sessionUpdate: "tool_call_update", toolCallId: id, status: "completed", rawOutput: "Invoke subagent" },
-      { sessionUpdate: "tool_call", toolCallId: "call_636537", title: "Running view_file", kind: "read", status: "in_progress", rawInput: { absolute_path: `${WS}/notes.txt` } },
+  function session() {
+    const backend = new AgyBackend();
+    return {
+      backend,
+      feed: (frames: any[]) => frames.map((frame) => backend.normalizeUpdate(frame, undefined)),
+    };
+  }
+
+  it("one launch: the card runs while its child works, the child's calls go inside it, the parent's text stays out, and the turn's end settles it", () => {
+    const { backend, feed } = session();
+    const [pending, running, receipt, childCall, parentText, childDone] = feed([
+      ...launch(launchId, "Project Explorer"), read("call_636537", "notes.txt"), text("The subagent found the notes."), done("call_636537"),
     ]);
-    expect(pending).toMatchObject({ kind: "subagent", tool: "invoke_subagent", title: "Project File Reader",
-      rawInput: { description: "Project File Reader", prompt: "List the files and read notes.txt.", subagent_type: "research" } });
-    // The running update must not blank the card's title or task.
-    expect(running).toMatchObject({ kind: "subagent", status: "in_progress" });
-    expect(running).not.toHaveProperty("title");
-    expect(running).not.toHaveProperty("rawInput");
-    // "Invoke subagent" is the model's own summary of the call, not a result.
-    expect(done).toMatchObject({ kind: "subagent", status: "background", rawOutput: { output: "" } });
-    // The child's call has nothing that ties it to the card, so it is an ordinary row.
-    expect(child).toMatchObject({ tool: "view_file", kind: "read" });
+    expect(pending.update).toMatchObject({ kind: "subagent", title: "Project Explorer", child_session_id: child(launchId),
+      rawInput: { description: "Project Explorer", subagent_type: "research" } });
+    expect(pending.childSessionId).toBeUndefined();
+    expect(running.update).toMatchObject({ kind: "subagent", status: "in_progress" });
+    // "Invoke subagent" is the model's summary of the launch: the child is only starting.
+    expect(receipt.update).toMatchObject({ kind: "subagent", status: "in_progress" });
+    expect(receipt.update).not.toHaveProperty("rawOutput");
+    expect(childCall).toMatchObject({ childSessionId: child(launchId), update: { tool: "view_file" } });
+    expect(childDone.childSessionId).toBe(child(launchId));
+    expect(parentText.childSessionId).toBeUndefined();
+    expect(backend.turnEnded("completed")).toEqual([
+      { sessionUpdate: "tool_call_update", toolCallId: launchId, kind: "subagent", tool: "invoke_subagent", status: "completed", rawOutput: { output: "" } },
+    ]);
+    expect(backend.turnEnded("completed")).toEqual([]);
   });
 
-  it("settles a replayed subagent as done, and names several children by the first", () => {
-    const [replayed, result] = run([
-      { sessionUpdate: "tool_call", toolCallId: "step_3", title: "Running invoke_subagent", kind: "other", status: "completed",
-        rawInput: JSON.stringify({ Subagents: [...launch.Subagents, { Role: "Line Counter", Prompt: "Count README.md lines." }] }) },
-      { sessionUpdate: "tool_call_update", toolCallId: "step_3", status: "completed", rawOutput: "Invoke subagent" },
+  it("two launches: new calls go to the newest open card, earlier calls stay with theirs, and both settle", () => {
+    const { backend, feed } = session();
+    const out = feed([
+      ...launch("first", "Reader"), read("a", "notes.txt"),
+      ...launch("second", "Counter"), read("b", "README.md"), done("a"), done("b"),
     ]);
-    expect(replayed).toMatchObject({ kind: "subagent", title: "Project File Reader and 1 more",
-      rawInput: { prompt: "List the files and read notes.txt.\n\nCount README.md lines." } });
-    expect(result).toMatchObject({ status: "completed", rawOutput: { output: "" } });
+    const routed = out.filter((entry) => entry.update?.toolCallId?.length === 1).map((entry) => [entry.update.toolCallId, entry.update.status, entry.childSessionId]);
+    expect(routed).toEqual([
+      ["a", "in_progress", child("first")], ["b", "in_progress", child("second")],
+      ["a", "completed", child("first")], ["b", "completed", child("second")],
+    ]);
+    expect(backend.turnEnded("completed").map((update) => update.toolCallId)).toEqual(["first", "second"]);
+  });
+
+  it("a call the parent opened before the launch stays the parent's; one it makes during the window lands in the card (the accepted cost)", () => {
+    const { backend, feed } = session();
+    const [, , , , early, parentInWindow] = feed([
+      read("parent-before", "app.js"), ...launch(launchId, "Explorer"), done("parent-before"), read("parent-during", "package.json"),
+    ]);
+    expect(early.childSessionId).toBeUndefined();
+    expect(parentInWindow.childSessionId).toBe(child(launchId));
+    backend.turnEnded("completed");
+  });
+
+  it("the next turn's calls are the parent's: the server streams nothing between turns, and the card has settled", () => {
+    const { backend, feed } = session();
+    feed([...launch(launchId, "Explorer"), read("a", "notes.txt")]);
+    expect(backend.turnEnded("completed")).toHaveLength(1);
+    const [nextTurn] = feed([read("next", "README.md")]);
+    expect(nextTurn.childSessionId).toBeUndefined();
+    expect(backend.turnEnded("completed")).toEqual([]);
+  });
+
+  it("a cancelled turn stops its cards, and a refused launch opens no window", () => {
+    const { backend, feed } = session();
+    feed([...launch(launchId, "Explorer")]);
+    expect(backend.turnEnded("cancelled")).toMatchObject([{ toolCallId: launchId, status: "cancelled" }]);
+    const [, refused, afterRefusal] = feed([
+      launch("refused", "Explorer")[0],
+      { sessionUpdate: "tool_call_update", toolCallId: "refused", status: "failed", rawOutput: "Denied by user." },
+      read("x", "notes.txt"),
+    ]);
+    expect(refused.update).toMatchObject({ kind: "subagent", status: "failed" });
+    expect(afterRefusal.childSessionId).toBeUndefined();
+    expect(backend.turnEnded("completed")).toEqual([]);
+  });
+
+  it("replay: the same grouping from history, each card settled when the next user message starts a turn and at the end of the load", () => {
+    const { backend, feed } = session();
+    const replayed = (id: string, role: string) => ({ sessionUpdate: "tool_call", toolCallId: id, title: "Running invoke_subagent", kind: "other", status: "completed",
+      rawInput: JSON.stringify({ Subagents: [{ Role: role, Prompt: "Look around." }] }) });
+    const out = feed([
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Run a demo subagent" } },
+      replayed("step_3", "Explorer"), { sessionUpdate: "tool_call_update", toolCallId: "step_3", status: "completed", rawOutput: "Invoke subagent" },
+      { sessionUpdate: "tool_call", toolCallId: "step_4", title: "Running view_file", kind: "read", status: "completed", rawInput: JSON.stringify({ AbsolutePath: `${WS}/README.md` }) },
+      text("Done."),
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "And again" } },
+      replayed("step_9", "Second"),
+      { sessionUpdate: "tool_call", toolCallId: "step_10", title: "Running view_file", kind: "read", status: "completed", rawInput: JSON.stringify({ AbsolutePath: `${WS}/notes.txt` }) },
+    ]);
+    expect(out[1].update).toMatchObject({ kind: "subagent", status: "in_progress", title: "Explorer", child_session_id: child("step_3") });
+    expect(out[3]).toMatchObject({ childSessionId: child("step_3"), update: { tool: "view_file" } });
+    // The second user message settles the first turn's card before it is routed.
+    expect(out[5].precede).toEqual([expect.objectContaining({ toolCallId: "step_3", status: "completed" })]);
+    expect(out[7].childSessionId).toBe(child("step_9"));
+    expect(backend.turnEnded("completed").map((update) => update.toolCallId)).toEqual(["step_9"]);
   });
 });
 

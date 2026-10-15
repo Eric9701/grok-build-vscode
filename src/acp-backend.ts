@@ -132,6 +132,16 @@ export interface BackendUpdate {
   /** The agent reported mid-turn that its credential was refused -- in-band,
    *  as text, with no RPC error for the host to classify. */
   credentialRejected?: true;
+  /**
+   * This update belongs to a subagent's own stream: it is routed exactly as a
+   * child session's updates are (`childStream`), into the card whose
+   * `child_session_id` names it. For an agent whose child calls arrive on the
+   * parent session.
+   */
+  childSessionId?: string;
+  /** Already-normalized updates to route before this one (a backend closing
+   *  cards at a turn boundary it only sees in the stream). */
+  precede?: any[];
 }
 
 export interface BackendSessionListEntry {
@@ -194,6 +204,11 @@ export interface AcpBackend<Provider extends string = AcpProvider> {
    * undefined to keep the agent's own default.
    */
   defaultModelId?(modelIds: readonly string[]): string | undefined;
+  /**
+   * A turn (or a `session/load` replay) ended. Returns already-normalized
+   * updates to route, e.g. settling subagent cards the agent never closes.
+   */
+  turnEnded?(outcome: "completed" | "cancelled" | "failed"): any[];
   /**
    * Ask the spawned process to exit cleanly, in place of waiting for it to
    * notice stdin closing. Dispose still kills it if it has not exited in time.

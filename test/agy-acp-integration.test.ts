@@ -266,6 +266,37 @@ describe("Antigravity over ACP (real subprocess, fake server)", () => {
     expect(agy.availableModels.map((model) => model.modelId)).toEqual(["gemini-3.8-flash"]);
   });
 
+  // The child's calls arrive on this session; AcpClient routes them to the
+  // card's stream, exactly as a child session's, and settles the card when the
+  // turn ends.
+  it("routes a subagent's calls into its card's stream and settles the card at the turn's end", async () => {
+    signIn(home);
+    const agy = client();
+    await agy.start();
+    await agy.newSession();
+    agy.on("permissionRequest", (request: PermissionRequest) => agy.respondPermission(request.id, "allow"));
+    const parent: any[] = [];
+    const children: any[] = [];
+    const chunks: string[] = [];
+    agy.on("toolCall", (call) => parent.push(["call", call.toolCallId, call.status]));
+    agy.on("toolCallUpdate", (update) => parent.push(["update", update.toolCallId, update.status]));
+    agy.on("childStream", (event) => children.push([event.childSessionId, event.route.event, event.route.payload?.toolCallId]));
+    agy.on("messageChunk", (text) => chunks.push(text));
+    await agy.prompt("run a subagent");
+    const launch = "24ac72049c3b49ecac09e055152210cf";
+    expect(children).toEqual([
+      [`agy-subagent:${launch}`, "toolCall", "call_636537"],
+      [`agy-subagent:${launch}`, "toolCallUpdate", "call_636537"],
+    ]);
+    expect(parent).toEqual([
+      ["call", launch, "pending"],
+      ["update", launch, "in_progress"],
+      ["update", launch, "in_progress"],
+      ["update", launch, "completed"],
+    ]);
+    expect(chunks.join("")).toBe("The subagent found the notes.");
+  });
+
   it("lists the project's conversations from disk", async () => {
     signIn(home);
     const agy = client();

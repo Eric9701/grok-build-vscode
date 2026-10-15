@@ -389,14 +389,8 @@ function agyCommandOutput(rawOutput: unknown): unknown {
 
 /**
  * `invoke_subagent` as the subagent card every other provider gets. Its
- * arguments name each child (`Subagents: [{Role, Prompt, TypeName, Model}]`),
- * but nothing after the launch does: the call completes at once, the server
- * reports no child id, no progress and no completion, suppresses the child's
- * text, and the child's own tool calls arrive on the parent session with
- * nothing to tell them apart (measured, 1.4.0). So the card shows what was
- * asked and says the work is in the background -- a launch receipt, exactly
- * as for Claude's receipt-only background agents -- and claims nothing about
- * progress. The parent's reply carries the result.
+ * arguments name each child (`Subagents: [{Role, Prompt, TypeName, Model}]`);
+ * the card's title is the role and its task the prompt.
  */
 function agySubagentInput(raw: Record<string, unknown>): { description?: string; prompt?: string; subagent_type?: string } | undefined {
   const entries = Array.isArray(raw.Subagents) ? raw.Subagents.filter((entry) => entry && typeof entry === "object") as Record<string, unknown>[] : [];
@@ -410,22 +404,77 @@ function agySubagentInput(raw: Record<string, unknown>): { description?: string;
   };
 }
 
-/** What each call is, remembered across the updates that do not say. */
+/** The stream id a subagent card collects its child's calls under. */
+export function agySubagentSessionId(launchId: string): string {
+  return `agy-subagent:${launchId}`;
+}
+
+/**
+ * What each call is, remembered across the updates that do not say -- and
+ * which subagent, if any, it belongs to.
+ *
+ * The server reports nothing about a child after `invoke_subagent` launches
+ * it: the call completes at once with the model's own summary ("Invoke
+ * subagent"), there is no child id, no progress and no completion, the
+ * child's text is suppressed, and its tool calls arrive on the parent session
+ * looking exactly like the parent's -- same session id, same id formats, same
+ * kinds, no `_meta` (measured, 1.4.0). So a window decides: every call first
+ * seen after a launch, until the turn ends, is that subagent's, and goes to
+ * the newest card still open; its later updates follow it. The known cost: a
+ * call the parent makes while a child runs lands in the card too. A card
+ * settles when the turn that launched it ends (or, replayed, at the next
+ * user message or the end of the load). The server streams calls only inside
+ * a turn, so nothing can arrive for a card between turns.
+ */
 export class AgyToolCallShapes {
   private readonly tools = new Map<string, string>();
-  /** Subagent calls first seen finished: replayed history, not a launch. */
-  private readonly replayed = new Set<string>();
+  /** This turn's subagent cards still open, oldest first; the newest takes new calls. */
+  private openCards: string[] = [];
+  /** A call's card, once it was first seen inside a subagent's window. */
+  private readonly childOf = new Map<string, string>();
+  /** Calls first seen with no window open: the parent's. */
+  private readonly parentCalls = new Set<string>();
 
-  normalize(update: any): any {
+  normalize(update: any): { update: any; childSessionId?: string } {
     const id = typeof update?.toolCallId === "string" ? update.toolCallId : undefined;
-    if (!id) return update;
+    if (!id) return { update };
     const titled = agyToolNameFromTitle(update.title);
     if (titled) this.tools.set(id, titled);
     else if (update.kind === "execute" && !this.tools.has(id)) this.tools.set(id, "run_command");
     const tool = this.tools.get(id);
-    if (!tool) return update;
     const raw = agyRawInput(update.rawInput);
-    if (tool === "invoke_subagent") return this.subagent(update, id, raw);
+    if (tool === "invoke_subagent") return { update: this.subagent(update, id, raw) };
+    const card = this.cardFor(id);
+    const shaped = tool ? this.shape(update, tool, raw) : update;
+    return card ? { update: shaped, childSessionId: agySubagentSessionId(card) } : { update: shaped };
+  }
+
+  /** Settle every open card: the turn (or the replayed turn) is over. */
+  settle(outcome: "completed" | "cancelled" | "failed"): any[] {
+    const status = outcome === "completed" ? "completed" : "cancelled";
+    const settled = this.openCards.map((toolCallId) => ({
+      // No result text exists: the server suppresses the child's own words,
+      // and the parent's reply carries what it found.
+      sessionUpdate: "tool_call_update", toolCallId, kind: "subagent", tool: "invoke_subagent", status, rawOutput: { output: "" },
+    }));
+    this.openCards = [];
+    return settled;
+  }
+
+  private cardFor(id: string): string | undefined {
+    const known = this.childOf.get(id);
+    if (known) return known;
+    if (this.parentCalls.has(id)) return undefined;
+    const open = this.openCards.at(-1);
+    if (open) {
+      this.childOf.set(id, open);
+      return open;
+    }
+    this.parentCalls.add(id);
+    return undefined;
+  }
+
+  private shape(update: any, tool: string, raw: Record<string, unknown> | undefined): any {
     const out: any = { ...update, tool: RENDERER_TOOL[tool] ?? tool };
     if (raw) out.rawInput = agyRendererInput(tool, raw);
     if (RENDERER_TOOL[tool] === "run_command") {
@@ -441,9 +490,7 @@ export class AgyToolCallShapes {
 
   private subagent(update: any, id: string, raw: Record<string, unknown> | undefined): any {
     const input = raw ? agySubagentInput(raw) : undefined;
-    const finished = update.status === "completed";
-    if (update.sessionUpdate === "tool_call" && finished) this.replayed.add(id);
-    const out: any = { ...update, kind: "subagent", tool: "invoke_subagent" };
+    const out: any = { ...update, kind: "subagent", tool: "invoke_subagent", child_session_id: agySubagentSessionId(id) };
     if (input) {
       out.rawInput = { ...raw, ...input };
       out.title = input.description ?? "Subagent";
@@ -452,10 +499,20 @@ export class AgyToolCallShapes {
       delete out.rawInput;
       delete out.title;
     }
-    if (finished) {
-      // Its "output" is the model's own summary of the call ("Invoke subagent").
-      out.rawOutput = { output: "" };
-      if (!this.replayed.has(id)) out.status = "background";
+    const ended = update.status === "failed" || update.status === "cancelled";
+    if (ended) {
+      // Refused or stopped before it ran: nothing will arrive for it.
+      this.openCards = this.openCards.filter((card) => card !== id);
+      return out;
+    }
+    if (update.sessionUpdate === "tool_call" && !this.openCards.includes(id)) this.openCards.push(id);
+    if (update.status === "completed") {
+      // The launch "completes" at once with the model's summary of the call
+      // ("Invoke subagent"); the child is only starting. A replayed launch
+      // arrives completed too, ahead of its child's calls. Running until the
+      // turn ends.
+      out.status = "in_progress";
+      delete out.rawOutput;
     }
     return out;
   }
@@ -482,7 +539,14 @@ export function normalizeAgyUpdate(update: any, meta: any, toolCalls: AgyToolCal
   }
   if (update.sessionUpdate === "tool_call" || update.sessionUpdate === "tool_call_update") {
     const merged = toolCalls.accept(update);
-    return merged ? { update: shapes.normalize(merged), meta } : { meta };
+    if (!merged) return { meta };
+    const shaped = shapes.normalize(merged);
+    return { update: shaped.update, meta, ...(shaped.childSessionId ? { childSessionId: shaped.childSessionId } : {}) };
+  }
+  // A replayed user message starts the next turn: the last one's cards are done.
+  if (update.sessionUpdate === "user_message_chunk") {
+    const precede = shapes.settle("completed");
+    return precede.length ? { update, meta, precede } : { update, meta };
   }
   if (update.sessionUpdate === "agent_message_chunk" && isAgyRejectedCredentialText(update.content?.text)) {
     return { update, meta, credentialRejected: true };
@@ -613,6 +677,7 @@ export class AgyBackend implements AcpBackend<"agy"> {
   }
   normalizePromptResult(result: any): any { return result; }
   normalizeUpdate(update: any, meta: any): BackendUpdate { return normalizeAgyUpdate(update, meta, this.toolCalls, this.shapes); }
+  turnEnded(outcome: "completed" | "cancelled" | "failed"): any[] { return this.shapes.settle(outcome); }
   normalizePermissionParams(params: any): any { return normalizeAgyPermissionParams(params); }
 
   /** A key's conversation starts on Gemini 4 Argon when nothing is remembered. */

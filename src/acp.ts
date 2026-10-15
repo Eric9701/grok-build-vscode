@@ -693,6 +693,9 @@ export class AcpClient extends EventEmitter {
     let raw: any;
     try {
       raw = await this.request("session/load", { sessionId, cwd: this.opts.cwd, mcpServers, ...this.backend.sessionParams?.(this.opts.cwd) });
+      // The replay is the session's past turns; whatever the backend still
+      // holds open from it is settled, inside the host's replay window.
+      this.endTurn("completed");
     } finally {
       this.loadingChildSessionIds = undefined;
     }
@@ -868,11 +871,18 @@ export class AcpClient extends EventEmitter {
       typeof textOrBlocks === "string"
         ? [{ type: "text", text: textOrBlocks }]
         : textOrBlocks;
-    const raw = await this.request("session/prompt", {
-      sessionId: this.sessionId,
-      prompt,
-    });
+    let raw: any;
+    try {
+      raw = await this.request("session/prompt", {
+        sessionId: this.sessionId,
+        prompt,
+      });
+    } catch (error) {
+      this.endTurn("failed");
+      throw error;
+    }
     const result = this.backend.normalizePromptResult(raw);
+    this.endTurn(result?.stopReason === "cancelled" ? "cancelled" : "completed");
     const meta = extractPromptMeta(result);
     this.lastMeta = meta;
     this.emit("promptComplete", meta);
@@ -1541,6 +1551,7 @@ export class AcpClient extends EventEmitter {
     const updateGeneration = meta?.generation ?? u?._meta?.generation;
     if (this.provider === "grok" && typeof updateGeneration === "number" && updateGeneration !== this.contextGeneration) return;
     const normalized = this.backend.normalizeUpdate(u, meta);
+    for (const earlier of normalized.precede ?? []) this.routeUpdate(earlier, undefined);
     if (!foreign) {
       if (normalized.workflowUpdate) this.emit("subagentLifecycle", normalized.workflowUpdate, meta);
       if (normalized.notice) this.emit("notice", normalized.notice);
@@ -1587,10 +1598,24 @@ export class AcpClient extends EventEmitter {
         this.emit("contextUsage", this.lastContextUsed, this.lastContextWindow);
       }
     }
+    this.routeUpdate(u, meta, foreign ? sessionId : normalized.childSessionId);
+  }
+
+  /** What a backend still holds open when a turn or a replay ends. */
+  private endTurn(outcome: "completed" | "cancelled" | "failed"): void {
+    for (const update of this.backend.turnEnded?.(outcome) ?? []) this.routeUpdate(update, undefined);
+  }
+
+  /**
+   * Deliver a normalized update. A child's -- from its own session, or tagged
+   * by a backend whose child calls arrive on this one -- goes to its card's
+   * stream (`childStream`), never into the parent's transcript.
+   */
+  private routeUpdate(u: any, meta: any, childSessionId?: string): void {
     const r = routeSessionUpdate(u);
     if (!r) return;
-    if (foreign) {
-      this.emit("childStream", { childSessionId: sessionId, route: r, meta });
+    if (childSessionId !== undefined) {
+      this.emit("childStream", { childSessionId, route: r, meta });
       return;
     }
     if (r.event === "modeChanged") {

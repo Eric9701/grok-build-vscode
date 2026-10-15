@@ -217,12 +217,28 @@ summary of the call, like an edit's ("Update const a in app.js"), not a
 result. After that the server reports nothing about the child: no child session
 id, no `_meta`, no progress, no completion. It suppresses the child's text
 (only the root trajectory streams), and the child's tool calls arrive on the
-parent session with ids shaped like the parent's (measured, waited and
-"background" launches alike). The card therefore shows the role as its title
-and the prompt as its task, and says "in background" -- the launch receipt,
-as for Claude's receipt-only background agents -- and the child's calls stay
-ordinary rows. The parent's reply carries the result. A replayed launch settles
-as done.
+parent session looking exactly like the parent's -- the same session id, the
+same id formats (hex for commands, `call_N` for reads), the same kinds, the same
+permission requests, no `_meta` (measured, waited and "background" launches
+alike). Left as ordinary rows they landed between the parent's text chunks,
+once splitting a markdown link in two.
+
+So the child's work goes where every other provider's does: inside its card.
+The launch carries `child_session_id: agy-subagent:<launch id>`, and every
+call first seen after a launch, until the turn ends, is routed as that
+child's stream (`BackendUpdate.childSessionId` -> `AcpClient` `childStream`,
+the path Codex's child sessions take), to the newest card still open; its
+later updates follow it. The parent's text stays whole. When the turn ends
+(`AcpBackend.turnEnded`), every card it opened settles: done, or stopped for
+a cancelled turn, with no result text -- the server suppresses the child's
+words and the parent's reply carries what it found. A replay settles a card
+at the next user message and at the end of the load, so history renders the
+same grouping. The server streams calls only inside a turn
+(`receive_steps()` in `session/prompt`), so nothing can arrive for a card
+between turns; a child still busy when its parent's turn ended would surface
+in the next turn, indistinguishable from the parent's own calls. Measured
+live: one launch, nine child calls (five commands, four reads) in its card,
+the parent's text unbroken, the card done at the turn's end.
 
 ### History
 
@@ -340,13 +356,21 @@ observable change that should make us look again.
 
 ### How subagents are shown
 
-- **Decision:** `invoke_subagent` is a subagent card with the role and the
-  task, "in background", and the child's calls stay ordinary rows.
-- **Why:** the server reports nothing after the launch (see Subagents above).
-  Attributing calls by timing would put the parent's own calls inside the card
-  whenever the two run at once, which they do for a background launch.
-- **Risk:** a waited subagent also reads "in background", and its work is not
-  grouped under it.
+- **Decision:** a window. Every call first seen after an `invoke_subagent`
+  launch, until the turn ends, is that subagent's and renders inside its card
+  (the newest card still open, when there are several); every card the turn
+  opened settles as done when it ends.
+- **Why:** the server tells child calls apart by nothing (see Subagents
+  above), and the owner prefers a call in the wrong card to a parent reply
+  split by the child's rows -- "it can't work differently" from the other
+  providers.
+- **Known cost:** a call the parent itself makes while a child runs lands in
+  the card. A child still running when its parent's turn ends cannot be
+  followed: the server forwards nothing between turns, so its later calls
+  would appear in the next turn as the parent's, and its card has already
+  settled. Two parent replies around a child's work run together in one
+  message, because the server marks no boundary between them and the same
+  place can be mid-sentence.
 - **Revisit when:** a child's updates carry a child session id, a parent
   trajectory id or a `_meta` naming the subagent, or `invoke_subagent`
   completes with the child's result.
