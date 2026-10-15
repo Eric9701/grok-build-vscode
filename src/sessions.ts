@@ -45,6 +45,9 @@ export interface SessionListEntry {
   /** Started by automation, not a person (a headless Grok run; see
    *  automated-sessions.ts for the others). Recent leaves it out. */
   automated?: boolean;
+  /** On a Recent row whose folder is not a project: that folder, which the
+   *  row's menu offers to add ("Add to Projects"). */
+  addableCwd?: string;
 }
 
 export interface SessionMetaOverride {
@@ -1204,12 +1207,22 @@ const ROUTINE_TAG = "[Routine]";
  * the host's own automation, not the person, and never counts.
  */
 export function isRecentConversation(meta: SessionMetaOverride | undefined, now: number = Date.now()): boolean {
-  if (!meta) return false;
-  if (typeof meta.customName === "string" && meta.customName.trim().startsWith(ROUTINE_TAG)) return false;
+  if (!meta || isRoutineRun(meta)) return false;
+  if (hasSentSignal(meta)) return true;
+  return typeof meta.openedAt === "number" && meta.openedAt >= now - RECENT_OPENED_MS;
+}
+
+function isRoutineRun(meta: SessionMetaOverride): boolean {
+  return typeof meta.customName === "string" && meta.customName.trim().startsWith(ROUTINE_TAG);
+}
+
+/** The person sent a message in this conversation through this host, by our
+ *  own record (see isRecentConversation). Never true for a routine's run. */
+export function hasSentSignal(meta: SessionMetaOverride): boolean {
+  if (isRoutineRun(meta)) return false;
   if (typeof meta.sentAt === "number") return true;
   if (Array.isArray(meta.usageLog) && meta.usageLog.length > 0) return true;
-  if (typeof meta.activeAt === "number" && (meta.provider === undefined || meta.provider === "grok")) return true;
-  return typeof meta.openedAt === "number" && meta.openedAt >= now - RECENT_OPENED_MS;
+  return typeof meta.activeAt === "number" && (meta.provider === undefined || meta.provider === "grok");
 }
 
 /**

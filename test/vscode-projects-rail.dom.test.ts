@@ -1308,3 +1308,25 @@ describe("Recent from the host in the Projects view", () => {
     expect(api.recentRows().map((s) => s.id)).toEqual(["a2"]);
   });
 });
+
+describe("chosen projects in the Projects view", () => {
+  const LINE = "Your projects appear here. Open a folder, create one, or add one from Recent.";
+  it("offers Add to Projects on a Recent row whose folder the host can add, and says where projects come from", () => {
+    const { window, doc, posted } = bootRail();
+    const api = railApi(window);
+    api.onMessage({ type: "repos", entries: [], selectedCwd: "", activeCwd: "", canAddProject: true });
+    expect(doc.getElementById("rail-scroll")!.textContent).toContain(LINE);
+    api.onMessage({ type: "recentSessions", dots: {}, entries: [{ ...row("x1", "/scratch/notes", "outside", 9), addableCwd: "/scratch/notes" }] });
+    const text = doc.getElementById("rail-scroll")!.textContent || "";
+    expect(text).toContain("Recent");
+    expect(text).toContain(LINE);
+    // Recent starts folded.
+    ([...doc.querySelectorAll(".rail-head-btn")].find((b) => (b.textContent || "").includes("Recent")) as any).click();
+    const target = doc.querySelector('.rail-session[data-session-id="x1"]')!;
+    (target.querySelector('[title="Session actions"]') as any).click();
+    const add = [...doc.querySelectorAll("button")].find((el) => el.textContent === "Add to Projects") as any;
+    expect(add).toBeTruthy();
+    add.click();
+    expect(posted).toContainEqual({ type: "addToProjects", cwd: "/scratch/notes" });
+  });
+});

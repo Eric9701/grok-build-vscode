@@ -182,7 +182,7 @@ describe("projects rail", () => {
     expect(rail(doc).hidden).toBe(false);
   });
 
-  it("empty first repos frame is No projects yet, not a stuck Loading…", () => {
+  it("empty first repos frame says where projects come from, not a stuck Loading…", () => {
     // Desktop paints "Loading…" until the first `repos` frame. An empty
     // catalog after that frame is a real empty state, not an unfinished boot.
     const { doc, window, posted } = bootWebview({
@@ -200,7 +200,7 @@ describe("projects rail", () => {
     });
     expect(rail(doc).textContent).toContain("Loading…");
     dispatch(window, { type: "repos", entries: [], selectedCwd: "", activeCwd: "" });
-    expect(rail(doc).textContent).toContain("No projects yet");
+    expect(rail(doc).textContent).toContain("Your projects appear here. Open a folder, create one, or add one from Recent.");
     expect(rail(doc).textContent).not.toContain("Loading…");
     // The wide button is also present under a NON-empty list, which is the case
     // the owner raised: with one project the rail is mostly empty space and a

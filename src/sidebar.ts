@@ -31,6 +31,7 @@ import type { AcpProvider, BackendSessionListEntry } from "./acp-backend";
 import { usesAdapterHistory, isInternalProvider, INTERNAL_PROVIDERS, supportsSessionDeletion, supportsHistoryDeletion, supportsModeSwitching, supportsAutoAccept, supportsClientMcpServers, usesPerCallContextOccupancy } from "./acp-backend";
 import { CODEX_ACP_ADAPTER_VERSION, CodexBackend, isCodexCredentialError } from "./codex-backend";
 import { locateCodexCli, resolveCodexHome } from "./codex-cli-locator";
+import { foldersWithRecentSends } from "./project-init";
 import {
   AUTOMATED_CLAUDE_ENTRYPOINT,
   AUTOMATED_CODEX_ORIGINATOR,
@@ -606,6 +607,19 @@ const EXTRA_PROJECT_FOLDERS_KEY = "grok.extraProjectFolders";
  * `globalState` rather than the shared client-state.
  */
 const REMOVED_PROJECT_FOLDERS_KEY = "grok.removedProjectFolders";
+/**
+ * Folders the one-time Projects initialization added (project-init.ts): those
+ * the person sent a message in during the 30 days before it ran. Kept apart from
+ * the hand-added list so "Rebuild Projects from recent activity" can redo exactly
+ * what the initialization did and nothing the person chose. VS Code-local like
+ * the two lists above.
+ */
+const AUTO_PROJECT_FOLDERS_KEY = "grok.autoProjectFolders";
+/** The initialization has run on this host: `{ at, added }`. */
+const PROJECTS_INIT_KEY = "grok.projectsInit";
+/** "Never for this folder" answers to the Add-to-Projects prompt:
+ *  normalized folder key -> `{ cwd, at }`. VS Code-local, like the lists. */
+const PROJECT_PROMPT_NEVER_KEY = "grok.projectPromptNever";
 /** Shared client-state key for the anonymous per-install telemetry GUID (survives
  *  updates and identifies this machine across clients).
  *
@@ -6797,6 +6811,237 @@ Only continue if you trust this code.`,
     return raw.filter((c): c is string => typeof c === "string" && !!c && path.isAbsolute(c));
   }
 
+  /** Folders the one-time initialization added — see AUTO_PROJECT_FOLDERS_KEY. */
+  private autoProjectFolders(): string[] {
+    const raw = this.state.get<string[]>(AUTO_PROJECT_FOLDERS_KEY, []);
+    if (!Array.isArray(raw)) return [];
+    return raw.filter((c): c is string => typeof c === "string" && !!c && path.isAbsolute(c));
+  }
+
+  /**
+   * The folders that are projects on a VS Code host, by the person's own acts:
+   * the folder(s) VS Code has open, folders created, cloned or added here, the
+   * ones the initialization found they sent messages in, and any folder they
+   * pinned, coloured, gave an icon or archived. Never a folder for merely being
+   * in an agent's history. Tombstones still apply, in repoCatalog. Normalized
+   * key -> cwd.
+   */
+  private chosenProjectFolders(): Map<string, string> {
+    const out = new Map<string, string>();
+    const add = (cwd: unknown) => {
+      if (typeof cwd !== "string" || !cwd || !path.isAbsolute(cwd)) return;
+      const key = normalizeRepoPath(cwd);
+      if (key && !out.has(key)) out.set(key, cwd);
+    };
+    for (const cwd of this.openWorkspaceFolders()) add(cwd);
+    for (const cwd of this.extraProjectFolders()) add(cwd);
+    for (const cwd of this.autoProjectFolders()) add(cwd);
+    const decorations: Array<Record<string, { cwd?: string } | undefined>> = [
+      this.state.get<RepoPins>(REPO_PINS_KEY, {}),
+      this.state.get<RepoColors>(REPO_COLORS_KEY, {}),
+      this.state.get<RepoIcons>(REPO_ICONS_KEY, {}),
+      this.state.get<RepoArchives>(REPO_ARCHIVES_KEY, {}),
+    ];
+    for (const record of decorations) {
+      for (const choice of Object.values(record && typeof record === "object" ? record : {})) add(choice?.cwd);
+    }
+    return out;
+  }
+
+  /** The project rows the rails draw. Desktop: the open folders, which already
+   *  are the person's choice. VS Code: the catalog rows for the folders they
+   *  chose (chosenProjectFolders), plus the one the view is working in so the
+   *  selection always names a row. The full catalog stays the authorization set
+   *  and what conversations resolve against; only the list shrinks. Every chosen
+   *  row except the open folder can be taken back out (`added`). */
+  private displayedRepoEntries(
+    entries: RepoListEntry[],
+    inUse: Array<string | undefined> = [this.selectedRepoCwd, this.sessionCwd(this.focused)],
+  ): RepoListEntry[] {
+    if (this.host.canSwitchWorkspaceFolder) return entries;
+    const chosen = this.chosenProjectFolders();
+    const open = new Set(this.openWorkspaceFolders().map((c) => normalizeRepoPath(c)));
+    const current = inUse
+      .filter((c): c is string => !!c)
+      .map((c) => normalizeRepoPath(c));
+    return entries.flatMap((entry) => {
+      const key = normalizeRepoPath(entry.cwd);
+      if (chosen.has(key)) return [open.has(key) ? entry : { ...entry, added: true }];
+      return current.includes(key) ? [entry] : [];
+    });
+  }
+
+  /** Whether `cwd` is one of the person's projects (chosenProjectFolders). */
+  private isChosenProject(cwd: string): boolean {
+    return this.chosenProjectFolders().has(normalizeRepoPath(cwd));
+  }
+
+  private projectInitRunning?: Promise<void>;
+
+  /**
+   * The one-time Projects initialization, on a VS Code host (desktop and cloud
+   * hosts list only the folders they open, which already are the person's
+   * choice). Adds the folders the person SENT a message in through this host in
+   * the last 30 days (foldersWithRecentSends), once, and records that it ran;
+   * after it nothing from an agent's history adds a project. Folders the person
+   * removed are not brought back.
+   */
+  private initializeProjects(): Promise<void> {
+    if (this.host.canSwitchWorkspaceFolder) return Promise.resolve();
+    if (this.state.get(PROJECTS_INIT_KEY)) return Promise.resolve();
+    return this.projectInitRunning ??= this.runProjectInit("initialized")
+      .then(() => undefined)
+      .finally(() => { this.projectInitRunning = undefined; });
+  }
+
+  /** Never projects: smoke and scratch runs in the temp dir, and Grok's managed
+   *  worktrees (their conversations count for the project they came from). */
+  private projectInitExcludeRoots(): string[] {
+    return [os.tmpdir(), path.join(resolveGrokHome(process.env), "worktrees")];
+  }
+
+  private async runProjectInit(verb: "initialized" | "rebuilt"): Promise<{ kept: number; added: string[] }> {
+    const now = Date.now();
+    const found = foldersWithRecentSends(this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {}), now, {
+      excludeRoots: this.projectInitExcludeRoots(),
+    });
+    const removed = this.removedProjectFolderKeys();
+    const auto = new Set(this.autoProjectFolders().map((c) => normalizeRepoPath(c)));
+    const chosen = [...this.chosenProjectFolders().keys()].filter((key) => !auto.has(key));
+    const added = found.filter((cwd) => {
+      const key = normalizeRepoPath(cwd);
+      if (removed.has(key) || chosen.includes(key)) return false;
+      try { return fs.statSync(cwd).isDirectory(); } catch { return false; }
+    });
+    await this.state.update(AUTO_PROJECT_FOLDERS_KEY, added);
+    await this.state.update(PROJECTS_INIT_KEY, { at: now, added: added.length });
+    this.host.appendLine(
+      `[projects] ${verb} from recent activity: kept ${chosen.length} chosen project(s), ` +
+      `added ${added.length} folder(s) you sent messages in during the last 30 days` +
+      (added.length ? `: ${added.map((cwd) => path.basename(cwd) || cwd).join(", ")}` : ""),
+    );
+    this.postRepoCatalog();
+    this.postSessionsList();
+    return { kept: chosen.length, added };
+  }
+
+  /**
+   * "AFK Pilot: Rebuild Projects from recent activity". Forgets what the
+   * initialization added and runs it again with the 30-day rule. It leaves alone
+   * every folder the person created, cloned or added, their pins, colours, icons
+   * and archives, their "Never for this folder" answers, and everything on disk;
+   * running it twice gives the same list. A desktop or cloud host has nothing
+   * from history to rebuild: its list is the folders it opens.
+   */
+  async rebuildProjects(): Promise<void> {
+    if (this.host.canSwitchWorkspaceFolder) {
+      const open = this.openWorkspaceFolders().length;
+      this.host.appendLine(`[projects] rebuild: this app lists only the ${open} folder(s) you opened; nothing from history to rebuild, nothing changed`);
+      void this.host.showInformationMessage("Projects here are the folders you opened, so there is nothing to rebuild.");
+      return;
+    }
+    await this.projectInitRunning;
+    await this.state.update(AUTO_PROJECT_FOLDERS_KEY, []);
+    await this.state.update(PROJECTS_INIT_KEY, undefined);
+    const { kept, added } = await this.runProjectInit("rebuilt");
+    void this.host.showInformationMessage(
+      `Projects rebuilt: kept ${kept} you chose, added ${added.length} from the last 30 days.`,
+    );
+  }
+
+  /** Conversations already asked about this run ("Not now" lasts for the
+   *  conversation), and the folders a prompt is out for. */
+  private projectPromptAsked?: Set<string>;
+  private projectPromptOpen?: Map<string, { cwd: string; sessions: Set<Session> }>;
+
+  /** The project folder a conversation belongs to: its catalog row (a worktree
+   *  conversation resolves to the project it was made from), else its cwd. */
+  private projectFolderFor(cwd: string): string {
+    return this.resolveLocalRepoTarget(cwd)?.cwd ?? cwd;
+  }
+
+  /**
+   * The first time the person sends a message in a conversation whose folder is
+   * not a project, ask once, inline: "Add <folder> to Projects?" -- on whichever
+   * views show the conversation, the phone included. VS Code hosts only (a
+   * desktop or cloud host only runs conversations in folders it opened), never
+   * for a folder answered "Never", and not at all with `grok.askToAddProjects`
+   * off.
+   */
+  private maybeAskToAddProject(session: Session): void {
+    // A question beside the send, so it must never be what breaks one.
+    try { this.askToAddProject(session); }
+    catch (error) { this.host.appendLine?.(`[projects] add-to-projects prompt skipped: ${(error as Error).message}`); }
+  }
+
+  private askToAddProject(session: Session): void {
+    if (this.host.canSwitchWorkspaceFolder) return;
+    if (this.host.getConfiguration?.("grok")?.get<boolean>("askToAddProjects", true) === false) return;
+    const id = session.activeSessionId ?? session.client?.sessionId;
+    if (!id) return;
+    const asked = this.projectPromptAsked ??= new Set();
+    if (asked.has(id)) return;
+    const name = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {})[id]?.customName ?? "";
+    if (name.trim().startsWith(ROUTINE_SESSION_TAG)) return;
+    const sessionCwd = this.sessionCwd(session);
+    if (!sessionCwd) return;
+    const cwd = this.projectFolderFor(sessionCwd);
+    const key = normalizeRepoPath(cwd);
+    asked.add(id);
+    if (this.isChosenProject(cwd)) return;
+    if (this.state.get<Record<string, unknown>>(PROJECT_PROMPT_NEVER_KEY, {})[key]) return;
+    const open = this.projectPromptOpen ??= new Map();
+    const entry = open.get(key) ?? { cwd, sessions: new Set<Session>() };
+    entry.sessions.add(session);
+    open.set(key, entry);
+    this.emit(session, { type: "projectPrompt", sessionId: id, cwd, label: path.basename(cwd) || cwd });
+  }
+
+  /** Take every open prompt for `cwd` down, on every view showing it. */
+  private settleProjectPrompt(cwd: string): void {
+    const key = normalizeRepoPath(cwd);
+    const entry = this.projectPromptOpen?.get(key);
+    if (!entry) return;
+    this.projectPromptOpen!.delete(key);
+    for (const session of entry.sessions) {
+      const id = session.activeSessionId ?? session.client?.sessionId ?? "";
+      this.emit(session, { type: "projectPrompt", sessionId: id, cwd: entry.cwd, label: path.basename(entry.cwd) || entry.cwd, done: true });
+    }
+  }
+
+  /**
+   * Add a folder to Projects from the prompt or from Recent's menu, desk or
+   * phone. Only a folder this host offered may be named: one a prompt is out
+   * for, one Recent offered, or (from the desk) a folder it already lists
+   * conversations for. It is an ordinary added project afterwards.
+   */
+  private async addToProjects(cwd: string, origin: MsgOrigin): Promise<void> {
+    if (this.host.canSwitchWorkspaceFolder || !cwd) return;
+    const key = normalizeRepoPath(cwd);
+    const offered = !!this.projectPromptOpen?.has(key) || !!this.recentAddable?.has(key);
+    if (!offered && (origin === "remote" || !this.resolveLocalRepoTarget(cwd))) {
+      this.host.appendLine(`[projects] refused add-to-projects for a folder this host did not offer`);
+      return;
+    }
+    await this.rememberExtraProjectFolder(path.resolve(cwd), { select: false });
+    this.settleProjectPrompt(cwd);
+    this.postSessionsList();
+  }
+
+  private async answerProjectPrompt(cwd: string, choice: "notNow" | "never"): Promise<void> {
+    const key = normalizeRepoPath(cwd || "");
+    const entry = this.projectPromptOpen?.get(key);
+    if (!entry) return;
+    if (choice === "never") {
+      const never = this.state.get<Record<string, { cwd: string; at: number }>>(PROJECT_PROMPT_NEVER_KEY, {});
+      await this.state.update(PROJECT_PROMPT_NEVER_KEY, { ...never, [key]: { cwd: entry.cwd, at: Date.now() } });
+    }
+    this.settleProjectPrompt(entry.cwd);
+  }
+
+  /** Folders the last Recent offered to add (buildRecentSessions). */
+  private recentAddable?: Set<string>;
+
   /** Normalised keys of folders the user removed — see REMOVED_PROJECT_FOLDERS_KEY. */
   private removedProjectFolderKeys(): Set<string> {
     const raw = this.state.get<string[]>(REMOVED_PROJECT_FOLDERS_KEY, []);
@@ -6855,7 +7100,10 @@ Only continue if you trust this code.`,
       // Hand-added folders join them: on VS Code that is the only thing keeping
       // a never-used project in the rail, since it has no session history to be
       // discovered from.
-      trustedCwds: [...this.openWorkspaceFolders(), ...this.extraProjectFolders()],
+      // Folders the person chose by other means join them: the initialization's
+      // folders, and any folder they pinned, coloured, marked or archived --
+      // those are rows even when no Grok session ever ran there.
+      trustedCwds: [...this.openWorkspaceFolders(), ...this.extraProjectFolders(), ...this.chosenProjectFolders().values()],
       worktreeLabels,
       log: (m) => this.host.appendLine(m),
     });
@@ -7053,10 +7301,11 @@ Only continue if you trust this code.`,
     // Both local and remote attached clients see the host's catalog: curated
     // open folders on desktop, full discovery on VS Code. Archive fields only
     // when canArchiveRepos (already applied inside localRepoCatalogEntries).
-    const localEntries = this.localRepoCatalogEntries().map((entry) => ({
+    const catalogEntries = this.localRepoCatalogEntries().map((entry) => ({
       ...entry,
       defaultProvider: this.defaultProviderForProject(entry.cwd),
     }));
+    const localEntries = this.displayedRepoEntries(catalogEntries);
     const activeCwd = this.sessionCwd(this.focused);
     const selectedKey = normalizeRepoPath(this.selectedHistoryCwd());
     const selected = localEntries.find((r) => normalizeRepoPath(r.cwd) === selectedKey);
@@ -7106,7 +7355,7 @@ Only continue if you trust this code.`,
       workspaceCwd: this.workspaceRoot() || "",
     });
     for (const clientId of this.remoteClients.clients()) {
-      this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, localEntries));
+      this.sendRemoteClient(clientId, this.buildRemoteReposMsg(clientId, catalogEntries));
     }
   }
 
@@ -7117,7 +7366,7 @@ Only continue if you trust this code.`,
    */
   private buildRemoteReposMsg(
     clientId: string,
-    entries: RepoListEntry[] = this.localRepoCatalogEntries().map((entry) => ({
+    catalog: RepoListEntry[] = this.localRepoCatalogEntries().map((entry) => ({
       ...entry,
       defaultProvider: this.defaultProviderForProject(entry.cwd),
     })),
@@ -7131,6 +7380,9 @@ Only continue if you trust this code.`,
       const sc = this.sessionCwd(active);
       if (authorizedListCwd(sc, authorized, pathsEqual)) activeCwd = sc;
     }
+    // The tab's own list: the person's projects plus whatever folder THIS tab is
+    // in (displayedRepoEntries), so its selection names a row too.
+    const entries = this.displayedRepoEntries(catalog, [selectedCwd, activeCwd]);
     // Per-tab fields and rows must still exclude projects actually removed.
     const reachable = entries.filter((r) => cwdIsAuthorized(r.cwd, authorized, pathsEqual));
     return {
@@ -8045,7 +8297,8 @@ Only continue if you trust this code.`,
    * — so the rail lands on the project you just added, expanded and ready, while
    * VS Code itself has not moved.
    */
-  private async rememberExtraProjectFolder(resolved: string): Promise<void> {
+  private async rememberExtraProjectFolder(resolved: string, opts: { select?: boolean } = {}): Promise<void> {
+    const select = opts.select !== false;
     let ok = false;
     try {
       ok = fs.statSync(resolved).isDirectory();
@@ -8064,11 +8317,14 @@ Only continue if you trust this code.`,
     // cannot be revoked at all (`localTrustedSessionCwds` adds `workspaceRoot()`
     // unconditionally, and every remote gate reads that set) — the row would
     // vanish while the phone carried on reading and writing it. Just go there.
+    // A folder Grok has merely run in is not a project any more (it is in the
+    // catalog, not the list), so "already listed" means already CHOSEN.
     const alreadyListed =
-      !!this.resolveLocalRepoTarget(resolved) ||
+      this.isChosenProject(resolved) ||
       pathsEqual(resolved, this.workspaceRoot() || "");
     if (alreadyListed) {
-      await this.selectRepo(resolved);
+      if (select) await this.selectRepo(resolved);
+      else this.postRepoCatalog();
       return;
     }
     // Adding a folder is the undo for having removed it. Without this the
@@ -8087,7 +8343,8 @@ Only continue if you trust this code.`,
     }
     // Already in the catalog by other means (open folder, or Grok has run there)
     // is not a failure — the user still gets taken to it.
-    await this.selectRepo(resolved);
+    if (select) await this.selectRepo(resolved);
+    else this.postRepoCatalog();
   }
 
   /**
@@ -8131,10 +8388,15 @@ Only continue if you trust this code.`,
       return;
     }
     const key = normalizeRepoPath(cwd);
+    // Any chosen row can be taken back out, not only a hand-added one: the
+    // initialization's folders and the decorated ones are projects too now.
+    if (!this.isChosenProject(cwd)) return;
     const stored = this.extraProjectFolders();
     const next = stored.filter((c) => normalizeRepoPath(c) !== key);
-    if (next.length === stored.length) return;
-    await this.state.update(EXTRA_PROJECT_FOLDERS_KEY, next);
+    if (next.length !== stored.length) await this.state.update(EXTRA_PROJECT_FOLDERS_KEY, next);
+    const auto = this.autoProjectFolders();
+    const nextAuto = auto.filter((c) => normalizeRepoPath(c) !== key);
+    if (nextAuto.length !== auto.length) await this.state.update(AUTO_PROJECT_FOLDERS_KEY, nextAuto);
     // …and the PIN, or this removes nothing.
     //
     // `discoverRepos` keeps a pinned cwd in the catalog on its own — "a pin is
@@ -8827,6 +9089,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       if (entries.length >= GrokSidebar.RECENT_LIMIT) break;
       if (!this.isAutomatedSession(entry, now)) entries.push(entry);
     }
+    // A conversation in a folder that is not a project offers to add it
+    // (Recent's "Add to Projects"). VS Code only: elsewhere every folder a
+    // conversation can run in is already one.
+    const addable = new Set<string>();
+    if (this.host && !this.host.canSwitchWorkspaceFolder) {
+      const chosen = this.chosenProjectFolders();
+      const rows = this.localRepoCatalogEntries();
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        const meta = overrides[entry.id];
+        const home = meta?.worktreePath && meta.sourceGitRoot ? meta.sourceGitRoot : entry.cwd;
+        const row = rows.find((r) => pathsEqual(r.cwd, home));
+        if (!row || chosen.has(normalizeRepoPath(row.cwd))) continue;
+        addable.add(normalizeRepoPath(row.cwd));
+        entries[i] = { ...entry, addableCwd: row.cwd };
+      }
+    }
+    this.recentAddable = addable;
     const dots: Record<string, Dot> = {};
     for (const entry of entries) dots[entry.id] = this.dotForId(entry.id);
     return { entries, dots };
@@ -12716,6 +12996,12 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         break;
       case "addProjectFolder":
         await this.addProjectFolder();
+        break;
+      case "addToProjects":
+        await this.addToProjects(msg.cwd, origin);
+        break;
+      case "answerProjectPrompt":
+        await this.answerProjectPrompt(msg.cwd, msg.choice === "never" ? "never" : "notNow");
         break;
       case "removeProjectFolder":
         // NO LONGER always local: CLOUD_DISPOSITION admits this from a remote on
@@ -18195,6 +18481,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // The send IS the activity — the rail should not wait ~2s for the CLI to
     // write a transcript before admitting you are working in this conversation.
     this.noteSessionActivity(session, true);
+    this.maybeAskToAddProject(session);
 
     try {
       session.adapterCompactThisTurn = false;
@@ -18624,6 +18911,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   }
 
   private postInitialState(): void {
+    // Once per host, and a no-op on every later boot (PROJECTS_INIT_KEY).
+    void this.initializeProjects();
     // `ready` means the local renderer just booted (including Electron
     // document reload, which does not re-enter resolveWebviewView). Drop the
     // cache so postVoiceConfigured below is not swallowed against the old view.
@@ -18860,6 +19149,8 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   /** Webview→host actions the rail may post. Closed set — never send/cancel/etc. */
   private static readonly PROJECTS_RAIL_WEBVIEW_TYPES = new Set<WebviewMsg["type"]>([
     "createProject",
+    // Recent's "Add to Projects".
+    "addToProjects",
     "cloneProject",
     "setupGithubCli",
     "refreshProviders",

@@ -343,7 +343,11 @@ export function parseWebviewMsg(raw: unknown): WebviewMsg | null {
       if (!opt(raw.cwd, isString)) return null;
       break;
     case "selectRepo":
+    case "addToProjects":
       if (!isString(raw.cwd)) return null;
+      break;
+    case "answerProjectPrompt":
+      if (!isString(raw.cwd) || (raw.choice !== "notNow" && raw.choice !== "never")) return null;
       break;
     case "toggleRepoPin":
       if (!isString(raw.cwd) || !isBoolean(raw.pinned)) return null;

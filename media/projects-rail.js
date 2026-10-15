@@ -36,6 +36,8 @@
   // Cross-project RECENT is a shorter shortcut list than RAIL_EXPANDED.
   // Keep in lockstep with RAIL_RECENT_CAP in src/projects-rail.ts.
   const RECENT_CAP = 10;
+  /** Projects are folders you chose, so an empty list says how they get there. */
+  const NO_PROJECTS = "Your projects appear here. Open a folder, create one, or add one from Recent.";
   const RAIL_RECENT_KEY = "__recent__";
   // The same age rule the desktop/browser rail applies (media/chat.js). Without
   // it VS Code showed every project Grok has ever run in, forever — which for
@@ -1038,7 +1040,10 @@
     // section had already set `shown`. The archive is a grouping, not a
     // different screen, so Projects stays with an empty state of its own.
     const emptyProjects = !projectRepos.length && !q && archived.length > 0;
-    if (projectRepos.length || emptyProjects) {
+    // No project at all yet while Recent or Pinned are showing: Projects still
+    // says where they come from. (With nothing showing, the note below does.)
+    const noProjects = !projectRepos.length && !archived.length && !q && shown;
+    if (projectRepos.length || emptyProjects || noProjects) {
       const forcedOpen = !!q;
       const open = forcedOpen || !state.groupCollapsed.projects;
       root.appendChild(collapsibleGroupHead({
@@ -1065,6 +1070,12 @@
           const note = document.createElement("div");
           note.className = "rail-note";
           note.textContent = "Every project is archived.";
+          root.appendChild(note);
+        }
+        if (noProjects) {
+          const note = document.createElement("div");
+          note.className = "rail-note";
+          note.textContent = NO_PROJECTS;
           root.appendChild(note);
         }
         // A full-width target under the list, not only the small "+" beside the
@@ -1104,7 +1115,7 @@
     if (!shown) {
       const note = document.createElement("div");
       note.className = "rail-note";
-      note.textContent = q ? "No matches." : "No projects yet";
+      note.textContent = q ? "No matches." : NO_PROJECTS;
       // An empty rail that only says "No projects yet" is a dead end on the one
       // screen where the user has nothing else to click — and with no group
       // heads rendered, the "+" above has nowhere to be.
@@ -1890,6 +1901,12 @@
           label: "Continue on phone…",
           onSelect: () => vscode.postMessage({ type: "showRemoteHandoff", source: "projects", sessionId: s.id, repoCwd: repo.cwd }),
         },
+        // A Recent conversation in a folder that is not one of your projects;
+        // the host names the folder only where it can add it.
+        ...(s.addableCwd ? [{
+          label: "Add to Projects",
+          onSelect: () => vscode.postMessage({ type: "addToProjects", cwd: s.addableCwd }),
+        }] : []),
         {
           label: isPinned ? "Unpin conversation" : "Pin conversation",
           disabled: !state.pinnedKnown,

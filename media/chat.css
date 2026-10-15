@@ -4341,6 +4341,36 @@ textarea#input {
   font-size: 12px;
   font-weight: 500;
 }
+/* "Add <folder> to Projects?" above the message box (renderProjectPrompt). */
+.project-prompt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0 0 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--vscode-editorWidget-border);
+  border-radius: 6px;
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+}
+.project-prompt-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.project-prompt-btn {
+  border: 0;
+  border-radius: 4px;
+  padding: 2px 6px;
+  background: transparent;
+  color: var(--vscode-textLink-foreground);
+  font: inherit;
+  cursor: pointer;
+}
+.project-prompt-btn:hover { background: var(--vscode-toolbar-hoverBackground); }
+.project-prompt-btn.primary {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+.project-prompt-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
 /* No catalog yet for this conversation (modelChipLoading): a closed door,
    not a button -- no hover fill and no pointer. */
 #gear-btn.model-chip.model-chip-loading { cursor: default; opacity: .65; }

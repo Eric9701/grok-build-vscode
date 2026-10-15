@@ -1045,6 +1045,10 @@ export type HostMsg =
    *  for a load another view started (the row says "opening…"). `failed`: the
    *  open ended without this conversation. An older renderer ignores it. */
   | { type: "sessionOpening"; sessionId: string; queued?: boolean; failed?: boolean }
+  /** "Add <label> to Projects?" -- the first send in conversation `sessionId`
+   *  whose folder `cwd` is not a project (VS Code hosts). `done` takes it down,
+   *  on every view, once anyone answered. An older renderer ignores it. */
+  | { type: "projectPrompt"; sessionId: string; cwd: string; label: string; done?: boolean }
   // A preview page for ONE repo, answering `listRepoSessions`. Deliberately a
   // separate frame from `sessions`: that one is the focused history list and
   // owns paging/search/auto-open state, so a sibling repo's rows arriving on it
@@ -1176,6 +1180,12 @@ export type WebviewMsg =
   | { type: "exportExpr"; action: string; kind: string; current?: string; svg?: string; png?: string; svgDark?: string; svgLight?: string }
   | { type: "setEffort"; level: string }
   | { type: "addProjectFolder" }
+  /** Add a folder this host offered (the Add-to-Projects prompt, Recent's
+   *  "Add to Projects") to the host's project list, from any view. */
+  | { type: "addToProjects"; cwd: string }
+  /** The other two answers to the prompt: "Not now" (this conversation) and
+   *  "Never for this folder" (remembered by the host). */
+  | { type: "answerProjectPrompt"; cwd: string; choice: "notNow" | "never" }
   /** Close one project folder. It leaves the rail; nothing leaves the disk. */
   | { type: "removeProjectFolder"; cwd?: string }
   | { type: "openGlobalConfig" }
@@ -1618,7 +1628,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   xaiNotification: true, subagentUpdate: true, childStream: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true, promptNav: true, pinLiveWorkflows: true, expandDiffCard: true,
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, imageOriginal: true, moveComposerCaret: true, remoteStatus: true, showRemoteHandoff: true, remoteHandoff: true, hostReachable: true, hostLink: true,
   setAllToolDetails: true, focusInput: true, findInSession: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true, uiConfirmResolved: true,
-  sessions: true, sessionRemoved: true, sessionOpening: true, repoSessions: true, pinnedSessions: true, recentSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
+  sessions: true, sessionRemoved: true, sessionOpening: true, projectPrompt: true, repoSessions: true, pinnedSessions: true, recentSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
   steerUnavailable: true, feedbackAvailability: true, turnFeedbackAck: true, usage: true,
 };
 
@@ -1627,7 +1637,7 @@ const WEBVIEW_MESSAGE_TYPE_MAP: Record<WebviewMsg["type"], true> = {
   setContextWindow: true, ready: true, remotePreferences: true, send: true, newSession: true, cancel: true, pickModel: true,
   setMode: true, removeChip: true, toggleChip: true, openFile: true, showInFolder: true, openUrl: true,
   openText: true, openDiff: true, exportExpr: true, setEffort: true, openGlobalConfig: true, openProviderConfig: true,
-  addProjectFolder: true, removeProjectFolder: true, createProject: true, cloneProject: true, setupGithubCli: true, listGithubRepos: true, githubSignOut: true, githubLoginWithToken: true,
+  addProjectFolder: true, addToProjects: true, answerProjectPrompt: true, removeProjectFolder: true, createProject: true, cloneProject: true, setupGithubCli: true, listGithubRepos: true, githubSignOut: true, githubLoginWithToken: true,
   openProjectConfig: true, listMcpServers: true, connectMcpConnector: true, disconnectMcpConnector: true,
   listRoutines: true, saveRoutine: true, deleteRoutine: true, setRoutinePaused: true, runRoutineNow: true, showLogs: true, toggleDevTools: true, openSettings: true, openSettingsSurface: true, closeSettingsSurface: true, dismissWelcomeTip: true, welcomeTipShown: true, moveView: true,
   setShowThinking: true, setAppPurpose: true, setExpandCommandOutputs: true, setSteerByDefault: true, setPromptNav: true, setPinLiveWorkflows: true, setExpandDiffCard: true,

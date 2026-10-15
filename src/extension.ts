@@ -277,6 +277,7 @@ export function activate(context: vscode.ExtensionContext): GrokExtensionApi {
       sidebar.insertActiveMention(),
     ),
     vscode.commands.registerCommand("grok.showLogs", () => output.show()),
+    vscode.commands.registerCommand("grok.rebuildProjects", () => sidebar.rebuildProjects()),
     vscode.commands.registerCommand("grok.settings", () => sidebar.openSettingsEditor()),
     vscode.commands.registerCommand("grok.expandAllToolDetails", () => sidebar.setAllToolDetails(true)),
     vscode.commands.registerCommand("grok.collapseAllToolDetails", () => sidebar.setAllToolDetails(false)),

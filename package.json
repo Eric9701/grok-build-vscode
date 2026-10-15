@@ -185,6 +185,11 @@
         "category": "AFK Pilot"
       },
       {
+        "command": "grok.rebuildProjects",
+        "title": "Rebuild Projects from recent activity",
+        "category": "AFK Pilot"
+      },
+      {
         "command": "grok.showLogs",
         "title": "Show Logs",
 
@@ -366,6 +371,11 @@
           "type": "string",
           "default": "",
           "description": "Path to the Anthropic Claude Code CLI (`claude`). Empty = auto-discover on PATH, then well-known user-bin locations. Authentication stays in Anthropic's own CLI."
+        },
+        "grok.askToAddProjects": {
+          "type": "boolean",
+          "default": true,
+          "description": "The first time you send a message in a conversation whose folder is not one of your projects, offer to add it to Projects. Turn off to stop asking; \"Never for this folder\" stops it for one folder."
         },
         "grok.experimentalAntigravity": {
           "type": "boolean",

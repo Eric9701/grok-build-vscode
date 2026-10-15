@@ -233,6 +233,12 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
   // remote can say what, never where.
   createProject: "full",
   cloneProject: "full",
+  // Add a folder to the host's project list, or answer the prompt that offers
+  // it. Only a folder the host itself offered is accepted (sidebar
+  // addToProjects), it touches no disk, and on VS Code that folder is already in
+  // the catalog a remote may reach -- the list only gains a row.
+  addToProjects: "full",
+  answerProjectPrompt: "full",
   // The follow-up when a clone failed on credentials. A remote `auth` runs
   // the same headless device-code flow as `runGrokLogin` and reports the
   // URL and code in the clone form — the person asking is the only one who
@@ -578,6 +584,8 @@ export const INBOUND_DISPOSITION: Record<WebviewMsg["type"], InboundDisposition>
  */
 export const REMOTE_REQUIRES_BOUND_SESSION: Record<WebviewMsg["type"], boolean> = {
   ready: false,
+  addToProjects: false,
+  answerProjectPrompt: false,
   remotePreferences: false,
   listSessions: false,
   listRepoSessions: false,
@@ -813,6 +821,8 @@ export function allowFromRemote(
 export function allowRemoteRepoTarget(msg: WebviewMsg, isKnownCwd: (cwd: string) => boolean): boolean {
   switch (msg.type) {
     case "selectRepo":
+    case "addToProjects":
+    case "answerProjectPrompt":
     case "toggleRepoPin":
     case "setRepoArchived":
     case "setRepoColor":
@@ -1120,6 +1130,9 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   sessions: "mirror",
   // Sent only to the tab that tapped: an id it named itself, and no project data.
   sessionOpening: "mirror",
+  // Asked of whoever is in the conversation, phone included: the answer
+  // writes the host's list.
+  projectPrompt: "mirror",
   repoSessions: "mirror",
   pinnedSessions: "mirror",
   recentSessions: "mirror",
@@ -1232,6 +1245,9 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   pinnedSessions: "entries",
   recentSessions: "entries",
   sessionOpening: "none",
+  // Names the conversation's own project folder; delivered through emit with
+  // that conversation's scope.
+  projectPrompt: "scope",
   repoSessions: "message-cwd",
   sessionName: "message-cwd",
   composerDraftSession: "scope",

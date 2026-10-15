@@ -71,7 +71,7 @@
     "cloudHostUpdateState",
     "providerConfigContent", "providerConfigWriteResult",
     "initialState", "moveViewHint", "welcomeTips", "projectSetup", "githubState", "githubRepos", "providerState", "mcpServers", "mcpConnectors", "mcpConnectorAuthorization", "routines", "codexInstallProgress", "agyInstallProgress", "planModeAvailability", "showThinking", "appPurpose", "fontScale", "grokUpdateStatus", "updateAvailable", "updateReady", "telemetryEnabled", "thumbsFeedback", "initialized",
-    "cliUpdating", "startupStatus", "session", "sessionName", "composerDraftSession", "sessionRemoved", "sessionOpening", "recentSessions", "contextWindowSelection", "modelChanged", "modeChanged", "openModePopover",
+    "cliUpdating", "startupStatus", "session", "sessionName", "composerDraftSession", "sessionRemoved", "sessionOpening", "recentSessions", "projectPrompt", "contextWindowSelection", "modelChanged", "modeChanged", "openModePopover",
     "voiceState", "voiceConfigured", "voicePartial", "voiceSubmit", "voiceTranscript",
     "voiceError", "chips", "commandsUpdate", "mentionResults", "projectDirListing", "projectFileContent", "projectFileWriteResult", "gitStatusResult", "gitFileDiffResult", "turnFileDiffResult", "turnDiffBaseline", "gitRunResult", "userMessage", "agentStart", "thoughtChunk",
     "messageChunk", "media", "userMessageChunk", "historyReplay", "historyBatch", "permissionHistoryQueue",
@@ -85,6 +85,7 @@
   ];
   const WEBVIEW_MESSAGE_TYPES = [
     "setMuseSetting",
+    "addToProjects", "answerProjectPrompt",
     "cloudHostUpdate",
     "readProviderConfig", "writeProviderConfig", "restartProviderSession", "openProviderConfig",
     "ready", "remotePreferences", "send", "newSession", "cancel", "pickModel", "setMode", "removeChip",

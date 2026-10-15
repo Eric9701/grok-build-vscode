@@ -6318,6 +6318,8 @@
   // cold session/load over a slow link and short enough that a dropped request
   // is still visibly "nothing happened" rather than a stuck selection.
   const RAIL_TRANSITION_TIMEOUT_MS = 10000;
+  /** Projects are folders you chose, so an empty list says how they get there. */
+  const RAIL_NO_PROJECTS = "Your projects appear here. Open a folder, create one, or add one from Recent.";
   // Once the host has said it is opening the click (`sessionOpening`), the
   // silence that timer guards against is ruled out: the host ends the open with
   // the conversation or with `failed`. A cold load can take a minute (and a
@@ -7198,6 +7200,59 @@
     }
   }
 
+  // ---------- "Add <folder> to Projects?" ----------
+  // The host asks once, the first time you send in a conversation whose folder
+  // is not one of your projects (projectPrompt). A strip above the message box,
+  // not a dialog: the message is already on its way, and the question can wait
+  // for whenever you look at it. Whoever answers -- desk or phone -- writes the
+  // host's list, and the host takes the strip down everywhere (`done`).
+  let projectPromptFor = null;
+  // The conversation on screen, from its `session` frame: a prompt about any
+  // other one is not for this view.
+  let projectPromptView = "";
+  function removeProjectPrompt() {
+    const strip = document.querySelector(".project-prompt");
+    if (strip) strip.remove();
+    projectPromptFor = null;
+  }
+  function renderProjectPrompt(msg) {
+    removeProjectPrompt();
+    const composer = document.querySelector("footer.composer");
+    if (!composer || !msg.cwd) return;
+    const strip = document.createElement("div");
+    strip.className = "project-prompt";
+    strip.setAttribute("role", "group");
+    strip.setAttribute("aria-label", "Add this folder to Projects");
+    strip.title = msg.cwd;
+    const text = document.createElement("span");
+    text.className = "project-prompt-text";
+    text.textContent = `Add ${msg.label || cwdLeaf(msg.cwd)} to Projects?`;
+    strip.appendChild(text);
+    const answer = (label, primary, message) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "project-prompt-btn" + (primary ? " primary" : "");
+      btn.textContent = label;
+      btn.onclick = () => { removeProjectPrompt(); vscode.postMessage(message); };
+      strip.appendChild(btn);
+    };
+    answer("Add", true, { type: "addToProjects", cwd: msg.cwd });
+    answer("Not now", false, { type: "answerProjectPrompt", cwd: msg.cwd, choice: "notNow" });
+    answer("Never for this folder", false, { type: "answerProjectPrompt", cwd: msg.cwd, choice: "never" });
+    composer.insertBefore(strip, composer.querySelector(".composer-card"));
+    projectPromptFor = { sessionId: msg.sessionId || "", cwd: msg.cwd };
+  }
+  function noteProjectPrompt(msg) {
+    if (msg.done) {
+      if (projectPromptFor && sameCwd(projectPromptFor.cwd, msg.cwd)) removeProjectPrompt();
+      return;
+    }
+    // Asked about another conversation than the one on screen: not ours.
+    const onScreen = state.activeSessionId || projectPromptView;
+    if (msg.sessionId && onScreen && msg.sessionId !== onScreen) return;
+    renderProjectPrompt(msg);
+  }
+
   /** The host has the click on `msg.sessionId` (see RAIL_TRANSITION_ACKED_TIMEOUT_MS).
    *  The highlight stays on it until the host confirms or reports `failed`,
    *  rather than snapping back after ten seconds of a slow load. */
@@ -7780,8 +7835,11 @@
     // user most needs the rail, because it is where the only useful control
     // lives. Hiding it made the empty-state action unreachable and left the
     // File menu — which the desktop hides — as the sole route in.
+    // Projects are folders you chose now, so a host can have none while Recent
+    // holds conversations you sent in -- that is still a rail worth showing.
     const on = railChromeBeforeCatalog() ||
-      (railAvailable() && (state.repos.length > 0 || canAddProjectFolder()));
+      (railAvailable() && (state.repos.length > 0 || canAddProjectFolder()
+        || (Array.isArray(state.recentSessions) && state.recentSessions.length > 0)));
     const panel = railPanel();
     if (panel) panel.hidden = !on;
     root.hidden = !on;
@@ -7880,7 +7938,10 @@
     // a rail with nothing to press -- and `!shownAnything` could not rescue it,
     // because the archive section below had already set it.
     const emptyProjects = !repos.length && !q && archivedRepos.length > 0;
-    if (repos.length || emptyProjects) {
+    // No project at all yet while Recent or Pinned are showing: Projects still
+    // says where they come from. (With nothing showing, the note below does.)
+    const noProjects = !repos.length && !archivedRepos.length && !q && state.reposKnown && shownAnything;
+    if (repos.length || emptyProjects || noProjects) {
       const forcedOpen = !!q;
       const open = forcedOpen || !railGroupIsCollapsed("projects");
       root.appendChild(railCollapsibleGroupHead({
@@ -7899,6 +7960,7 @@
         for (const repo of repos) list.appendChild(renderRailRepo(repo, false));
         root.appendChild(list);
         if (emptyProjects) root.appendChild(railNote("Every project is archived."));
+        if (noProjects) root.appendChild(railNote(RAIL_NO_PROJECTS));
         // Full-width target under the list, not only the small "+" in the group
         // head. With one project or none the rail is mostly empty space and the
         // header glyph is easy to miss — and on a phone, easy to miss AND hard
@@ -7937,11 +7999,11 @@
       } else if (!q && canAddProjectFolder()) {
         // An empty rail that only says "No projects yet" is a dead end on the
         // one screen where the user has nothing else to click.
-        const empty = railNote("No projects yet");
+        const empty = railNote(RAIL_NO_PROJECTS);
         empty.appendChild(railAddProjectWide());
         root.appendChild(empty);
       } else {
-        root.appendChild(railNote(q ? "No matches." : "No projects yet"));
+        root.appendChild(railNote(q ? "No matches." : RAIL_NO_PROJECTS));
       }
     }
 
@@ -9484,6 +9546,13 @@
     if (!active && !IS_REMOTE) items.push({
       label: "Continue on phone…", icon: ICON.smartphone,
       onSelect: () => openRemoteHandoff("rail", s.id, repo.cwd),
+    });
+    // A Recent conversation in a folder that is not one of your projects. The
+    // host names the folder (`addableCwd`) only where it can add it.
+    if (s.addableCwd) items.push({
+      label: "Add to Projects",
+      icon: ICON.folder,
+      onSelect: () => vscode.postMessage({ type: "addToProjects", cwd: s.addableCwd }),
     });
     // Capability, never a version: a host that has never sent `pinnedSessions`
     // will silently drop `toggleSessionPin`, so offering the control there gives
@@ -20843,6 +20912,9 @@
         break;
       }
       case "session": {
+        // The question was about the conversation that was on screen.
+        if (projectPromptFor && projectPromptFor.sessionId && msg.sessionId !== projectPromptFor.sessionId) removeProjectPrompt();
+        projectPromptView = msg.sessionId || "";
         if (state.contextSelectionSessionId !== msg.sessionId) state.contextWindowSelection = undefined;
         state.contextSelectionSessionId = msg.sessionId;
 
@@ -21933,6 +22005,7 @@
         addSessionContextBanner();
         break;
       case "clearMessages":
+        removeProjectPrompt();
         for (const el of document.querySelectorAll(".confirm-overlay[data-confirm-req-id]")) {
           el._resolveConfirm();
         }
@@ -22085,6 +22158,9 @@
         break;
       case "sessionOpening":
         noteSessionOpening(msg);
+        break;
+      case "projectPrompt":
+        noteProjectPrompt(msg);
         break;
       case "sessionRemoved": {
         if (!msg.id) break;
