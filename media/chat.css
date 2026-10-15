@@ -930,6 +930,14 @@ body.desk:not(.desk-with-ft) .rail-action-btn { width: 24px; height: 24px; }
 }
 .rail-session-branch { display: inline-flex; flex: 0 0 auto; color: var(--vscode-descriptionForeground); }
 .rail-session-branch svg { width: 12px; height: 12px; }
+/* A click waiting for a load another view started (sessionOpening). */
+.rail-session-opening {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  font-style: italic;
+  white-space: nowrap;
+}
 .rail-pinned { margin-bottom: 2px; }
 .rail-session-repo {
   flex: 0 0 auto;

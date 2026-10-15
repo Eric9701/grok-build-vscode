@@ -1730,9 +1730,37 @@
         pendingResume = null;
         state.activeSessionId = previous;
         render();
-      }, 8000),
+      }, Number(window.__grokRailResumeTimeoutMs) > 0 ? Number(window.__grokRailResumeTimeoutMs) : 8000),
     };
     render();
+  }
+
+  /**
+   * The host has the click (`sessionOpening`): it ends the open with the
+   * conversation or with `failed`, so the 8s give-up stands down -- a cold load
+   * can take a minute, and a click can wait behind another view's load. A
+   * long timer remains for a host that dies mid-open.
+   */
+  function noteSessionOpening(msg) {
+    if (!pendingResume || !msg || pendingResume.id !== msg.sessionId) return;
+    const pending = pendingResume;
+    clearTimeout(pending.timer);
+    if (msg.failed) {
+      pendingResume = null;
+      state.activeSessionId = pending.previous;
+      render();
+      return;
+    }
+    pending.timer = setTimeout(() => {
+      if (pendingResume !== pending) return;
+      pendingResume = null;
+      state.activeSessionId = pending.previous;
+      render();
+    }, 10 * 60_000);
+    if (msg.queued && !pending.queued) {
+      pending.queued = true;
+      render();
+    }
   }
 
   /** Whether a host-sent active id may be written to state. */
@@ -1790,6 +1818,14 @@
     label.className = "rail-session-name";
     label.textContent = sessionRowName(s);
     row.appendChild(label);
+    // The click is waiting for a load another view started (sessionOpening).
+    if (active && pendingResume && pendingResume.queued && pendingResume.id === s.id) {
+      row.classList.add("opening");
+      const note = document.createElement("span");
+      note.className = "rail-session-opening";
+      note.textContent = "opening…";
+      row.appendChild(note);
+    }
 
     if (opts && opts.showRepo) {
       const where = document.createElement("span");
@@ -1902,6 +1938,9 @@
   function onMessage(msg) {
     if (!msg || typeof msg !== "object") return;
     switch (msg.type) {
+      case "sessionOpening":
+        noteSessionOpening(msg);
+        break;
       case "providerState":
         state.museAdvertised = Array.isArray(msg.providers) && msg.providers.some(p => p && p.id === "muse");
         state.agyAdvertised = Array.isArray(msg.providers) && msg.providers.some(p => p && p.id === "agy");

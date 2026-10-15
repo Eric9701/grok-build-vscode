@@ -1255,3 +1255,43 @@ describe("VS Code projects rail renderer", () => {
     });
   });
 });
+
+// The Projects view gives up on an unanswered click after 8s. A click the host
+// has acknowledged (`sessionOpening`) keeps its highlight until the host
+// confirms it or says it failed, and says "opening…" while it waits behind a load
+// another view started.
+describe("a click the host is opening", () => {
+  const later = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  function clickAlphaTwo() {
+    const booted = bootRail();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (booted.window as any).__grokRailResumeTimeoutMs = 5;
+    const api = railApi(booted.window);
+    loadCatalog(api);
+    loadSessions(api, [row("a1", "/work/alpha", "alpha one", 9), row("a2", "/work/alpha", "alpha two", 8)], "a1");
+    (booted.doc.querySelector('.rail-session[data-session-id="a2"]') as HTMLElement).click();
+    return { ...booted, api };
+  }
+  const active = (doc: Document) => doc.querySelector(".rail-session.active")?.getAttribute("data-session-id");
+
+  it("keeps the highlight while the host opens it, and shows opening while queued", async () => {
+    const { doc, api, posted } = clickAlphaTwo();
+    expect(posted).toContainEqual({ type: "resumeSession", id: "a2", cwd: "/work/alpha", claim: true });
+    api.onMessage({ type: "sessionOpening", sessionId: "a2", queued: true });
+    await later(30);
+    expect(active(doc)).toBe("a2");
+    expect(doc.querySelector(".rail-session.active .rail-session-opening")?.textContent).toBe("opening\u2026");
+    loadSessions(api, [row("a1", "/work/alpha", "alpha one", 9), row("a2", "/work/alpha", "alpha two", 8)], "a2");
+    expect(active(doc)).toBe("a2");
+    expect(doc.querySelector(".rail-session-opening")).toBeNull();
+  });
+
+  it("goes back to the previous conversation on failed, and on silence", async () => {
+    const failed = clickAlphaTwo();
+    failed.api.onMessage({ type: "sessionOpening", sessionId: "a2", failed: true });
+    expect(active(failed.doc)).toBe("a1");
+    const silent = clickAlphaTwo();
+    await later(30);
+    expect(active(silent.doc)).toBe("a1");
+  });
+});

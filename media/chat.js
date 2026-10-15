@@ -6271,6 +6271,12 @@
   // cold session/load over a slow link and short enough that a dropped request
   // is still visibly "nothing happened" rather than a stuck selection.
   const RAIL_TRANSITION_TIMEOUT_MS = 10000;
+  // Once the host has said it is opening the click (`sessionOpening`), the
+  // silence that timer guards against is ruled out: the host ends the open with
+  // the conversation or with `failed`. A cold load can take a minute (and a
+  // click can wait behind another view's load), so this only backs up a host
+  // that dies mid-open.
+  const RAIL_TRANSITION_ACKED_TIMEOUT_MS = 10 * 60_000;
 
   let railEl = null;
   let railResolved = false;
@@ -7142,6 +7148,25 @@
     if (railTransitionTimer) {
       clearTimeout(railTransitionTimer);
       railTransitionTimer = null;
+    }
+  }
+
+  /** The host has the click on `msg.sessionId` (see RAIL_TRANSITION_ACKED_TIMEOUT_MS).
+   *  The highlight stays on it until the host confirms or reports `failed`,
+   *  rather than snapping back after ten seconds of a slow load. */
+  function noteSessionOpening(msg) {
+    const t = state.railTransition;
+    if (!t || t.kind !== "resume" || !msg || t.sessionId !== msg.sessionId) return;
+    if (msg.failed) { abortRailTransition(); return; }
+    clearRailTransitionTimer();
+    const token = t.token;
+    railTransitionTimer = setTimeout(() => {
+      railTransitionTimer = null;
+      if (state.railTransition && state.railTransition.token === token) abortRailTransition();
+    }, RAIL_TRANSITION_ACKED_TIMEOUT_MS);
+    if (msg.queued && !t.queued) {
+      t.queued = true;
+      renderRail();
     }
   }
 
@@ -9239,6 +9264,15 @@
     if (s.worktreeLabel && name.startsWith("(WT)")) name = name.slice(4).trim() || "Worktree";
     label.textContent = name;
     row.appendChild(label);
+    // The click is waiting for a load another view started (sessionOpening).
+    const opening = state.railTransition;
+    if (active && opening && opening.kind === "resume" && opening.queued && opening.sessionId === s.id) {
+      row.classList.add("opening");
+      const note = document.createElement("span");
+      note.className = "rail-session-opening";
+      note.textContent = "opening…";
+      row.appendChild(note);
+    }
 
     // In the Pinned group a row has left its project behind, so it has to say
     // which one it came from — two conversations called "Untitled" are otherwise
@@ -21990,6 +22024,9 @@
         addPlanNotice(msg.text);
         break;
       case "xaiNotification":
+        break;
+      case "sessionOpening":
+        noteSessionOpening(msg);
         break;
       case "sessionRemoved": {
         if (!msg.id) break;

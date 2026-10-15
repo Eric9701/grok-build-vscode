@@ -932,6 +932,12 @@ export class GrokSidebar {
   private readonly pendingTurnDiffCaptures = new WeakSet<object>();
   /** Cold session/load claims the persisted id before ACP has emitted `session`. */
   private readonly sessionLoadReservations = new Map<string, SessionLoadReservation>();
+  /** The newest local click on a conversation. A click waiting behind another
+   *  view's load gives way to any later click (see reserveBehindInFlightLoad). */
+  private localOpenSeq = 0;
+  /** Same, per remote client, for explicit claims (a tab's own taps). Created
+   *  on first use. */
+  private remoteOpenSeq?: Map<string, number>;
   /** Sessions being spawned on a remote tab's behalf — a reconnect burst must
    *  not start the same one twice. */
   private readonly startingForRemote = new WeakSet<Session>();
@@ -18698,6 +18704,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     "repos",
     "sessions",
     "sessionRemoved",
+    "sessionOpening",
     "repoSessions",
     "pinnedSessions",
     "sessionDot",
@@ -19606,6 +19613,38 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     };
     this.sessionLoadReservations.set(id, reservation);
     return { reservation, joined: false };
+  }
+
+  /**
+   * A user's click on a conversation another view is cold-loading. Refusing it
+   * snapped the click back (the renderer gives up on an unanswered click) while
+   * the web tab's load ran on for up to a minute, and the desk could not open
+   * the conversation it was looking at. Loading it alongside is not an option
+   * either: that is the race the reservation exists for -- two CLI processes
+   * `session/load`ing one session directory, each replaying into its own view.
+   *
+   * So the click waits for that load to finish and then takes the reservation
+   * itself. By then the conversation is live in the pool, so the open is the
+   * instant focus path; if that load failed, this click loads it. `onQueued`
+   * runs once, before the first wait. A newer click makes this one give up
+   * (`stillWanted`), and so does a view that keeps re-taking the id.
+   */
+  private async reserveBehindInFlightLoad(
+    id: string,
+    ownerTabToken: string | undefined,
+    stillWanted: () => boolean,
+    onQueued: () => void,
+  ): Promise<{ reservation: SessionLoadReservation; joined: boolean } | undefined> {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const claim = this.reserveSessionLoad(id, ownerTabToken);
+      if (claim) return claim;
+      const held = this.sessionLoadReservations.get(id);
+      if (!held) continue;
+      if (attempt === 0) onQueued();
+      await held.completion.catch(() => undefined);
+      if (!stillWanted()) return undefined;
+    }
+    return undefined;
   }
 
   private bindSessionLoad(id: string, reservation: SessionLoadReservation, session: Session): void {
@@ -21108,7 +21147,30 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // before `startSession` is reached, and a clock made down there reports
     // `resolve 0ms` however long that took.
     const clock = new OpenClock();
-    const load = this.reserveSessionLoad(id, this.remoteClients.tabToken(clientId));
+    const tabToken = this.remoteClients.tabToken(clientId);
+    // A tap on a conversation waits behind another view's load like a desk
+    // click does (reserveBehindInFlightLoad). A reconnect restore (no claim)
+    // still refuses: it is not a person choosing this conversation, and the
+    // tab's own last word may already be another one.
+    let load = this.reserveSessionLoad(id, tabToken);
+    if (explicitClaim) {
+      const seqs = this.remoteOpenSeq ??= new Map();
+      const seq = (seqs.get(clientId) ?? 0) + 1;
+      seqs.set(clientId, seq);
+      if (!load) {
+        load = await this.reserveBehindInFlightLoad(
+          id,
+          tabToken,
+          () => seqs.get(clientId) === seq && this.remoteClients.clients().includes(clientId),
+          () => {
+            this.host.appendLine(`[remote] resumeSession waits for the load another view started`);
+            this.sendRemoteClient(clientId, { type: "sessionOpening", sessionId: id, queued: true });
+          },
+        );
+        // A newer tap from this tab, or the tab is gone: nothing to answer.
+        if (!load && seqs.get(clientId) !== seq) return;
+      }
+    }
     if (!load) {
       const selectedCwd = this.remoteClients.cwdIfPresent(clientId) ?? "";
       this.host.appendLine(`[remote] dropped resumeSession (session load is reserved by another view)`);
@@ -21309,9 +21371,24 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
   private async openSession(id: string, sessionCwd?: string): Promise<void> {
     // The user's open starts HERE, not in startSession. See the note there.
     const clock = new OpenClock();
-    const claim = this.reserveSessionLoad(id);
+    const seq = this.localOpenSeq = (this.localOpenSeq ?? 0) + 1;
+    // The renderer gives up on a click the host never answers. This answers it:
+    // the open is under way, and it ends in the conversation or in `failed`.
+    this.postLocal({ type: "sessionOpening", sessionId: id });
+    const claim = await this.reserveBehindInFlightLoad(
+      id,
+      undefined,
+      () => seq === this.localOpenSeq,
+      () => {
+        this.host.appendLine(`[sessions] local resume waits for the load another view started`);
+        this.postLocal({ type: "sessionOpening", sessionId: id, queued: true });
+      },
+    );
     if (!claim) {
+      // A newer click owns the view now; it says what happens next.
+      if (seq !== this.localOpenSeq) return;
       this.host.appendLine(`[sessions] refused local resume (session load is reserved by another view)`);
+      this.postLocal({ type: "sessionOpening", sessionId: id, failed: true });
       void this.host.showInformationMessage(
         "This conversation is already being opened in another tab or view.",
       );
@@ -21332,9 +21409,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
     } catch (error) {
       failure = error;
+      if (seq === this.localOpenSeq) this.postLocal({ type: "sessionOpening", sessionId: id, failed: true });
       throw error;
     } finally {
       this.releaseSessionLoad(id, claim.reservation, failure);
+    }
+    // A load that failed inside startSession reports its error in the view and
+    // leaves the view on something else; the click it answered is over.
+    if (seq === this.localOpenSeq && this.focused.activeSessionId !== id) {
+      this.postLocal({ type: "sessionOpening", sessionId: id, failed: true });
     }
     // Opening a conversation is the other moment the user is looking straight at
     // this repo's history — and the moment the session they just left became

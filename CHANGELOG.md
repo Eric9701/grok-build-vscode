@@ -6,6 +6,10 @@
 
 - **The extension is now called AFK Pilot** (previously Grok Build (Community)). It runs Grok Build, Muse Code, Codex, Claude Code and, experimentally, Antigravity. Your settings, keybindings and conversations are unchanged.
 
+### Fixed
+
+- **A click on a conversation always opens it.** Clicking a conversation that a phone or browser tab was still loading was refused with "already being opened in another tab or view", and the selection jumped back. The click now waits for that load and lands on the conversation, with the row reading "opening…" meanwhile. A slow open (Antigravity can take over a minute) no longer snaps the selection back after a few seconds either.
+
 ## 4.14.3 — 2026-10-14
 
 **Choose how much context Grok keeps.**

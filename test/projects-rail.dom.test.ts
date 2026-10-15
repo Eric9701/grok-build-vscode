@@ -3020,3 +3020,61 @@ describe("the project icon picker", () => {
     expect(h.doc.querySelector(".repo-icon-picker")).toBe(null);
   });
 });
+
+// A click the host has acknowledged (`sessionOpening`) is not given up on after
+// ten seconds: a cold load can take a minute, and a click can wait behind a load
+// another view started. The highlight stays, says "opening…" while it waits, and
+// only an identity frame or the host's `failed` ends it.
+describe("a click the host is opening", () => {
+  const bootClick = () => {
+    const h = bootWebview({
+      remote: true,
+      beforeScripts: (w: any) => {
+        withRail(w);
+        w.__grokRailTransitionTimeoutMs = 5;
+      },
+    });
+    dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    dispatch(h.window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9), row("a2", "/work/alpha", "alpha two", 8)]),
+      activeId: "a1",
+    });
+    const rows = () => h.doc.querySelectorAll(".rail-repo")[repoNames(h.doc).indexOf("alpha")].querySelectorAll(".rail-session");
+    click(h.window, rows()[1] as HTMLElement);
+    return { ...h, rows };
+  };
+  const activeName = (doc: Document) => doc.querySelector(".rail-session.active .rail-session-name")?.textContent;
+  const later = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("keeps the highlight past the give-up timer, says opening while queued, and lands", async () => {
+    const { doc, window, posted } = bootClick();
+    expect(posted).toContainEqual(expect.objectContaining({ type: "resumeSession", id: "a2" }));
+    dispatch(window, { type: "sessionOpening", sessionId: "a2" });
+    dispatch(window, { type: "sessionOpening", sessionId: "a2", queued: true });
+    await later(30);
+    expect(activeName(doc)).toBe("alpha two");
+    expect(doc.querySelector(".rail-session.active .rail-session-opening")?.textContent).toBe("opening\u2026");
+    dispatch(window, {
+      ...sessionsFrame([row("a1", "/work/alpha", "alpha one", 9), row("a2", "/work/alpha", "alpha two", 8)]),
+      activeId: "a2",
+    });
+    expect(activeName(doc)).toBe("alpha two");
+    expect(doc.querySelector(".rail-session-opening")).toBeNull();
+  });
+
+  it("an unanswered click still gives up; a failed one gives up at once", async () => {
+    const unanswered = bootClick();
+    await vi.waitFor(() => expect(activeName(unanswered.doc)).toBe("alpha one"));
+
+    const failed = bootClick();
+    dispatch(failed.window, { type: "sessionOpening", sessionId: "a2", queued: true });
+    expect(activeName(failed.doc)).toBe("alpha two");
+    dispatch(failed.window, { type: "sessionOpening", sessionId: "a2", failed: true });
+    expect(activeName(failed.doc)).toBe("alpha one");
+    // An acknowledgement for a conversation this view did not click changes nothing.
+    const other = bootClick();
+    dispatch(other.window, { type: "sessionOpening", sessionId: "zzz", queued: true });
+    expect(other.doc.querySelector(".rail-session-opening")).toBeNull();
+    await vi.waitFor(() => expect(activeName(other.doc)).toBe("alpha one"));
+  });
+});

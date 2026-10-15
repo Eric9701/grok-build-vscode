@@ -783,8 +783,15 @@ Cold `session/load` also reserves its Grok session id synchronously, before ACP 
 and later repopulate `Session.activeSessionId`; local/remote resume, delete, and Clear all
 all consult that bounded reservation. A same-token replacement joins the reservation's
 in-flight operation, keeps the pending id authoritative in snapshots, and receives
-completion through whichever relay client currently owns the bound `Session`; a
-different logical tab remains blocked. Ownerless live pool members and unreserved cold
+completion through whichever relay client currently owns the bound `Session`. A user's
+click from any other view (a desk click, or a tab's explicit claim) waits for the
+in-flight load and then takes the reservation itself (`reserveBehindInFlightLoad`), so
+it lands on the live conversation instead of being refused, and two cold loads of one
+id never run at once; a newer click supersedes a waiting one, and a reconnect restore
+(no claim) is still refused. Hosts acknowledge every local open with
+`sessionOpening` (`queued` while waiting, `failed` when it ends elsewhere), which is
+what lets both rails keep the clicked row highlighted past their give-up timers.
+Ownerless live pool members and unreserved cold
 history remain deletable. This prevents an owner
 from retaining a rendered transcript after its backing process and disk session have
 been destroyed.

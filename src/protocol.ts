@@ -1040,6 +1040,11 @@ export type HostMsg =
   /** A known conversation was removed. Drop it from every catalog view without
    *  changing the client's active conversation or requesting a fresh list. */
   | { type: "sessionRemoved"; id: string; cwd: string }
+  /** The host has a click on conversation `sessionId` and is opening it, so a
+   *  renderer stops waiting on its unanswered-click timer. `queued`: it waits
+   *  for a load another view started (the row says "opening…"). `failed`: the
+   *  open ended without this conversation. An older renderer ignores it. */
+  | { type: "sessionOpening"; sessionId: string; queued?: boolean; failed?: boolean }
   // A preview page for ONE repo, answering `listRepoSessions`. Deliberately a
   // separate frame from `sessions`: that one is the focused history list and
   // owns paging/search/auto-open state, so a sibling repo's rows arriving on it
@@ -1607,7 +1612,7 @@ const HOST_MESSAGE_TYPE_MAP: Record<HostMsg["type"], true> = {
   xaiNotification: true, subagentUpdate: true, childStream: true, runProgress: true, commandOutput: true, expandCommandOutputs: true, steerByDefault: true, promptNav: true, pinLiveWorkflows: true, expandDiffCard: true,
   soundNotifications: true, processingSound: true, readRepliesAloud: true, summarizeRepliesAloud: true, speechSummary: true, imageFull: true, imageOriginal: true, moveComposerCaret: true, remoteStatus: true, showRemoteHandoff: true, remoteHandoff: true, hostReachable: true, hostLink: true,
   setAllToolDetails: true, focusInput: true, findInSession: true, restoreComposer: true, truncateMessages: true, uiConfirmRequest: true, uiConfirmResolved: true,
-  sessions: true, sessionRemoved: true, repoSessions: true, pinnedSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
+  sessions: true, sessionRemoved: true, sessionOpening: true, repoSessions: true, pinnedSessions: true, repos: true, sessionDot: true, queuedSends: true, submitQueuedSend: true,
   steerUnavailable: true, feedbackAvailability: true, turnFeedbackAck: true, usage: true,
 };
 

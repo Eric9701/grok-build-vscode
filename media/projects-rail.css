@@ -589,6 +589,15 @@ html, body {
   opacity: .85;
 }
 
+/* A click waiting for a load another view started (sessionOpening). */
+.rail-session-opening {
+  flex: 0 0 auto;
+  color: var(--vscode-descriptionForeground);
+  font-size: 10px;
+  font-style: italic;
+  white-space: nowrap;
+}
+
 .rail-pinned { margin-bottom: 2px; }
 .rail-session-actions .rail-action-btn { width: 24px; height: 24px; }
 .rail-session-actions .rail-action-btn svg { width: 14px; height: 14px; }

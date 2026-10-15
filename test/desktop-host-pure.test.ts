@@ -4352,7 +4352,9 @@ describe("local workspace switch serialization (P1-2)", () => {
     const openStart = sidebar.indexOf("private async openSession(id: string");
     const openEnd = sidebar.indexOf("private localTrustedSessionCwds(", openStart);
     const openBody = sidebar.slice(openStart, openEnd);
-    const reserveAt = openBody.indexOf("this.reserveSessionLoad(id)");
+    // The click takes the reservation (waiting behind another view's load if
+    // one holds it) before it enters the workspace queue.
+    const reserveAt = openBody.indexOf("await this.reserveBehindInFlightLoad(");
     const queueAt = openBody.indexOf("this.localWorkspaceSwitchQueue.run(open)");
     expect(reserveAt).toBeGreaterThanOrEqual(0);
     expect(queueAt).toBeGreaterThan(reserveAt);

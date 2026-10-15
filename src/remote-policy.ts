@@ -1118,6 +1118,8 @@ export const OUTBOUND_DISPOSITION: Record<HostMsg["type"], OutboundDisposition> 
   uiConfirmRequest: "mirror",
   uiConfirmResolved: "mirror",
   sessions: "mirror",
+  // Sent only to the tab that tapped: an id it named itself, and no project data.
+  sessionOpening: "mirror",
   repoSessions: "mirror",
   pinnedSessions: "mirror",
   repos: "mirror",
@@ -1227,6 +1229,7 @@ export const OUTBOUND_PROJECT_AUTH: Record<HostMsg["type"], OutboundProjectAuth>
   // History / session lists — empty entries are fine; a closed cwd in an entry is not.
   sessions: "entries",
   pinnedSessions: "entries",
+  sessionOpening: "none",
   repoSessions: "message-cwd",
   sessionName: "message-cwd",
   composerDraftSession: "scope",
