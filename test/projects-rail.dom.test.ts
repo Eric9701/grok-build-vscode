@@ -3113,12 +3113,12 @@ describe("Recent from the host", () => {
   });
 });
 
-// The phone and the desktop rail fetch a project's conversations only when it
-// is open. Opening every project at once asked the host for every list at the
-// same moment, and many came back "Loading…" or "Couldn't load these
-// conversations". The first few start open, the rest folded, and your own
-// open/fold choice is remembered per viewer.
-describe("lazy project lists", () => {
+// The first few projects start open, the rest folded, and your own open/fold
+// choice is remembered per viewer. Folding is display only: every project's
+// list is fetched (after the one probe), because the Archive's age rule needs
+// a project's own rows -- fetching folded ones only on opening left a quiet
+// project in Projects here while the VS Code rail had archived it.
+describe("folded project lists", () => {
   const many = ["alpha", "beta", "delta", "epsilon", "gamma", "zeta"].map((name, i) =>
     ({ cwd: `/work/${name}`, label: name, available: true, pinned: false, updatedAt: 10 + i }));
   const asked = (posted: any[]) => posted.filter((m) => m.type === "listRepoSessions").map((m) => m.cwd);
@@ -3135,26 +3135,36 @@ describe("lazy project lists", () => {
     return h;
   }
 
-  it("asks only for the open sections, and a folded project when you open it", () => {
+  it("asks for every project after the probe, and keeps the folded ones folded", () => {
     const { doc, window, posted } = bootMany();
     // One probe before the host has shown it answers previews...
     expect(asked(posted)).toEqual(["/work/beta"]);
     answer(window, "/work/beta");
-    // ...then the rest of the OPEN ones: the first three (alpha is the selected
-    // project and lists through `sessions`). The folded three are not asked.
-    expect(asked(posted)).toEqual(["/work/beta", "/work/delta"]);
+    // ...then every other project, open or folded (alpha is the selected
+    // project and lists through `sessions`).
+    expect([...asked(posted)].sort()).toEqual(["/work/beta", "/work/delta", "/work/epsilon", "/work/gamma", "/work/zeta"]);
     for (const name of ["epsilon", "gamma", "zeta"]) {
       expect(head(doc, name).getAttribute("data-expanded")).toBe("0");
       expect(head(doc, name).textContent).not.toContain("Loading…");
     }
-    // A push the host makes on its own (activity elsewhere) is stored, and does
-    // not fan out to the folded projects.
-    answer(window, "/work/zeta");
-    expect(asked(posted)).toEqual(["/work/beta", "/work/delta"]);
-    // Opening a folded project asks for it.
+    // Opening a folded project shows what is already there, without asking again.
+    answer(window, "/work/gamma");
     click(window, head(doc, "gamma").querySelector(".rail-repo-head") as HTMLElement);
-    expect(asked(posted)).toEqual(["/work/beta", "/work/delta", "/work/gamma"]);
+    expect(asked(posted).filter((c) => c === "/work/gamma")).toHaveLength(1);
     expect(head(doc, "gamma").getAttribute("data-expanded")).toBe("1");
+    expect(head(doc, "gamma").textContent).toContain("/work/gamma chat");
+  });
+
+  it("archives a quiet folded project, as the VS Code rail does", () => {
+    const old = Date.now() - 60 * 24 * 60 * 60 * 1000;
+    const h = bootWebview({ remote: true, beforeScripts: withRail });
+    const archivable = many.map((r) => ({ ...r, archived: false }));
+    dispatch(h.window, { type: "repos", entries: archivable, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    answer(h.window, "/work/beta");
+    for (const name of ["delta", "epsilon", "gamma"]) answer(h.window, `/work/${name}`);
+    dispatch(h.window, { type: "repoSessions", cwd: "/work/zeta", entries: [row("z1", "/work/zeta", "old chat", old)], dots: {}, total: 1 });
+    const projects = [...h.doc.querySelectorAll(".rail-list.rail-projects .rail-repo-label")].map((e) => e.textContent);
+    expect(projects).not.toContain("zeta");
   });
 
   it("remembers what you opened and folded on this device", () => {
@@ -3171,7 +3181,6 @@ describe("lazy project lists", () => {
     expect(head(again.doc, "gamma").getAttribute("data-expanded")).toBe("1");
     expect(head(again.doc, "beta").getAttribute("data-expanded")).toBe("0");
     expect(asked(again.posted)).toContain("/work/gamma");
-    expect(asked(again.posted)).not.toContain("/work/beta");
   });
 
   it("keeps a project you opened out of Project Archive's age rule", () => {

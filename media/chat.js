@@ -7724,14 +7724,14 @@
     // Before capability proof there is exactly one probe. If it failed, only
     // the visible Retry may send it again; catalog repaints are not retries.
     if (!state.repoPreviewsSupported && Object.keys(state.repoPreviewErrors).length) return;
-    // Only the open sections: a folded project's list is fetched when it opens
-    // (toggleRepoExpand). The wire is unchanged, so an older host answers the
-    // same way it always has.
-    const openKeys = railDefaultOpenKeys();
+    // Every project, folded or not, as the VS Code rail does: the Archive's age
+    // rule needs a project's own rows, so a folded project fetched only on
+    // opening stayed in Projects here while VS Code had archived it. Folding is
+    // display only. Fetching on open was a workaround for previews that took a
+    // second each on a large desk; they take milliseconds now.
     const wanted = railRepos().filter(
       (r) => r.available
         && !sameCwd(r.cwd, state.selectedRepoCwd)
-        && railRepoExpanded(r, openKeys)
         && !state.repoPreviews[cwdKey(r.cwd)]
         && !state.repoPreviewErrors[cwdKey(r.cwd)],
     );
