@@ -1,8 +1,8 @@
-# AFK Pilot: GUI for Grok Build & Muse Code
+# AFK Pilot: Grok Build, Muse Code, Claude, Codex & more in one place
 
 [![License: FSL-1.1-MIT](https://img.shields.io/badge/License-FSL--1.1--MIT-blue.svg)](LICENSE) ![Agents](https://img.shields.io/badge/Agents-Grok%20Build%20%C2%B7%20Codex%20%C2%B7%20Claude%20Code%20%C2%B7%20Muse%20Code%20%C2%B7%20Antigravity-000000) [![VS Code](https://img.shields.io/badge/VS%20Code-Extension-007ACC?logo=visualstudiocode&logoColor=white)](https://code.visualstudio.com) [![Cursor](https://badgen.net/badge/Cursor/Extension/007ACC)](https://cursor.com) [![The Product Compass](https://img.shields.io/badge/The%20Product%20Compass-productcompass.pm-FF6B35)](https://www.productcompass.pm)
 
-> **GUI for Grok Build (incl. Grok 4.7) & Muse Code** — and for Codex, Claude Code and Google Antigravity (experimental) in the same window. Not affiliated with or endorsed by SpaceXAI (formerly xAI), Meta, OpenAI, Anthropic or Google. *Grok*, *Grok Build* and *xAI* are trademarks of xAI; *Muse Code* of Meta; *Codex* of OpenAI; *Claude Code* of Anthropic. *Antigravity* and *Gemini* are trademarks of Google. This project uses those names only to describe what it is compatible with.
+> **One place for Grok Build (Grok 4.7) & Muse Code (Muse Wonder)** — plus Codex (GPT-6 Astra), Claude Code (Opus 5.5) and Google Antigravity (Gemini 4 Argon, experimental). Not affiliated with or endorsed by SpaceXAI (formerly xAI), Meta, OpenAI, Anthropic or Google. *Grok*, *Grok Build* and *xAI* are trademarks of xAI; *Muse Code* of Meta; *Codex* of OpenAI; *Claude* and *Claude Code* of Anthropic. *Antigravity* and *Gemini* are trademarks of Google. This project uses those names only to describe what it is compatible with.
 
 Two ways to use the same agent UI on top of the **Grok Build CLI**:
 
