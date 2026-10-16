@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 4.15.1 — 2026-10-16
+
+**Muse Code sees pictures and shows its reasoning.**
 
 ### Added
 
