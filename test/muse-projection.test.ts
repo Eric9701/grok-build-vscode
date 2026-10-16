@@ -22,6 +22,29 @@ describe("Muse raw notification projection", () => {
     expect(logs).toEqual(["Muse projection: prefix-changing text revision for item answer"]);
   });
 
+  // #207: Muse's reasoning summary was dropped, so "Show thinking traces" never
+  // showed it. Measured live 2026-10-16: item/started reasoning, then
+  // item/delta on fields summary.0 and summary.1, then item/completed with the
+  // parts in `summary`.
+  it("streams a reasoning summary as thinking, one part per paragraph, without repeating it on completion", () => {
+    const updates: any[] = [];
+    const p = new Projection(u => updates.push(u), () => {});
+    p.accept("item/started", { item: { itemId: "r", kind: "reasoning", revision: 1, summary: [] } });
+    p.accept("item/delta", { itemId: "r", field: "summary.0", delta: "Framing the plan" });
+    p.accept("item/delta", { itemId: "r", field: "summary.0", delta: " first." });
+    p.accept("item/delta", { itemId: "r", field: "summary.1", delta: "Then the reply." });
+    p.accept("item/completed", { item: { itemId: "r", kind: "reasoning", revision: 2, summary: ["Framing the plan first.", "Then the reply."] } });
+    expect(updates.every(u => u.sessionUpdate === "agent_thought_chunk")).toBe(true);
+    expect(updates.map(u => u.content.text).join("")).toBe("Framing the plan first.\n\nThen the reply.");
+  });
+
+  it("replays a reasoning item from history as thinking", () => {
+    const updates: any[] = [];
+    const p = new Projection(u => updates.push(u), () => {});
+    p.acceptHistory({ itemId: "r", kind: "reasoning", revision: 3, summary: ["One.", "Two."] });
+    expect(updates).toEqual([{ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "One.\n\nTwo." } }]);
+  });
+
   it.each(["inProgress", "completed", "failed", "cancelled", "rejected", "timedOut", "aborted", "futureStatus"])(
     "projects live and replayed tool status %s using the open terminal contract", status => {
       for (const history of [false, true]) {
