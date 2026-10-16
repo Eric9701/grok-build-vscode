@@ -2,9 +2,18 @@
 
 ## Unreleased
 
+### Added
+
+- **Muse Code's reasoning shows with Show thinking traces (#207).** When Muse summarises its reasoning, the summary now appears as thinking, like the other agents', both live and when you reopen the conversation. Muse writes these summaries on harder work at higher effort; nothing needs to change in Muse's own settings. Thanks to zpanos74 for the request.
+
+### Changed
+
+- **A command you are asked to approve shows up to 10 lines** instead of 4, so most commands can be read before you answer (#208). The rest is still one click away under View all, and the card still doesn't scroll inside the chat. Thanks to padixa.
+
 ### Fixed
 
 - **Muse Code sees an attached picture (#211).** Sending an image to a Muse conversation failed with a red "Internal error" before Muse was even asked; the picture now reaches Muse, and a model that reads images (Muse Wonder) answers about it. Thanks to zpanos74 for the report.
+- **The desktop app no longer crashes when the terminal it was started from closes (#212).** On Linux, starting the app from a terminal and then closing that terminal showed "A JavaScript error occurred in the main process" (`write EIO`) at the next log line. The log file still records everything. Thanks to ajkessel.
 
 ## 4.15.0 — 2026-10-16
 

@@ -967,7 +967,8 @@ export function createElectronHost(opts: ElectronHostOptions): Host {
     },
 
     append(text: string) {
-      process.stdout.write(text);
+      // A closed launching terminal must not crash the app (#212; see main.ts log).
+      try { process.stdout.write(text); } catch { /* the terminal is gone */ }
     },
     appendLine(line: string) {
       log(line);

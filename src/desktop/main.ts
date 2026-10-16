@@ -149,10 +149,22 @@ protocol.registerSchemesAsPrivileged([
 let logToFile: ((text: string) => void) | undefined;
 let desktopLogFile: string | undefined;
 
+/**
+ * Whether the terminal the app was started from is still there. Closing it
+ * leaves stdout writing into a dead pty: the write fails with EIO, emitted as
+ * an `error` event nobody handled, and Electron showed "A JavaScript error
+ * occurred in the main process" for a log line (#212, an AppImage on Ubuntu).
+ * The log file is the record that matters; the terminal copy is a courtesy.
+ */
+let stdoutUsable = true;
+process.stdout.on("error", () => { stdoutUsable = false; });
+
 function log(line: string): void {
   const stamp = new Date().toISOString();
   const text = formatLogLine(stamp, line);
-  process.stdout.write(text);
+  if (stdoutUsable) {
+    try { process.stdout.write(text); } catch { stdoutUsable = false; }
+  }
   // Synchronous, deliberately. The lines that matter are the last few before a
   // freeze, which is exactly what a buffered writer loses.
   logToFile?.(text);
