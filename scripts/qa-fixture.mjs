@@ -19,8 +19,16 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** Fixed clock. Real dates would make every screenshot differ by a day. */
-const T0 = Date.UTC(2026, 0, 15, 9, 0, 0);
+/**
+ * Fixed clock: 09:00 UTC yesterday. Fixed within a day so the screenshots stay
+ * comparable, and recent because history older than 30 days is not listed
+ * (HISTORY_HORIZON_MS, 3825696). A fixed date (it was 2026-01-15) fell out of
+ * that window and the rail came up with no fixture history at all.
+ */
+const T0 = (() => {
+  const d = new Date();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - 1, 9, 0, 0);
+})();
 const minutes = (n) => T0 + n * 60_000;
 
 export const QA_PROJECT_NAME = "grok-qa";
