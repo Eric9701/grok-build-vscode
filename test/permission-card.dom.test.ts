@@ -226,6 +226,8 @@ describe("permission card diff preview (real chat.js in a DOM)", () => {
     expect(title.title).toBe(command);
     expect(title.tagName).toBe("PRE");
     expect(title.classList.contains("command-preview-capped")).toBe(true);
+    // Ten lines of a command you are asked to approve (#208), not four.
+    expect(title.style.getPropertyValue("--command-preview-lines")).toBe("10");
     expect(card.querySelector(".command-view-all")!.textContent).toBe("View all (1 lines) →");
     expect(card.querySelectorAll(".card-actions button")).toHaveLength(2);
   });

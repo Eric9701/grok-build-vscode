@@ -13303,6 +13303,11 @@
   }
 
   const MAX_COMMAND_PREVIEW_LINES = 6;
+  // A command you are asked to approve shows more of itself than one in the
+  // transcript: 4 lines was too few to judge it (#208). Still clipped, never a
+  // nested scroller -- a scroll box inside the chat catches the wheel while you
+  // scroll the conversation, which #71 asked us to remove. View all has the rest.
+  const PERMISSION_COMMAND_PREVIEW_LINES = 10;
 
   function makeInlineExpandToggle(collapsedText, className, onToggle) {
     let currentCollapsedText = collapsedText;
@@ -17124,7 +17129,7 @@
     // card replays as active on every re-focus.
     el.dataset.permReqId = String(req.id);
     el._permTitle = cardTitle;
-    appendCommandPreview(el, cardTitle, "card-title command-card-title", undefined, 4);
+    appendCommandPreview(el, cardTitle, "card-title command-card-title", undefined, PERMISSION_COMMAND_PREVIEW_LINES);
 
     const diff = state.pendingDiffByToolCallId.get(req.toolCall?.toolCallId);
     if (diff) {
