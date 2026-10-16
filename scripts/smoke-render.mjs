@@ -90,16 +90,26 @@ export async function runRenderSmoke(provider, evidenceParent, cliOverride, sele
     const status = () => desktopFacts(readEvents());
     const settled = () => page.evaluate(() => !document.body.classList.contains("turn-busy")
       && document.querySelector("#send-btn")?.title === "Send" && !document.querySelector("#send-btn")?.disabled);
-    // The chip is disabled while a conversation's models load (7f38524), and a
-    // click on it then does nothing -- as for a person, who clicks again once it
-    // reads as ready. So wait for it to be usable before clicking.
-    const picker = async () => {
-      await page.waitForFunction(() => {
-        const chip = document.querySelector("#gear-btn");
-        return !!chip && !chip.disabled && chip.getAttribute("aria-disabled") !== "true";
-      }, null, { timeout: rpcMs });
-      await page.locator("#gear-btn").click();
-      await page.locator("#gear-popover .model-picker-row").first().waitFor({ state: "visible", timeout: rpcMs });
+    // The chip is disabled while a conversation's models load (7f38524): a click
+    // on it then does nothing, and a picker opened just before a load starts (the
+    // app's first second) closes again. A person clicks again once it reads as
+    // ready; so does this, until the wanted rows show or the budget runs out.
+    const picker = async (rows = "#gear-popover .model-picker-row") => {
+      const deadline = Date.now() + rpcMs;
+      for (;;) {
+        await page.waitForFunction(() => {
+          const chip = document.querySelector("#gear-btn");
+          return !!chip && !chip.disabled && chip.getAttribute("aria-disabled") !== "true";
+        }, null, { timeout: Math.max(1, deadline - Date.now()) });
+        const open = await page.locator(rows).first().isVisible().catch(() => false);
+        if (!open) await page.locator("#gear-btn").click();
+        try {
+          await page.locator(rows).first().waitFor({ state: "visible", timeout: Math.min(5000, Math.max(1, deadline - Date.now())) });
+          return;
+        } catch (error) {
+          if (Date.now() >= deadline) throw error;
+        }
+      }
     };
     const closePicker = () => page.keyboard.press("Escape");
     const chooseModel = async model => {
@@ -157,9 +167,9 @@ export async function runRenderSmoke(provider, evidenceParent, cliOverride, sele
       if (fresh) await page.locator("#new-btn").click();
       // Select the provider through the same real picker used by the working
       // screenshot driver. No prompt is sent until its catalog is acknowledged.
-      await picker();
-      const providerRow = page.locator(`#gear-popover .model-picker-row:has(.provider-glyph.provider-${provider})`).first();
-      await providerRow.waitFor({ state: "visible", timeout: rpcMs });
+      const providerRows = `#gear-popover .model-picker-row:has(.provider-glyph.provider-${provider})`;
+      await picker(providerRows);
+      const providerRow = page.locator(providerRows).first();
       if (status()?.provider !== provider) await providerRow.click();
       await closePicker();
       const live = await waitPage(async () => { const s = status(); return s?.provider === provider && s.sessionId !== previous && s.models?.length && await settled() && s; }, `${provider} desktop session/model catalog`, rpcMs);

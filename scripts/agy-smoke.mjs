@@ -61,7 +61,12 @@ export async function runAgySmoke({ root, output, record, say, rpcMs, turnMs }) 
     record("initialize", "PASS", `agentInfo=${init?.agentInfo?.name} ${init?.agentInfo?.version}; systemPrompt.append=${init?.agentCapabilities?._meta?.antigravity?.systemPrompt?.append === true}; authenticated with oauth-personal`);
     await check("session/new", async () => {
       ({ sessionId } = await timed(agy.newSession(), "session/new", rpcMs));
-      assert.deepEqual(agy.availableModels.map((model) => model.modelId), ["gemini-3.8-flash"]);
+      // The account's catalog grows (Google sign-in offered Gemini 4 Argon too by
+      // 2026-10-16), so check the smoke's model is offered and in use, not the
+      // whole list.
+      const offered = agy.availableModels.map((model) => model.modelId);
+      assert.ok(offered.includes("gemini-3.8-flash"), `gemini-3.8-flash not offered: ${offered.join(", ")}`);
+      assert.equal(agy.currentModelId, "gemini-3.8-flash");
       assert.equal(agy.currentReasoningEffort, "low", "effort did not reach thinking_level=low");
       return `sessionId=${sessionId}; model=${agy.currentModelId} at thinking_level=${agy.currentReasoningEffort}`;
     });
