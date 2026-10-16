@@ -6318,6 +6318,12 @@
   // cold session/load over a slow link and short enough that a dropped request
   // is still visibly "nothing happened" rather than a stuck selection.
   const RAIL_TRANSITION_TIMEOUT_MS = 10000;
+  // A NEW conversation is a CLI start, not a load: ~7 s warm and ~30 s cold on a
+  // desk (measured 2026-10-16), and the host sends nothing in between. At 10 s
+  // the "New session" placeholder vanished mid-start, so there was no sign the
+  // conversation was being made until its real row appeared. Any error the host
+  // sends still ends the transition at once.
+  const RAIL_NEW_TRANSITION_TIMEOUT_MS = 60000;
   /** Projects are folders you chose, so an empty list says how they get there. */
   const RAIL_NO_PROJECTS = "Your projects appear here. Open a folder, create one, or add one from Recent.";
   // Once the host has said it is opening the click (`sessionOpening`), the
@@ -6995,6 +7001,11 @@
     // broken on the project a machine boots into: the host stored the choice,
     // this returned false, and the row never moved.
     if (sameCwd(repo.cwd, state.selectedRepoCwd)) return false;
+    // A conversation is being made here. The host has not selected the project
+    // yet and an empty one has no rows, so the age rule hid it -- placeholder
+    // and all -- for the seconds until the new conversation arrived.
+    const pendingNew = state.railTransition;
+    if (pendingNew && pendingNew.kind === "new" && sameCwd(repo.cwd, pendingNew.repoCwd)) return false;
     // You opened it here: its rows arrive because you asked for them, and the
     // age rule moving it into Archive under your cursor would answer that by
     // taking it away. (An explicit Archive, above, still wins.)
@@ -7428,7 +7439,7 @@
     }
     const ms = Number(window.__grokRailTransitionTimeoutMs) > 0
       ? Number(window.__grokRailTransitionTimeoutMs)
-      : RAIL_TRANSITION_TIMEOUT_MS;
+      : fields.kind === "new" ? RAIL_NEW_TRANSITION_TIMEOUT_MS : RAIL_TRANSITION_TIMEOUT_MS;
     railTransitionTimer = setTimeout(() => {
       railTransitionTimer = null;
       if (state.railTransition && state.railTransition.token === token) {

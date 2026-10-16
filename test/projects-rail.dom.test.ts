@@ -3155,6 +3155,22 @@ describe("folded project lists", () => {
     expect(head(doc, "gamma").textContent).toContain("/work/gamma chat");
   });
 
+  it("keeps an empty project in view while a new conversation is being made there", () => {
+    const h = bootWebview({ remote: true, beforeScripts: withRail });
+    const archivable = many.map((r) => ({ ...r, archived: false }));
+    dispatch(h.window, { type: "repos", entries: archivable, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
+    const projects = () => [...h.doc.querySelectorAll(".rail-list.rail-projects .rail-repo-label")].map((e) => e.textContent);
+    // Not answered yet, so the age rule has nothing to go on and leaves it in view.
+    expect(projects()).toContain("zeta");
+    const add = head(h.doc, "zeta").querySelector(".rail-action-btn") as HTMLElement;
+    click(h.window, add);
+    // Its list comes back empty before the host has switched to it: with no
+    // conversations the age rule would archive it, placeholder and all.
+    dispatch(h.window, { type: "repoSessions", cwd: "/work/zeta", entries: [], dots: {}, total: 0 });
+    expect(projects()).toContain("zeta");
+    expect(head(h.doc, "zeta").textContent).toContain("New session");
+  });
+
   it("archives a quiet folded project, as the VS Code rail does", () => {
     const old = Date.now() - 60 * 24 * 60 * 60 * 1000;
     const h = bootWebview({ remote: true, beforeScripts: withRail });
