@@ -5,7 +5,7 @@ import { CloudHostUpdate, cloudHostIsIdle, cloudHostBootSupportsUpdate, cloudLiv
 import { MuseBackend, withMuseCredentialBackend } from "./muse-backend";
 import { locateMuseCli, parseMuseVersionOutput } from "./muse-cli-locator";
 import { museInstallCommand } from "./muse-install";
-import { AgyBackend, agyAcpDir, listAgySessions } from "./agy-backend";
+import { AgyBackend, agyAcpDir, agySessionsFor, listAgyCatalog } from "./agy-backend";
 import { agyGatewayAuth, agyGatewayEnv, agyGoogleAuth, agyGoogleSignInPresent, isAgySignInMethod, normalizeAgyApiKey, runAgySignIn, type AgySignInMethod } from "./agy-auth";
 import { AgyKeyRelay, type AgyModelListing, type AgyRelayLease } from "./agy-key-relay";
 import { installManagedAgy, locateAgyServer } from "./agy-managed-installer";
@@ -826,21 +826,22 @@ export class GrokSidebar {
    * (it's just a read cache, never a source of truth).
    */
   private sessionCache = new Map<string, { mtimeMs: number; entry: SessionListEntry }>();
-  /** Adapter catalogs come from ACP session/list rather than Grok's disk index. */
+  /** Adapter catalogs come from ACP session/list rather than Grok's disk index.
+   *  Keyed by project; filled for every project at once (listAdapterHistory). */
   private codexSessionCache = new Map<string, SessionListEntry[]>();
-  private codexSessionCacheAt = new Map<string, number>();
-  private codexSessionRefresh = new Map<string, Promise<void>>();
   private claudeSessionCache = new Map<string, SessionListEntry[]>();
-  private claudeSessionCacheAt = new Map<string, number>();
-  private claudeSessionRefresh = new Map<string, Promise<void>>();
   /**
    * One history process per PROVIDER, reused across every repo — not one per
    * repo, which is what the projects rail used to cost. `adapterHistoryClient`
    * carries the measurement that makes a single process sufficient.
    */
   private adapterHistoryClients = new Map<AcpProvider, { cliPath: string; client: AcpClient }>();
-  /** Serialises history listings onto that shared process, per provider. */
-  private adapterHistoryQueue = new Map<AcpProvider, Promise<void>>();
+  /** The folders a provider's history is listed for: every one asked about. */
+  private adapterHistoryFolders?: Map<AcpProvider, Map<string, string>>;
+  /** When a provider's history was last listed, or refused on credentials. */
+  private adapterHistoryStamps?: Map<AcpProvider, { at: number; refused?: boolean }>;
+  /** The listing running for a provider, which every caller shares. Never rejects. */
+  private adapterHistoryRuns?: Map<AcpProvider, Promise<void>>;
   private codexInstallAbort?: AbortController;
   private agyInstallAbort?: AbortController;
   private providerConnectionState: ProviderConnections = {};
@@ -1036,8 +1037,6 @@ export class GrokSidebar {
   private museHistoryStart?: Promise<AcpClient | undefined>;
   private museHistoryGeneration = 0;
   private museSessionCache = new Map<string, SessionListEntry[]>();
-  private museSessionCacheAt = new Map<string, number>();
-  private museSessionRefresh = new Map<string, Promise<void>>();
   private agyServerPath?: string;
   /** The one place a Gemini API key goes; see agy-key-relay.ts. */
   private agyRelay?: AgyKeyRelay;
@@ -1049,8 +1048,6 @@ export class GrokSidebar {
   /** Why the last Antigravity credential was refused, for the choice card. */
   private agySignInError?: string;
   private agySessionCache = new Map<string, SessionListEntry[]>();
-  private agySessionCacheAt = new Map<string, number>();
-  private agySessionRefresh = new Map<string, Promise<void>>();
   private readonly providerCliVersions: Partial<Record<AcpProvider, string>> = {};
   /** Accounts that are configured but answered an auth-shaped failure. Not the
    *  same as disconnected: the CLI is installed and the user meant to use it,
@@ -1856,7 +1853,7 @@ export class GrokSidebar {
     await Promise.all(exiting);
     const { muse: _oldMuse, ...rest } = this.state.get<ProviderModelCache>(PROVIDER_MODEL_CACHE_KEY, {});
     await this.state.update(PROVIDER_MODEL_CACHE_KEY, rest);
-    this.museSessionCache.clear(); this.museSessionCacheAt.clear();
+    this.museSessionCache.clear(); this.adapterHistoryStamps?.delete("muse");
     this.postProviderState();
   }
 
@@ -1899,23 +1896,14 @@ export class GrokSidebar {
     };
   }
 
-  private adapterHistory(provider: AcpProvider): {
-    cache: Map<string, SessionListEntry[]>;
-    at: Map<string, number>;
-    refresh: Map<string, Promise<void>>;
-  } | undefined {
-    if (provider === "codex") {
-      return { cache: this.codexSessionCache, at: this.codexSessionCacheAt, refresh: this.codexSessionRefresh };
-    }
-    if (provider === "muse") return {
-      cache: this.museSessionCache ??= new Map(), at: this.museSessionCacheAt ??= new Map(), refresh: this.museSessionRefresh ??= new Map(),
-    };
-    if (provider === "agy") return {
-      cache: this.agySessionCache ??= new Map(), at: this.agySessionCacheAt ??= new Map(), refresh: this.agySessionRefresh ??= new Map(),
-    };
-    if (provider === "claude") {
-      return { cache: this.claudeSessionCache, at: this.claudeSessionCacheAt, refresh: this.claudeSessionRefresh };
-    }
+  /** A provider's per-project rows. When they were listed, and the listing in
+   *  flight, are per PROVIDER (adapterHistoryStamps / adapterHistoryRuns): one
+   *  listing fills every project's rows at once. */
+  private adapterHistory(provider: AcpProvider): { cache: Map<string, SessionListEntry[]> } | undefined {
+    if (provider === "codex") return { cache: this.codexSessionCache };
+    if (provider === "muse") return { cache: this.museSessionCache ??= new Map() };
+    if (provider === "agy") return { cache: this.agySessionCache ??= new Map() };
+    if (provider === "claude") return { cache: this.claudeSessionCache };
     return undefined;
   }
 
@@ -2016,7 +2004,7 @@ export class GrokSidebar {
       void this.disposeAdapterHistoryClient(provider);
       // A reconnect must re-list immediately. Keeping the old freshness stamp
       // after dropping the rows creates a fresh-but-empty cache for ten seconds.
-      history?.at.clear();
+      this.adapterHistoryStamps?.delete(provider);
     }
     this.postProviderState();
     // Consent is recorded above, so this is now a plain local `--version` read:
@@ -2060,7 +2048,7 @@ export class GrokSidebar {
     if (needsLogin) this.invalidateSubscriptionUsage(provider);
     // A recovered account must be able to re-list at once; the freshness stamp
     // would otherwise hold the empty catalog for its full back-off window.
-    if (!needsLogin && usesAdapterHistory(provider)) this.adapterHistory(provider)?.at.clear();
+    if (!needsLogin && usesAdapterHistory(provider)) this.adapterHistoryStamps?.delete(provider);
     // And it must be able to RECOVER again. `authRecoveryTried` survives a
     // startSession on purpose (#58: an entitlement failure must not pay a
     // restart+resend on every prompt), and only a clean turn re-arms it -- which
@@ -10625,7 +10613,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       await Promise.all(affected().map((s) => this.waitForSessionStart(s)));
       await (provider === "codex" ? this.codexVersionProbe : this.claudeVersionProbe);
       await Promise.all(this.providerModelProbes?.get(provider) ?? []);
-      await Promise.all(this.adapterHistory(provider)?.refresh?.values() ?? []);
+      await this.adapterHistoryRuns?.get(provider);
       // The history listener is a LONG-LIVED process now, one per provider
       // rather than one per listing, so it outlives the drain above and holds
       // the binary exactly as those throwaways did. Await its real exit.
@@ -15053,30 +15041,64 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     this.scheduleAdapterHistoryRefresh("codex", cwd);
   }
 
+  /**
+   * Ask for a provider's history to be fresh for `cwd`, at most once per ten
+   * seconds per PROVIDER: a listing reads every folder this host has asked
+   * about (listAdapterHistory), so a rail of sixty projects, a Recent spanning
+   * sixty folders and every remote tab cost one listing between them, not one
+   * each. Per-folder timers were the old shape, and with codex reading its
+   * whole catalog for every folder they turned the rail's opening burst into a
+   * minute of listings -- each of which rebuilt Recent, which asked again.
+   *
+   * A folder never listed is the one exception to the ten seconds: a project
+   * opened right after a listing must not wait for the next one to show its
+   * conversations. A folder that arrives while a listing runs is in it when
+   * the listing reads, or is listed straight after if it came too late.
+   */
   private scheduleAdapterHistoryRefresh(provider: AcpProvider, cwd: string): void {
     if (this.providerCliUpdate?.provider === provider) return;
     if (!usesAdapterHistory(provider) || !this.connectedProviders().includes(provider)) return;
     const history = this.adapterHistory(provider);
-    if (!history) return;
+    if (!history || !authorizedListCwd(cwd, this.authorizedSessionCwds(), pathsEqual)) return;
     const key = projectProviderKey(cwd);
-    if (history.refresh.has(key)) return;
-    if (Date.now() - (history.at.get(key) ?? 0) < 10_000) return;
-    const refresh = (provider === "codex"
-      ? this.refreshCodexHistory(cwd, key)
-      : this.refreshAdapterHistory(provider, cwd, key))
+    this.adapterHistoryFolderMap(provider).set(key, cwd);
+    const running = this.adapterHistoryRuns?.get(provider);
+    if (running) {
+      if (!history.cache.has(key)) {
+        void running.then(() => { if (!history.cache.has(key)) this.scheduleAdapterHistoryRefresh(provider, cwd); });
+      }
+      return;
+    }
+    const stamp = this.adapterHistoryStamps?.get(provider);
+    if (stamp && Date.now() - stamp.at < 10_000 && (stamp.refused || history.cache.has(key))) return;
+    this.trackAdapterHistoryRun(provider, (provider === "codex"
+      ? this.refreshCodexHistory(cwd)
+      : this.refreshAdapterHistory(provider, cwd))
       .catch((error) => {
         this.host.appendLine(`[${provider}] session listing failed: ${(error as Error).message}`);
         const credential = this.createProviderBackend(provider)?.isCredentialError(error);
         if (!credential) return;
-        history.at.set(key, Date.now());
+        (this.adapterHistoryStamps ??= new Map()).set(provider, { at: Date.now(), refused: true });
         this.setProviderNeedsLogin(provider, true);
-      })
-      .finally(() => history.refresh.delete(key));
-    history.refresh.set(key, refresh);
+      }));
   }
 
-  private async refreshCodexHistory(cwd: string, key = projectProviderKey(cwd)): Promise<void> {
-    return this.refreshAdapterHistory("codex", cwd, key);
+  /** `run` is the provider's running listing until it settles; it must not reject. */
+  private trackAdapterHistoryRun(provider: AcpProvider, run: Promise<void>): void {
+    const runs = this.adapterHistoryRuns ??= new Map();
+    runs.set(provider, run);
+    void run.then(() => { if (runs.get(provider) === run) runs.delete(provider); });
+  }
+
+  private adapterHistoryFolderMap(provider: AcpProvider): Map<string, string> {
+    const all = this.adapterHistoryFolders ??= new Map();
+    let folders = all.get(provider);
+    if (!folders) all.set(provider, folders = new Map());
+    return folders;
+  }
+
+  private async refreshCodexHistory(cwd: string): Promise<void> {
+    return this.refreshAdapterHistory("codex", cwd);
   }
 
   /**
@@ -15201,24 +15223,45 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     return forUpdate ? entry.client.disposeForUpdate() : entry.client.dispose();
   }
 
-  private async refreshAdapterHistory(provider: AcpProvider, cwd: string, key = projectProviderKey(cwd)): Promise<void> {
+  /**
+   * List `cwd`'s history -- and every other folder's, in the same listing --
+   * and resolve once it is in the cache. One listing at a time per provider,
+   * on its one shared process; a caller that needs a listing taken after its
+   * own request (clearing a project) queues behind a running one rather than
+   * reading its answer. A previous listing's failure belongs to its own caller.
+   */
+  private async refreshAdapterHistory(provider: AcpProvider, cwd: string): Promise<void> {
     if (this.providerCliUpdate?.provider === provider) return;
     if (!usesAdapterHistory(provider)) return;
     if (!this.adapterHistory(provider) || !this.locateProvider(provider)) return;
     if (!this.connectedProviders().includes(provider)) return;
-    // Queued rather than concurrent: the rail asks for every repo at once and
-    // they now share one process, so the opening burst becomes N cheap round
-    // trips instead of N spawns. A previous listing's failure belongs to its
-    // own caller and must not break the chain for the next one.
+    this.adapterHistoryFolderMap(provider).set(projectProviderKey(cwd), cwd);
     const signal = this.providerRunSignal(provider);
-    const run = (this.adapterHistoryQueue.get(provider) ?? Promise.resolve())
-      .catch(() => { /* handled by whoever awaited it */ })
-      .then(() => { if (!signal.aborted) return this.listAdapterHistory(provider, cwd, key); });
-    this.adapterHistoryQueue.set(provider, run.catch(() => { /* keep the chain alive */ }));
+    const run = (this.adapterHistoryRuns?.get(provider) ?? Promise.resolve())
+      .then(() => { if (!signal.aborted) return this.listAdapterHistory(provider); });
+    this.trackAdapterHistoryRun(provider, run.catch(() => { /* handled by whoever awaited it */ }));
     return run;
   }
 
-  private async listAdapterHistory(provider: AcpProvider, cwd: string, key: string): Promise<void> {
+  /**
+   * One listing of a provider's history, for every folder asked about
+   * (adapterHistoryFolders), filling each folder's rows in the cache.
+   *
+   * Codex and Antigravity have a catalog that is not scoped by folder: codex
+   * takes no cwd on the wire at all, and Antigravity's is one directory. They
+   * are read ONCE and split by the same exact-path match each folder's own
+   * listing applies, so every folder's rows are what its own listing gave.
+   * Measured on a desk with sixty projects: sixty codex catalog reads of ~1.2 s
+   * each, back to back, became one.
+   *
+   * Claude and Muse take the folder on the wire and are still asked per
+   * folder, inside this one listing. Not by choice for Claude: its unscoped
+   * listing was measured leaving out conversations its scoped one returns for
+   * the same folder. Muse matches folders itself, by a rule this host cannot
+   * see. Both answer in milliseconds, so the per-folder calls cost little; what
+   * mattered is that they end in one update below rather than one per folder.
+   */
+  private async listAdapterHistory(provider: AcpProvider): Promise<void> {
     const history = this.adapterHistory(provider);
     // Re-checked here, not only at queue time: a provider can be disconnected
     // or its CLI replaced while this call was waiting its turn.
@@ -15226,7 +15269,16 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     if (!history || !cliPath || !this.connectedProviders().includes(provider)) return;
     if (this.providerCliUpdate?.provider === provider) return;
     const signal = this.providerRunSignal(provider);
-    let result: { sessions: BackendSessionListEntry[] };
+    const folders = this.adapterHistoryFolderMap(provider);
+    const authorized = this.authorizedSessionCwds();
+    // Live: a folder asked about while this listing runs is read by it too.
+    const listable = function* () {
+      for (const [key, cwd] of folders) {
+        if (authorizedListCwd(cwd, authorized, pathsEqual)) yield [key, cwd] as const;
+        else folders.delete(key);
+      }
+    };
+    const listed = new Map<string, BackendSessionListEntry[]>();
     if (provider === "agy") {
       // A directory read; starting a server for it would cost more than the
       // listing is worth (see listAgySessions).
@@ -15235,13 +15287,23 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Pinned ones are still read: Pinned looks them up in this cache.
       const pinned = new Set(Object.entries(this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {}))
         .filter(([, o]) => typeof o?.pinnedAt === "number").map(([id]) => id));
-      result = { sessions: listAgySessions(cwd, process.platform, { since: Date.now() - HISTORY_HORIZON_MS, keepIds: pinned }) };
+      const catalog = listAgyCatalog(process.platform, { since: Date.now() - HISTORY_HORIZON_MS, keepIds: pinned });
+      for (const [key, cwd] of listable()) listed.set(key, agySessionsFor(catalog, cwd, process.platform));
     } else {
       const client = await this.adapterHistoryClient(provider, cliPath);
       if (!client || signal.aborted) return;
-      result = await client.listSessions(cwd, process.platform);
+      const catalog = await client.listSessionCatalog(process.platform);
+      if (catalog) {
+        for (const [key, cwd] of listable()) listed.set(key, catalog.sessionsFor(cwd));
+      } else {
+        for (const [key, cwd] of listable()) {
+          listed.set(key, (await client.listSessions(cwd, process.platform)).sessions);
+          if (signal.aborted) return;
+        }
+      }
     }
     if (signal.aborted) return;
+    const result = { sessions: [...listed.values()].flat() };
     const overrides = this.state.get<SessionMetaOverrides>(SESSION_META_KEY, {});
     const stableOverrides: SessionMetaOverrides = { ...overrides };
     // First-seen adapter listing time is a baseline only. Claude restamps
@@ -15262,7 +15324,6 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
         activeAt: adapterListEntry(entry, {}, provider, Date.now()).updatedAt,
       };
     }
-    const entries = result.sessions.map((entry) => adapterListEntry(entry, stableOverrides, provider));
     // Same reasoning as startSession's: listing sessions reads this machine's
     // own files and succeeds with any token at all. On the owner's host a
     // phone reconnect swept four project folders at 10:05:40, spawning an
@@ -15272,8 +15333,14 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
     // evidence -- but a listing that succeeds is evidence of nothing.
     // (Kept on the grok/probe paths, which make a call the account must
     // authorize; this one does not.)
-    history.cache.set(key, entries);
-    history.at.set(key, Date.now());
+    const moved: string[] = [];
+    for (const [key, sessions] of listed) {
+      const rows = sessions.map((entry) => adapterListEntry(entry, stableOverrides, provider));
+      const before = history.cache.get(key);
+      if (!before || JSON.stringify(before) !== JSON.stringify(rows)) moved.push(key);
+      history.cache.set(key, rows);
+    }
+    (this.adapterHistoryStamps ??= new Map()).set(provider, { at: Date.now() });
     await this.updateSessionMeta((current) => {
       let changed = false;
       const next = { ...current };
@@ -15298,8 +15365,15 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       }
       return changed ? next : null;
     });
+    // Once per listing, whatever it covered: each of these rebuilds Recent,
+    // which asks for its folders again -- an ask this listing has just
+    // answered, so it ends here instead of re-arming another. A project's own
+    // rail preview is re-sent only where its rows moved.
     this.postSessionsList();
-    this.sendLocalRepoSessionsPreview(cwd);
+    for (const key of moved) {
+      const cwd = folders.get(key);
+      if (cwd) this.sendLocalRepoSessionsPreview(cwd);
+    }
   }
 
   private buildGrokSessionsList(

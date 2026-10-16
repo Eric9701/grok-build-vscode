@@ -269,25 +269,51 @@ export async function listAllCodexSessions(
   platform: NodeJS.Platform,
   maxPages = 100,
 ): Promise<BackendSessionListResult> {
-  const target = codexSessionPathKey(cwd, platform);
+  return { sessions: codexSessionsFor(await listCodexCatalog(fetchPage, maxPages), cwd, platform), nextCursor: null };
+}
+
+/**
+ * Every page of codex's `session/list`, every folder. Codex takes no cwd on
+ * the wire, so this is what each folder's listing already read in full before
+ * keeping its own rows -- reading it once serves every folder.
+ */
+export async function listCodexCatalog(
+  fetchPage: (cursor?: string) => Promise<any>,
+  maxPages = 100,
+): Promise<BackendSessionListEntry[]> {
   const sessions: BackendSessionListEntry[] = [];
-  const ids = new Set<string>();
   const cursors = new Set<string>();
   let cursor: string | undefined;
   for (let page = 0; page < maxPages; page += 1) {
     const result = await fetchPage(cursor);
     for (const entry of Array.isArray(result?.sessions) ? result.sessions : []) {
       if (!entry || typeof entry.sessionId !== "string" || typeof entry.cwd !== "string") continue;
-      if (codexSessionPathKey(entry.cwd, platform) !== target || ids.has(entry.sessionId)) continue;
-      ids.add(entry.sessionId);
       sessions.push(entry);
     }
     const next = typeof result?.nextCursor === "string" && result.nextCursor ? result.nextCursor : undefined;
-    if (!next || cursors.has(next)) return { sessions, nextCursor: null };
+    if (!next || cursors.has(next)) return sessions;
     cursors.add(next);
     cursor = next;
   }
-  return { sessions, nextCursor: null };
+  return sessions;
+}
+
+/** One folder's rows out of {@link listCodexCatalog}: exact path match, first
+ *  sighting of an id wins. */
+export function codexSessionsFor(
+  catalog: readonly BackendSessionListEntry[],
+  cwd: string,
+  platform: NodeJS.Platform,
+): BackendSessionListEntry[] {
+  const target = codexSessionPathKey(cwd, platform);
+  const sessions: BackendSessionListEntry[] = [];
+  const ids = new Set<string>();
+  for (const entry of catalog) {
+    if (codexSessionPathKey(entry.cwd, platform) !== target || ids.has(entry.sessionId)) continue;
+    ids.add(entry.sessionId);
+    sessions.push(entry);
+  }
+  return sessions;
 }
 
 export function isCodexCredentialError(error: unknown): boolean {
@@ -403,6 +429,14 @@ export class CodexBackend implements AcpBackend {
       cwd,
       platform,
     );
+  }
+
+  listSessionCatalog(request: (method: string, params: any) => Promise<any>): Promise<BackendSessionListEntry[]> {
+    return listCodexCatalog((cursor) => request("session/list", cursor ? { cursor } : {}));
+  }
+
+  catalogSessionsFor(catalog: readonly BackendSessionListEntry[], cwd: string, platform: NodeJS.Platform): BackendSessionListEntry[] {
+    return codexSessionsFor(catalog, cwd, platform);
   }
 
   isCredentialError(error: unknown): boolean { return isCodexCredentialError(error); }

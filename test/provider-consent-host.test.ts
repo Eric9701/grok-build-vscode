@@ -26,6 +26,8 @@ vi.mock("../src/acp", async original => {
     async newSession() { calls.newSession(this.provider); this.sessionId = "new-id"; return { sessionId: this.sessionId }; }
     async loadSession() { calls.loadSession(this.provider); return { sessionId: "old-id" }; }
     async listSessions() { calls.list(this.provider); return { sessions: [{ sessionId: "saved-id", cwd: process.cwd(), title: "Saved", updatedAt: new Date().toISOString() }] }; }
+    // Claude is listed per folder: no single catalog read.
+    async listSessionCatalog() { return undefined; }
     async deleteSession() { calls.delete(this.provider); }
     async dispose() {}
     isCredentialError() { return false; }

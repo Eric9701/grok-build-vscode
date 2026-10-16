@@ -71,13 +71,13 @@ describe("multi-provider review regressions", () => {
     instance.sendRemoteClient = vi.fn();
     instance.scheduleCodexHistoryRefresh = vi.fn();
     instance.codexSessionCache = new Map([["sentinel", [{ id: "keep" }]]]);
-    instance.codexSessionCacheAt = new Map([["sentinel", 123]]);
+    instance.adapterHistoryStamps = new Map([["codex", { at: 123 }]]);
 
     instance.installTestHooks().fromRemote({ type: "listSessions", offset: 0, query: "" }, "phone");
 
     expect(instance.scheduleCodexHistoryRefresh).not.toHaveBeenCalled();
     expect(instance.codexSessionCache.get("sentinel")).toEqual([{ id: "keep" }]);
-    expect(instance.codexSessionCacheAt.get("sentinel")).toBe(123);
+    expect(instance.adapterHistoryStamps.get("codex")).toEqual({ at: 123 });
     expect(instance.sendRemoteClient).toHaveBeenCalledWith("phone", {
       type: "sessions",
       entries: [],

@@ -35,6 +35,7 @@ vi.mock("../src/acp", async (importOriginal) => {
     constructor(readonly options: unknown) { super(); }
     async start(): Promise<void> {}
     async listSessions(): Promise<never> { throw probe.error; }
+    async listSessionCatalog(): Promise<never> { throw probe.error; }
     async dispose(): Promise<void> {}
   }
   return { ...actual, AcpClient: ListRefusingAcpClient };
@@ -54,12 +55,9 @@ function makeSidebar(cwd = "/repo"): any {
   sidebar.focused.provider = "codex";
   sidebar.focused.cwd = cwd;
   sidebar.codexSessionCache = new Map();
-  sidebar.codexSessionCacheAt = new Map();
-  sidebar.codexSessionRefresh = new Map();
-  // The shared per-provider history process and its queue. Listings reuse one
-  // process across repos now, so a double that reaches them needs both.
+  // The shared per-provider history process. Listings reuse one process
+  // across repos, so a double that reaches them needs it.
   sidebar.adapterHistoryClients = new Map();
-  sidebar.adapterHistoryQueue = new Map();
   sidebar.state = { get: vi.fn((_key: string, fallback: unknown) => fallback), update: vi.fn(async () => {}) };
   sidebar.host = {
     appendLine: vi.fn(),
@@ -119,14 +117,14 @@ describe("an agent that will not authenticate", () => {
   it("an explicit re-check bypasses listing freshness and clears needs-login after sign-in", async () => {
     const sidebar = makeSidebar();
     sidebar.providerNeedsLogin = { codex: true };
-    sidebar.codexSessionCacheAt.set(projectProviderKey("/repo"), Date.now());
+    sidebar.adapterHistoryStamps = new Map([["codex", { at: Date.now() }]]);
     vi.mocked(warmCodexModelCache).mockResolvedValueOnce(undefined as never);
 
     await sidebar.onMessage({ type: "recheckConnection", provider: "codex" }, "local");
 
     expect(warmCodexModelCache).toHaveBeenCalled();
     expect(codexState(sidebar).needsLogin).toBeUndefined();
-    expect(sidebar.codexSessionCacheAt.has(projectProviderKey("/repo"))).toBe(false);
+    expect(sidebar.adapterHistoryStamps.has("codex")).toBe(false);
     // Say it worked. A re-check that succeeds and shows nothing is
     // indistinguishable from one that did nothing.
     expect(onboardingStates(sidebar)).toContain("provider-connected");
@@ -200,12 +198,13 @@ describe("an agent that will not authenticate", () => {
     sidebar.remoteClients.setActive("phone", session);
 
     sidebar.installTestHooks().fromRemote({ type: "listSessions", offset: 0, query: "" }, "phone");
-    await sidebar.codexSessionRefresh.get(projectProviderKey("/repo"));
+    await sidebar.adapterHistoryRuns.get("codex");
 
     expect(codexState(sidebar)).toMatchObject({ needsLogin: true });
     expect(sidebar.codexSessionCache.get(projectProviderKey("/repo"))).toBeUndefined();
     // Backed off, so the repaint this state change causes cannot re-list in a loop.
-    expect(sidebar.codexSessionCacheAt.get(projectProviderKey("/repo"))).toBeGreaterThan(0);
+    expect(sidebar.adapterHistoryStamps.get("codex")).toMatchObject({ refused: true });
+    expect(sidebar.adapterHistoryStamps.get("codex").at).toBeGreaterThan(0);
   });
 
   it("leaves an account alone when the failure is billing rather than credentials", async () => {
@@ -223,7 +222,7 @@ describe("an agent that will not authenticate", () => {
     });
 
     sidebar.installTestHooks().fromRemote({ type: "listSessions", offset: 0, query: "" }, "phone");
-    await sidebar.codexSessionRefresh.get(projectProviderKey("/repo"));
+    await sidebar.adapterHistoryRuns.get("codex");
 
     // A login screen cannot fix an entitlement problem (#58), so the account
     // must not be labelled signed-out.
@@ -243,7 +242,7 @@ describe("an agent that will not authenticate", () => {
     sidebar.remoteClients.setActive("phone", session);
 
     sidebar.installTestHooks().fromRemote({ type: "listSessions", offset: 0, query: "" }, "phone");
-    await sidebar.codexSessionRefresh.get(projectProviderKey("/repo"));
+    await sidebar.adapterHistoryRuns.get("codex");
 
     expect(codexState(sidebar).needsLogin).toBeUndefined();
   });

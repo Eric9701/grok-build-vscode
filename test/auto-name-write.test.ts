@@ -39,6 +39,10 @@ vi.mock("../src/acp", async (importOriginal) => {
     async listSessions(): Promise<{ sessions: Array<{ sessionId: string; title: string; cwd: string; updatedAt: number }> }> {
       return { sessions: adapterSessions };
     }
+    // Codex's whole catalog in one read; the fixture is all one folder.
+    async listSessionCatalog() {
+      return { sessionsFor: () => adapterSessions };
+    }
     async dispose(): Promise<void> {}
     async setMode(): Promise<void> {}
     isCredentialError(): boolean {
@@ -75,15 +79,11 @@ function makeSidebar(cwd: string): any {
   sidebar.sessionMetaWrites = Promise.resolve();
   sidebar.sessionCache = new Map();
   sidebar.codexSessionCache = new Map();
-  sidebar.codexSessionCacheAt = new Map();
-  sidebar.codexSessionRefresh = new Map();
-  // The shared per-provider history process and its queue. Listings reuse one
-  // process across repos now, so a double that reaches them needs both.
+  // The shared per-provider history process. Listings reuse one process
+  // across repos, so a double that reaches them needs it.
   sidebar.adapterHistoryClients = new Map();
-  sidebar.adapterHistoryQueue = new Map();
   sidebar.claudeSessionCache = new Map();
-  sidebar.claudeSessionCacheAt = new Map();
-  sidebar.claudeSessionRefresh = new Map();
+  sidebar.worktreeCache = [];
   sidebar.loginReprobeTimers = new Map();
   sidebar.turnOrderTimers = new Set();
   sidebar.pendingConfirms = new Map();

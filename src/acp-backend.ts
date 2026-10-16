@@ -196,6 +196,21 @@ export interface AcpBackend<Provider extends string = AcpProvider> {
     cwd: string,
     platform: NodeJS.Platform,
   ): Promise<BackendSessionListResult>;
+  /**
+   * The whole catalog in one listing, for an agent whose `session/list` is not
+   * scoped by folder in the first place (codex returns every folder whatever
+   * it is asked). Present only together with {@link catalogSessionsFor}, which
+   * must give each folder exactly what `listSessions(cwd)` would have.
+   */
+  listSessionCatalog?(
+    request: (method: string, params: any) => Promise<any>,
+    platform: NodeJS.Platform,
+  ): Promise<BackendSessionListEntry[]>;
+  catalogSessionsFor?(
+    catalog: readonly BackendSessionListEntry[],
+    cwd: string,
+    platform: NodeJS.Platform,
+  ): BackendSessionListEntry[];
   isCredentialError(error: unknown): boolean;
   /** Extra `session/new` and `session/load` params beyond cwd and mcpServers. */
   sessionParams?(cwd: string): Record<string, unknown>;

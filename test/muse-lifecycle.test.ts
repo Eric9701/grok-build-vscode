@@ -84,7 +84,7 @@ it("invalidates Muse clients on a configured-path change while preserving conver
   const grok = { provider: "grok" };
   s.focused = muse; s.pool = new Set([muse, grok]);
   s.remoteClients = { detachedActiveValues: () => [] };
-  s.museSessionCache = new Map([["project", []]]); s.museSessionCacheAt = new Map([["project", 1]]);
+  s.museSessionCache = new Map([["project", []]]); s.adapterHistoryStamps = new Map([["muse", { at: 1 }]]);
   s.detachClient = vi.fn(() => ({ dispose: () => stopped.promise }));
   s.emit = vi.fn(); s.postProviderState = vi.fn();
   const changing = s.invalidateMuseCli();
@@ -93,5 +93,5 @@ it("invalidates Muse clients on a configured-path change while preserving conver
   expect(s.postProviderState).not.toHaveBeenCalled();
   stopped.resolve(); await changing;
   expect(muse.activeSessionId).toBe("keep"); expect(muse.hasHistory).toBe(true);
-  expect(s.museSessionCache.size).toBe(0); expect(s.postProviderState).toHaveBeenCalledOnce();
+  expect(s.museSessionCache.size).toBe(0); expect(s.adapterHistoryStamps.has("muse")).toBe(false); expect(s.postProviderState).toHaveBeenCalledOnce();
 });

@@ -28,8 +28,6 @@ function makeSidebar(connected: Provider[]): any {
   sidebar.sessionCache = new Map();
   for (const id of ["codex", "claude"]) {
     sidebar[`${id}SessionCache`] = new Map();
-    sidebar[`${id}SessionCacheAt`] = new Map();
-    sidebar[`${id}SessionRefresh`] = new Map();
   }
   sidebar.disposeAdapterHistoryClient = vi.fn(async () => {});
   sidebar.removeSessionFromDisk = vi.fn();

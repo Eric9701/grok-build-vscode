@@ -60,12 +60,9 @@ function makeSidebar(options: {
   sidebar.sessionCache = new Map();
   sidebar.sessionLoadReservations = new Map();
   sidebar.codexSessionCache = new Map();
-  sidebar.codexSessionCacheAt = new Map();
-  sidebar.codexSessionRefresh = new Map();
-  // The shared per-provider history process and its queue. Listings reuse one
-  // process across repos now, so a double that reaches them needs both.
+  // The shared per-provider history process. Listings reuse one process
+  // across repos, so a double that reaches them needs it.
   sidebar.adapterHistoryClients = new Map();
-  sidebar.adapterHistoryQueue = new Map();
   sidebar.loginReprobeTimers = new Map();
   sidebar.worktreeCache = [];
   sidebar.focused = new Session();

@@ -44,7 +44,7 @@ import { filterAdvertisedCommands } from "./slash-filter";
 import { grokCliNeedsShell } from "./cli-process";
 import { compareVersionTuple, parseGrokVersion } from "./cli-locator";
 import { resolvedTerminalShellDialect } from "./terminal-manager";
-import type { AcpBackend, AcpProvider, BackendSessionListResult, BackendSteeringCapabilities } from "./acp-backend";
+import type { AcpBackend, AcpProvider, BackendSessionListEntry, BackendSessionListResult, BackendSteeringCapabilities } from "./acp-backend";
 import { buildGrokAgentArgs, grokBackend } from "./grok-backend";
 import {
   parseWorktreeApply,
@@ -898,6 +898,22 @@ export class AcpClient extends EventEmitter {
       ...result,
       sessions: [{ sessionId: this.sessionId, cwd: this.opts.cwd, title: this.currentSessionTitle }, ...result.sessions],
     };
+  }
+
+  /**
+   * Every folder's sessions from one listing, for an agent whose `session/list`
+   * is not scoped by folder anyway; undefined when it is (then list per folder
+   * with {@link listSessions}). `sessionsFor(cwd)` is what the backend's own
+   * per-folder listing keeps, from the one read. Used by the history process,
+   * which never has a session of its own, so nothing live is folded in.
+   */
+  async listSessionCatalog(platform: NodeJS.Platform = process.platform): Promise<{
+    sessionsFor(cwd: string): BackendSessionListEntry[];
+  } | undefined> {
+    const backend = this.backend;
+    if (!backend.listSessionCatalog || !backend.catalogSessionsFor) return undefined;
+    const catalog = await backend.listSessionCatalog((method, params) => this.request(method, params), platform);
+    return { sessionsFor: (cwd) => backend.catalogSessionsFor!(catalog, cwd, platform) };
   }
 
   /** Read Grok's MCP inventory from the same ACP session as the conversation. */

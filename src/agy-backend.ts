@@ -641,22 +641,32 @@ const realHistoryFs: AgyHistoryFs = {
 export function listAgySessions(
   cwd: string,
   platform: NodeJS.Platform = process.platform,
-  options: {
-    env?: NodeJS.ProcessEnv;
-    home?: string;
-    fs?: AgyHistoryFs;
-    /** Skip a conversation whose transcript last changed before this (ms),
-     *  without reading its metadata -- the history horizon. */
-    since?: number;
-    /** Read these whatever their age (pinned conversations). */
-    keepIds?: ReadonlySet<string>;
-  } = {},
+  options: AgyCatalogOptions = {},
+): BackendSessionListEntry[] {
+  return agySessionsFor(listAgyCatalog(platform, options), cwd, platform);
+}
+
+export interface AgyCatalogOptions {
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  fs?: AgyHistoryFs;
+  /** Skip a conversation whose transcript last changed before this (ms),
+   *  without reading its metadata -- the history horizon. */
+  since?: number;
+  /** Read these whatever their age (pinned conversations). */
+  keepIds?: ReadonlySet<string>;
+}
+
+/** Every folder's conversations in one directory read: what
+ *  {@link listAgySessions} reads, before it keeps one folder's. */
+export function listAgyCatalog(
+  _platform: NodeJS.Platform = process.platform,
+  options: AgyCatalogOptions = {},
 ): BackendSessionListEntry[] {
   const io = options.fs ?? realHistoryFs;
   const dir = path.join(agyAcpDir(options.env, options.home), "conversations");
   let names: string[];
   try { names = io.readDir(dir); } catch { return []; }
-  const target = agySessionPathKey(cwd, platform);
   const sessions: BackendSessionListEntry[] = [];
   for (const name of names) {
     if (!name.endsWith(".db")) continue;
@@ -666,10 +676,21 @@ export function listAgySessions(
       && !options.keepIds?.has(sessionId)) continue;
     let sessionCwd: unknown;
     try { sessionCwd = JSON.parse(io.readFile(path.join(dir, `${sessionId}.meta`)))?.cwd; } catch { continue; }
-    if (typeof sessionCwd !== "string" || agySessionPathKey(sessionCwd, platform) !== target) continue;
+    if (typeof sessionCwd !== "string") continue;
     sessions.push({ sessionId, cwd: sessionCwd, ...(updatedAt !== undefined ? { updatedAt } : {}) });
   }
   return sessions;
+}
+
+/** One folder's rows out of {@link listAgyCatalog}, matched the way the server
+ *  should have matched them (ignoring Windows case). */
+export function agySessionsFor(
+  catalog: readonly BackendSessionListEntry[],
+  cwd: string,
+  platform: NodeJS.Platform = process.platform,
+): BackendSessionListEntry[] {
+  const target = agySessionPathKey(cwd, platform);
+  return catalog.filter((entry) => agySessionPathKey(entry.cwd, platform) === target);
 }
 
 export interface AgyBackendOptions {
