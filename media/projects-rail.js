@@ -47,6 +47,11 @@
   // things have been, the newest few stay in view. Coming back from a month away
   // would otherwise archive everything at once and read as broken.
   const RAIL_ALWAYS_VISIBLE = 3;
+  // How long the first draw of Projects waits for the projects' own rows. Until
+  // they arrive the age rule cannot run, so a quiet project sat in Projects and
+  // then jumped to the Archive a moment later. The rows now arrive in a second
+  // or two; past this, Projects is drawn with what is known, as before.
+  const RAIL_PLACEMENT_HOLD_MS = 4000;
 
   /** Palette the host accepts — ids match REPO_COLOR_IDS in sessions.ts. */
   const REPO_COLOR_SWATCHES = [
@@ -1032,18 +1037,21 @@
     const ordered = current && active.indexOf(current) > 0
       ? [current, ...active.filter((r) => r !== current)]
       : active;
-    const projectRepos = ordered.filter((r) => !q || repoHasMatch(r));
+    const holding = placementHeld(active);
+    // While held, the IDE's own folder still shows: its place never depends on age.
+    const projectRepos = (holding ? ordered.filter((r) => sameCwd(r.cwd, state.workspaceCwd)) : ordered)
+      .filter((r) => !q || repoHasMatch(r));
     // Archiving every project must not take the screen's controls with it. The
     // header, the "+" and the wide add target all live inside this block, so
     // the last archived row used to leave a rail with no way to add anything --
     // and the `!shown` fallback below could not step in, because the archive
     // section had already set `shown`. The archive is a grouping, not a
     // different screen, so Projects stays with an empty state of its own.
-    const emptyProjects = !projectRepos.length && !q && archived.length > 0;
+    const emptyProjects = !holding && !projectRepos.length && !q && archived.length > 0;
     // No project at all yet while Recent or Pinned are showing: Projects still
     // says where they come from. (With nothing showing, the note below does.)
-    const noProjects = !projectRepos.length && !archived.length && !q && shown;
-    if (projectRepos.length || emptyProjects || noProjects) {
+    const noProjects = !holding && !projectRepos.length && !archived.length && !q && shown;
+    if (projectRepos.length || emptyProjects || noProjects || holding) {
       const forcedOpen = !!q;
       const open = forcedOpen || !state.groupCollapsed.projects;
       root.appendChild(collapsibleGroupHead({
@@ -1066,6 +1074,12 @@
           }));
         }
         root.appendChild(list);
+        if (holding) {
+          const note = document.createElement("div");
+          note.className = "rail-note";
+          note.textContent = "Loading…";
+          root.appendChild(note);
+        }
         if (emptyProjects) {
           const note = document.createElement("div");
           note.className = "rail-note";
@@ -1088,7 +1102,7 @@
       shown = true;
     }
 
-    const visibleArchived = archived.filter((r) => !q || repoHasMatch(r));
+    const visibleArchived = holding ? [] : archived.filter((r) => !q || repoHasMatch(r));
     if (visibleArchived.length) {
       const forcedOpen = !!q;
       const open = forcedOpen || !state.groupCollapsed.archived;
@@ -1430,6 +1444,29 @@
     if (!known) return !!repo.archived;
     if (floorKeys.has(cwdKey(repo.cwd))) return false;
     return at > 0 ? now - at > RAIL_ARCHIVE_AFTER_MS : true;
+  }
+
+  /**
+   * Whether the first draw of Projects is still waiting: some project in it has
+   * no rows yet and no stored choice, so the age rule may yet move it to the
+   * Archive. Only the first few seconds of the view (RAIL_PLACEMENT_HOLD_MS);
+   * a project added later is drawn at once, as before.
+   */
+  function placementHeld(active) {
+    // No archive on this host: nothing can move, so nothing to wait for.
+    if (!state.repos.some((r) => typeof r.archived === "boolean")) return false;
+    if (state.placementHoldUntil === undefined) {
+      // From the catalog's arrival, not the page's: a slow host start must not
+      // use up the wait before there is anything to place.
+      state.placementHoldUntil = Date.now() + RAIL_PLACEMENT_HOLD_MS;
+      setTimeout(render, RAIL_PLACEMENT_HOLD_MS + 50);
+    }
+    if (Date.now() >= state.placementHoldUntil) return false;
+    return active.some((r) => {
+      if (!r.available || Number(r.archivedAt) > 0) return false;
+      if (sameCwd(r.cwd, state.workspaceCwd) || sameCwd(r.cwd, state.currentCwd)) return false;
+      return !sessionsForRepo(r).known;
+    });
   }
 
   /** Split the catalog into what belongs in Projects and what belongs in the Archive. */
