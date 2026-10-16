@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Muse Code sees an attached picture (#211).** Sending an image to a Muse conversation failed with a red "Internal error" before Muse was even asked; the picture now reaches Muse, and a model that reads images (Muse Wonder) answers about it. Thanks to zpanos74 for the report.
+
 ## 4.15.0 — 2026-10-16
 
 **AFK Pilot is the name, Antigravity joins as a fifth agent, and Projects is the folders you chose.**

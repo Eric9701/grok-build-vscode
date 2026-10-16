@@ -21,7 +21,7 @@ const app = agent()
     try { await session.initialize(); models = await session.models(); }
     catch (error) { void stop(error); throw error; }
     return { _meta: { models }, protocolVersion: 1, agentInfo: { name: "muse_adapter", version: "1" },
-      agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} }, promptCapabilities: { image: false, embeddedContext: false } } };
+      agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} }, promptCapabilities: { image: true, embeddedContext: false } } };
   })
   .onRequest("session/new", ({ params }) => session.newSession(params.cwd, params.mcpServers))
   .onRequest("session/load", ({ params }) => session.loadSession(params.sessionId, params.cwd, params.mcpServers))

@@ -31,6 +31,22 @@ export function museTurnFailure(terminal: { error?: { kind?: string; message?: s
   return new RequestError(-32603, kind === "authRequired" ? `${text} (authRequired)` : text, kind ? { kind } : undefined);
 }
 
+/**
+ * An ACP prompt as Muse turn input. Muse takes images itself (MSP
+ * `TurnInputPart`: `{type: "image", base64Data, mediaType}`); this adapter used
+ * to refuse any non-text block with a plain Error, which the host showed as a
+ * bare "Internal error" for every attached picture (#211). Anything else is
+ * still refused, in words.
+ */
+export function museTurnInput(prompt: ContentBlock[]): Array<{ type: "text"; text: string } | { type: "image"; base64Data: string; mediaType: string }> {
+  if (!prompt.length) throw new RequestError(-32602, "Muse Code got an empty message.");
+  return prompt.map((part) => {
+    if (part.type === "text") return { type: "text", text: part.text };
+    if (part.type === "image" && part.data && part.mimeType) return { type: "image", base64Data: part.data, mediaType: part.mimeType };
+    throw new RequestError(-32602, `Muse Code can't take this kind of attachment (${part.type}); send text or images.`);
+  });
+}
+
 const RESUME_RETRY_DELAY_MS = 300;
 const RESUME_RETRY_WINDOW_MS = 10_000;
 
@@ -389,7 +405,7 @@ export class MuseSession {
     if (this.approvalMode === "denyUnmatched") await this.updates;
     this.assertSandbox(this.approvalMode);
     if (this.pending) throw new Error("Muse session already has an active prompt");
-    if (!prompt.length || prompt.some(part => part.type !== "text")) throw new Error("Muse adapter accepts text prompts only");
+    const input = museTurnInput(prompt);
     let pending!: PendingTurn;
     const completed = new Promise<Record<string, any>>((resolve, reject) => {
       pending = { resolve, reject, early: new Map() };
@@ -401,7 +417,7 @@ export class MuseSession {
       // Approvals belong to Muse's turns, not to this prompt: one raised by a turn
       // Muse runs on its own must stay answerable while this prompt queues behind it.
       const admitted = await Promise.race([this.connection().command("turn/start", {
-        sessionId, ifBusy: "queue", input: prompt.map(part => ({ type: "text", text: (part as { text: string }).text })),
+        sessionId, ifBusy: "queue", input,
       }), completed.then(() => new Promise<never>(() => {}))]);
       if (admitted.status !== "accepted" || typeof admitted.turnId !== "string" || !admitted.turnId
         || (admitted.disposition !== "started" && admitted.disposition !== "queued")) {

@@ -569,6 +569,31 @@ describe("Muse subscription usage", () => {
   });
 });
 
+// #211: an attached picture reached the host as a bare "Internal error",
+// because this adapter refused every non-text block. Muse takes images itself.
+describe("Muse prompt input", () => {
+  it("sends an attached image to Muse as an image part, after the text", async () => {
+    const s = await ready();
+    void s.session.prompt("session", [
+      { type: "text", text: "describe this picture" },
+      { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" },
+    ]);
+    expect(s.command).toHaveBeenCalledWith("turn/start", { sessionId: "session", ifBusy: "queue", input: [
+      { type: "text", text: "describe this picture" },
+      { type: "image", base64Data: "iVBORw0KGgo=", mediaType: "image/png" },
+    ] });
+  });
+
+  it.each([
+    [[] as any[], "Muse Code got an empty message."],
+    [[{ type: "audio", mimeType: "audio/wav", data: "AAAA" }], "Muse Code can't take this kind of attachment (audio); send text or images."],
+  ])("refuses what it cannot send, in words (%#)", async (prompt, text) => {
+    const s = await ready();
+    await expect(s.session.prompt("session", prompt)).rejects.toMatchObject({ code: -32602, message: text });
+    expect(s.command.mock.calls.some(([method]: any[]) => method === "turn/start")).toBe(false);
+  });
+});
+
 describe("Muse turn admission and process ownership", () => {
   it.each([false, true])("admits a queued prompt with delivery already observed=%s and waits for its own terminal", async observed => {
     const s = await ready();
