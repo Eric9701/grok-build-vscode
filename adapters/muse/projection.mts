@@ -71,12 +71,20 @@ function museToolFailureMessage(item: Record<string, any>): string {
 /** A single session's raw MSP stream, independent of transport and SDK folds. */
 export class Projection {
   private readonly items = new Map<string, ItemState>();
+  /** The reasoning item whose thinking was the last thing emitted, if any. */
+  private lastThoughtItem?: string;
+  private readonly emit: (update: SessionUpdate) => void;
   constructor(
-    private readonly emit: (update: SessionUpdate) => void,
+    emit: (update: SessionUpdate) => void,
     private readonly log: (message: string) => void,
-  ) {}
+  ) {
+    this.emit = (update) => {
+      if (update.sessionUpdate !== "agent_thought_chunk") this.lastThoughtItem = undefined;
+      emit(update);
+    };
+  }
 
-  clear(): void { this.items.clear(); }
+  clear(): void { this.items.clear(); this.lastThoughtItem = undefined; }
 
   private append(state: ItemState, id: string, field: "text" | "output", text: string): void {
     const previous = state[field];
@@ -109,8 +117,12 @@ export class Projection {
       this.log(`Muse projection: prefix-changing reasoning revision for item ${id}`);
       return;
     }
-    const suffix = joined.slice(state.thought.length);
+    let suffix = joined.slice(state.thought.length);
     state.thought = joined;
+    // Two reasoning items back to back are two thoughts: without a break the
+    // renderer, which appends thinking, ran them into one sentence.
+    if (this.lastThoughtItem !== undefined && this.lastThoughtItem !== id) suffix = `\n\n${suffix}`;
+    this.lastThoughtItem = id;
     this.emit({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: suffix } });
   }
 

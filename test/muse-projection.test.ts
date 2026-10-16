@@ -38,6 +38,18 @@ describe("Muse raw notification projection", () => {
     expect(updates.map(u => u.content.text).join("")).toBe("Framing the plan first.\n\nThen the reply.");
   });
 
+  // Measured live 2026-10-16: "…ruling out image handling.Analyzing a conflict…"
+  it("starts a new paragraph for a second reasoning item, and not after other output", () => {
+    const updates: any[] = [];
+    const p = new Projection(u => updates.push(u), () => {});
+    p.accept("item/delta", { itemId: "r1", field: "summary.0", delta: "First thought." });
+    p.accept("item/delta", { itemId: "r2", field: "summary.0", delta: "Second thought." });
+    p.accept("item/delta", { itemId: "a", field: "text", delta: "Answer." });
+    p.accept("item/delta", { itemId: "r3", field: "summary.0", delta: "Later thought." });
+    const thinking = updates.filter(u => u.sessionUpdate === "agent_thought_chunk").map(u => u.content.text);
+    expect(thinking).toEqual(["First thought.", "\n\nSecond thought.", "Later thought."]);
+  });
+
   it("replays a reasoning item from history as thinking", () => {
     const updates: any[] = [];
     const p = new Projection(u => updates.push(u), () => {});
