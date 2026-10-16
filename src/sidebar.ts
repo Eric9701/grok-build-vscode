@@ -7201,6 +7201,28 @@ Only continue if you trust this code.`,
    *  rows (a worktree is not a checkout you choose between, and `discoverRepos`
    *  excludes `<grokHome>/worktrees` by path), so their sessions have to surface
    *  under the parent — otherwise leaving a worktree session strands it. */
+  /**
+   * The worktrees session metadata records, read once per version of it. Every
+   * authorization check asks this for every project (localTrustedSessionCwds),
+   * and every rail preview makes several checks: on a desk with 7,221 records
+   * and sixty projects that scan was ~0.75 s per preview, serially, so the rail
+   * filled one project per second (profiled 2026-10-16). Keyed by identity:
+   * the state layer hands out a new object whenever the metadata changes.
+   */
+  private metaWorktreeRefCache?: WeakMap<SessionMetaOverrides, WorktreeParentRef[]>;
+
+  private metaWorktreeRefs(overrides: SessionMetaOverrides): WorktreeParentRef[] {
+    const cache = this.metaWorktreeRefCache ??= new WeakMap();
+    let refs = cache.get(overrides);
+    if (!refs) {
+      refs = Object.values(overrides)
+        .filter((o) => o.worktreePath)
+        .map((o) => ({ path: o.worktreePath!, sourceGitRoot: o.sourceGitRoot }));
+      cache.set(overrides, refs);
+    }
+    return refs;
+  }
+
   private sessionCwdsForRepo(repoCwd: string, overrides: SessionMetaOverrides): string[] {
     const cwds: string[] = [];
     const seen = new Set<string>();
@@ -7213,14 +7235,15 @@ Only continue if you trust this code.`,
     };
     add(repoCwd);
     const known: WorktreeParentRef[] = [
-      ...Object.values(overrides)
-        .filter((o) => o.worktreePath)
-        .map((o) => ({ path: o.worktreePath!, sourceGitRoot: o.sourceGitRoot })),
+      ...this.metaWorktreeRefs(overrides),
       ...this.worktreeCache.map((wt) => ({ path: wt.path, sourceGitRoot: wt.sourceRepo })),
       ...[...this.pool]
         .filter((s) => s.worktree)
         .map((s) => ({ path: s.worktree!.path, sourceGitRoot: s.worktree!.sourceGitRoot })),
     ];
+    // Nothing to match, so no git root to look up: that is a walk up the
+    // folder tree per project, on every authorization check.
+    if (!known.length) return cwds;
     for (const p of worktreeCwdsForRepo({
       repoCwd,
       repoGitRoot: gitRootForPath(repoCwd, defaultFs) ?? repoCwd,
