@@ -89,7 +89,7 @@ The active editor rides along automatically; add more by **typing `@` in the com
 <details>
 <summary><strong>Session history</strong> — parallel sessions with status dots; resume, rename, search & clear</summary>
 
-The clock icon lists this project's sessions, newest first. Click a row to resume — images, plans, and reasoning intact — or hover to rename it or, where supported, delete it. The **search box** filters your whole history, older sessions load as you scroll, and **Clear all history** clears this project's supported provider histories while keeping open conversations. Muse history cannot be deleted here and is kept.
+The clock icon lists this project's sessions from the last 30 days, newest first (older ones stay on disk, unlisted). Click a row to resume — images, plans, and reasoning intact — or hover to rename it or, where supported, delete it. The **search box** filters that whole list, older sessions load as you scroll, and **Clear all history** clears this project's supported provider histories while keeping open conversations. Muse history cannot be deleted here and is kept.
 
 Sessions run in **parallel**: start a new one with **+** while another is mid-turn and switch between them from this list — the one you leave keeps working in the background, and switching back is instant, with no reload. Each row's **status dot** tells you what it's doing:
 
@@ -160,7 +160,7 @@ Every workflow card has one quiet header: an icon, "Workflow", the run's name, a
 <details>
 <summary><strong>Context & cost</strong> — what's in the window, and what the turns actually bill</summary>
 
-Click the **context donut** for `used / window (%)` — said in thousands, with the exact count still on the donut's own tooltip — plus what the conversation has **billed** — input, cache read, output, and the CLI-reported **USD cost** — as a session total and a per-turn split with its model calls. **Compact conversation** lives here too, right next to the number that tells you when you need it. For Grok, a **Context window** dropdown picks among the sizes the CLI offers (256K or 500K for Grok 4.7), as does `/context-window 500k`; switching to a smaller size the conversation already fills past 70% asks first, because Grok will (or may) auto-compact on your next message. The same popover answers the other usage question — **how much of your plan's window is left**, as labelled windows with a meter, a reset time, and when the reading was taken. Grok asks the account, Codex reads what Codex itself records, and Claude's arrives with your next reply.
+Click the **context donut** for `used / window (%)` — said in thousands (millions for a million-token window), with the exact count still on the donut's own tooltip — plus what the conversation has **billed** — input, cache read, output, and the CLI-reported **USD cost** — as a session total and a per-turn split with its model calls. **Compact conversation** lives here too, right next to the number that tells you when you need it. For Grok, a **Context window** dropdown picks among the sizes the CLI offers (256K or 500K for Grok 4.7), as does `/context-window 500k`; switching to a smaller size the conversation already fills past 70% asks first, because Grok will (or may) auto-compact on your next message. The same popover answers the other usage question — **how much of your plan's window is left**, as labelled windows with a meter, a reset time, and when the reading was taken. Grok asks the account, Codex reads what Codex itself records, and Claude's arrives with your next reply.
 
 ![The context popover — window usage, billed totals, and Compact](docs/screenshots/context.png)
 
@@ -169,7 +169,7 @@ Click the **context donut** for `used / window (%)` — said in thousands, with 
 <details>
 <summary><strong>Subagents</strong> — delegated tasks render as cards with their result</summary>
 
-When Grok, Claude Code or Codex delegates work to a subagent, the chat shows a card with the same quiet header as a workflow: an icon, "Subagent", the task, its status and a timer. Open it for the subagent's activity where the agent streams it (Grok, Codex), its result — which reads like a reply and has a copy button — and the tokens it used where the agent reports them. Background subagents included: their result folds back into the card when it lands. Muse Code delegates through workflows instead.
+When Grok, Claude Code, Codex or Antigravity delegates work to a subagent, the chat shows a card with the same quiet header as a workflow: an icon, "Subagent", the task, its status and a timer. Open it for the subagent's activity where the agent streams it (Grok, Codex, and Antigravity's tool calls), its result — which reads like a reply and has a copy button — and the tokens it used where the agent reports them. Background subagents included: their result folds back into the card when it lands. Antigravity reports no result of its own, so its card settles when the turn ends. Muse Code delegates through workflows instead.
 
 ![A subagent call rendered as a card in the chat](docs/screenshots/subagents.png)
 
@@ -205,7 +205,7 @@ A ` ```mermaid ` block renders as a real diagram via [Mermaid](https://mermaid.j
 <details>
 <summary><strong>Model picker</strong> — switch models live, no restart</summary>
 
-Click the model chip in the composer to open the model picker. The list comes from your CLI; switching is live in most cases. (A few models belong to a different agent and need a quick restart — the extension detects that and carries your context forward.)
+Click the model chip in the composer to open the model picker (it opens once the conversation's models have loaded). The list comes from your CLI; switching is live in most cases. (A few models belong to a different agent and need a quick restart — the extension detects that and carries your context forward.)
 
 </details>
 
@@ -244,7 +244,7 @@ Once linked, click **Remote control** and scan the QR code to continue **this co
 **Continue on phone…** in a desktop or VS Code Projects session menu opens the code for that row, even when another chat is focused. Settings → Remote control shows **This machine** live and **Continue on phone → Show code** for the focused conversation; the Command Palette also has **AFK Pilot: Continue on Phone**. Account management and the existing sign-in explainer remain available there. Remotes do not offer the desk’s handoff button.
 
 
-A **projects rail** lists every repository with Grok history and its newest conversations, with pinned conversations lifted above them across all projects and a search over both. You can start a session in any project without switching to it first, and rename, delete or clear history from the row — from the ⋯ button or by right-clicking it. Give a project a **colour** and an **icon** and it carries them everywhere it is named — its row in the rail, the chip above the message box, the project switcher, the file panel — on VS Code, desktop, cloud, or your phone. Projects you put away — and any left untouched for 30 days — fold into **Archived**, and come back on their own the moment you work in one again. Expand Archive to open a conversation or move a project back to Projects on VS Code, desktop, cloud, or your phone. Archiving keeps every project reachable. On a phone the rail is a drawer behind the handle in the header.
+A **projects rail** lists your projects — the folders you open, create, clone or add, never just any folder an agent once ran in ([docs/projects.md](docs/projects.md)) — and each one's newest conversations, with **Recent** (what you sent in or recently opened, across every folder) and pinned conversations lifted above them and a search over both. With VS Code as the host, the first time you send in a conversation whose folder is not a project — at the desk or from your phone — AFK Pilot offers to add it (`grok.askToAddProjects`); "Never for this folder" stops the question for that folder. You can start a session in any project without switching to it first, and rename, delete or clear history from the row — from the ⋯ button or by right-clicking it. Give a project a **colour** and an **icon** and it carries them everywhere it is named — its row in the rail, the chip above the message box, the project switcher, the file panel — on VS Code, desktop, cloud, or your phone. Projects you put away — and any left untouched for 30 days — fold into **Archived**, and come back on their own the moment you work in one again. Expand Archive to open a conversation or move a project back to Projects on VS Code, desktop, cloud, or your phone. Archiving keeps every project reachable. On a phone the rail is a drawer behind the handle in the header.
 
 While a device is linked or a local agent turn is in flight, the extension also **keeps the machine awake** (`caffeinate` on macOS, `SetThreadExecutionState` on Windows, `systemd-inhibit` on Linux) so a turn you kicked off from your phone isn't cut short by idle sleep. The display still sleeps — only system sleep is blocked — and the lock is released when neither a linked device nor an active local turn needs it. Turn it off with `grok.remote.keepAwake`. A **closed laptop lid can still suspend** the machine; these wake locks do not change the operating system's lid-close policy.
 
@@ -331,6 +331,9 @@ Open **Settings** from **+** in VS Code, or the rail gear in Desktop and on your
 | Setting | Default | Notes |
 |---|---|---|
 | `grok.cliPath` | `""` | Path to the `grok` binary. Empty = auto-discover (`~/.grok/bin/grok` → PATH). |
+| `grok.experimentalAntigravity` | `false` | Offer Google's Antigravity as an agent on this computer (not on cloud machines). Also the switch in Settings → Advanced. |
+| `grok.agyServerPath` | `""` | Path to Google's Antigravity ACP server (`agy_acp_server`). Empty = the copy this app installs. |
+| `grok.askToAddProjects` | `true` | The first time you send in a conversation whose folder is not one of your projects, offer to add it to Projects. Another conversation in that folder asks again; "Never for this folder" stops it for that folder. |
 | `grok.defaultModel` | `""` | Model ID for new sessions. Empty = CLI default. |
 | `grok.defaultEffort` | `""` | Reasoning effort forwarded as `--reasoning-effort` (`none` / `minimal` / `low` / `medium` / `high` / `xhigh`). Empty = CLI default. Applies live on recent CLIs; older CLIs (and resetting to the model default) restart the session. |
 | `grok.defaultMode` | `""` | Mode for new sessions, remembered automatically from your last Agent / Auto / Auto accept switch (Plan is never remembered). Empty = Auto mode where the agent has one (Claude), Agent mode elsewhere. |
@@ -384,7 +387,7 @@ VS Code commands (not Grok slash commands):
 | `AFK Pilot: Collapse All Tool Details (This Session)` | Collapse them all, and keep new ones collapsed — this session only |
 | `AFK Pilot: Rebuild Projects from recent activity` | Redo the one-time pass that added the folders you sent messages in during the last 30 days. Keeps every project you added, created or cloned, and every pin, colour, icon and archive |
 | `AFK Pilot: Show Logs` | Open the AFK Pilot output channel (ACP messages, errors) |
-| `AFK Pilot: Log Out` | Sign an agent's CLI out on this machine (`grok logout`, `codex logout`, `claude auth logout`) — the way to switch accounts. **Settings → Providers → Disconnect** only turns an agent off here and leaves its CLI signed in |
+| `AFK Pilot: Log Out` | Sign an agent's CLI out on this machine (`grok logout`, `codex logout`, `claude auth logout`; for Antigravity, its Google sign-in or saved Gemini API key) — the way to switch accounts. **Settings → Providers → Disconnect** only turns an agent off here and leaves its CLI signed in |
 
 | Key | Action |
 |---|---|

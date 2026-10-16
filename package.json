@@ -2,7 +2,7 @@
   "name": "grok-vscode-phuryn",
   "displayName": "AFK Pilot: Grok Build, Muse Code, Claude, Codex & more in one place",
   "description": "One place for Grok Build (Grok 4.7) and Muse Code (Muse Wonder), plus Codex (GPT-6 Astra), Claude Code (Opus 5.5) and Google Antigravity (Gemini 4 Argon, experimental). Previously Grok Build (Community). Remote Control from your phone, voice control, multiple sessions, images and videos, Mermaid diagrams, and LaTeX. Works with SuperGrok, X Premium+, and xAI API key. Fair Source (FSL-1.1-MIT). Not affiliated with or endorsed by SpaceXAI (formerly xAI), Meta, OpenAI, Anthropic or Google.",
-  "version": "4.14.3",
+  "version": "4.15.0",
   "publisher": "PawelHuryn",
   "author": {
     "name": "Paweł Huryn",
@@ -109,67 +109,56 @@
       {
         "command": "grok.continueOnPhone",
         "title": "Continue on Phone",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.open",
         "title": "Open",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.moveView",
         "title": "Move Chat View",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.newSession",
         "title": "New Session",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.newWorktreeSession",
         "title": "New Worktree Session",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.applyWorktree",
         "title": "Apply Worktree",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.removeWorktree",
         "title": "Remove Worktree",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.rewind",
         "title": "Rewind Conversation",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.compact",
         "title": "Compact Conversation",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.pickModel",
         "title": "Pick Model",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.toggleMode",
         "title": "Toggle Plan / Agent Mode",
-
         "category": "AFK Pilot"
       },
       {
@@ -183,7 +172,6 @@
       {
         "command": "grok.insertAtMention",
         "title": "Insert @-Mention",
-
         "category": "AFK Pilot"
       },
       {
@@ -194,68 +182,57 @@
       {
         "command": "grok.showLogs",
         "title": "Show Logs",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.settings",
         "title": "Settings",
-
         "category": "AFK Pilot",
         "icon": "$(gear)"
       },
       {
         "command": "grok.expandAllToolDetails",
         "title": "Expand All Tool Details (This Session)",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.collapseAllToolDetails",
         "title": "Collapse All Tool Details (This Session)",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.findInSession",
         "title": "Find in Conversation",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.logout",
         "title": "Log Out",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.linkRemote",
         "title": "Link this device",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.unlinkRemote",
         "title": "Unlink this device",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok._debugDummyPlan",
         "title": "Debug — Show dummy plan card (for testing Approve/Reject/Cancel)",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.composerForward",
         "title": "Composer — Move Forward",
-
         "category": "AFK Pilot"
       },
       {
         "command": "grok.composerPreviousLine",
         "title": "Composer — Move to Previous Line",
-
         "category": "AFK Pilot"
       }
     ],
@@ -382,7 +359,7 @@
         "grok.experimentalAntigravity": {
           "type": "boolean",
           "default": false,
-          "description": "Experimental: offer Google's Antigravity as an agent on this computer (not on cloud machines). Connect it in Settings → Providers; it installs Google's ACP server into this app's storage and signs in with your Google account in the browser."
+          "description": "Experimental: offer Google's Antigravity as an agent on this computer (not on cloud machines). Set it up in Settings → Providers: Install Antigravity downloads Google's ACP server into this app's storage, and Connect signs in with your Google account in the browser, or with a Gemini API key."
         },
         "grok.agyServerPath": {
           "type": "string",
@@ -484,12 +461,12 @@
         "grok.showThinking": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Show the agent's reasoning (thinking) traces in chat. Off by default — a lightweight \"Thinking…\" indicator stands in while the agent reasons. Also toggleable live from the gear menu → **Config & debug → Show thinking traces** (applies to already-loaded sessions too)."
+          "markdownDescription": "Show the agent's reasoning (thinking) traces in chat. Off by default — a lightweight \"Thinking…\" indicator stands in while the agent reasons. Also toggleable live from Settings → **General → Show thinking traces** (applies to already-loaded sessions too)."
         },
         "grok.expandCommandOutputs": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Expand tool details by default — each shell command's IN/OUT block (full command text + captured output) and each edit's inline diff (useful for auditing Auto-accept sessions). With this setting on, groups containing command or edit details (such as \"Ran N commands\" or \"Edited N files\") open too; read/explore-only groups stay collapsed, and a lone command outside a group opens its details. Off: click a row or group header (›) to expand it — edit rows always show a `+N −M` change count, even when their diff is closed. Also toggleable live from the gear menu → **Config & debug → Expand tool details**."
+          "markdownDescription": "Expand tool details by default — each shell command's IN/OUT block (full command text + captured output) and each edit's inline diff (useful for auditing Auto-accept sessions). With this setting on, groups containing command or edit details (such as \"Ran N commands\" or \"Edited N files\") open too; read/explore-only groups stay collapsed, and a lone command outside a group opens its details. Off: click a row or group header (›) to expand it — edit rows always show a `+N −M` change count, even when their diff is closed. Also toggleable live from Settings → **General → Expand tool details**."
         },
         "grok.expandDiffCard": {
           "type": "boolean",
@@ -499,7 +476,7 @@
         "grok.steerByDefault": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Send straight into the running turn instead of queueing it. Off (default): a message you send while the agent is working waits, and is sent as one prompt when the turn ends — you can still steer it on demand with the **Steer** button on the pending message. On: sending while it works **skips the queue** and injects the message into the turn immediately, so the agent changes course mid-answer. Steering never cancels the turn and never discards in-flight tool work — it is not a Stop. It carries your text and the files you attached to that message, but not the ambient editor selection. **Grok** and **OpenAI Codex** take a mid-turn correction; **Claude Code** does not, and there a message always falls back to the queue. Images are the one thing that can still be refused: an older Grok Build CLI ignores them, so a message carrying pictures is queued whole rather than arriving without them. Also toggleable live from the gear menu → **Config & debug → Steer by default**."
+          "markdownDescription": "Send straight into the running turn instead of queueing it. Off (default): a message you send while the agent is working waits, and is sent as one prompt when the turn ends — you can still steer it on demand with the **Steer** button on the pending message. On: sending while it works **skips the queue** and injects the message into the turn immediately, so the agent changes course mid-answer. Steering never cancels the turn and never discards in-flight tool work — it is not a Stop. It carries your text and the files you attached to that message, but not the ambient editor selection. **Grok** and **OpenAI Codex** take a mid-turn correction; **Claude Code** does not, and there a message always falls back to the queue. Images are the one thing that can still be refused: an older Grok Build CLI ignores them, so a message carrying pictures is queued whole rather than arriving without them. Also toggleable live from Settings → **General → Steer by default**."
         },
         "grok.pinLiveWorkflows": {
           "type": "boolean",
@@ -514,12 +491,12 @@
         "grok.soundNotifications": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Play a short sound when the agent finishes a turn or hits an error — a rising chime on completion, a lower tone on error. Off by default. Plays **only when the AFK Pilot panel isn't focused** (you've switched to the editor or another window), so it notifies you when you've stepped away without beeping while you watch. Also toggleable live from the gear menu → **Config & debug → Sound notifications**."
+          "markdownDescription": "Play a short sound when the agent finishes a turn or hits an error — a rising chime on completion, a lower tone on error. Off by default. Plays **only when the AFK Pilot panel isn't focused** (you've switched to the editor or another window), so it notifies you when you've stepped away without beeping while you watch. Also toggleable live from Settings → **Notifications → Sound notifications**."
         },
         "grok.processingSound": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Play a quiet repeating sound while the agent is still working. The first cue waits seven seconds, then repeats every eight seconds until the turn ends. Off by default and separate from the completion/error sound. Also toggleable live from the gear menu → **Config & debug → Still-processing sound**."
+          "markdownDescription": "Play a quiet repeating sound while the agent is still working. The first cue waits seven seconds, then repeats every eight seconds until the turn ends. Off by default and separate from the completion/error sound. Also toggleable live from Settings → **Notifications → Still-processing sound**."
         },
         "grok.readRepliesAloud": {
           "type": "boolean",
@@ -534,7 +511,7 @@
         "grok.remote.keepAwake": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Keep this machine awake while it's linked to an **AFK Pilot** account, so a remote turn isn't cut off by idle sleep. Only active once you've signed in (gear → AFK Pilot → *Sign in*); unlinking releases the lock immediately. The display is still free to sleep — only system/idle sleep is blocked. Uses `caffeinate` on macOS, `SetThreadExecutionState` on Windows and `systemd-inhibit` on Linux. **A closed laptop lid still sleeps** on every platform — that's an OS-level decision no application can override."
+          "markdownDescription": "Keep this machine awake while it's linked to an **AFK Pilot** account, so a remote turn isn't cut off by idle sleep. Only active once you've signed in (Settings → Remote control → *Sign in*); unlinking releases the lock immediately. The display is still free to sleep — only system/idle sleep is blocked. Uses `caffeinate` on macOS, `SetThreadExecutionState` on Windows and `systemd-inhibit` on Linux. **A closed laptop lid still sleeps** on every platform — that's an OS-level decision no application can override."
         },
         "grok.thumbsFeedback": {
           "type": "boolean",

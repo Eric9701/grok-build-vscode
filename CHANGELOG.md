@@ -1,19 +1,34 @@
 # Changelog
 
-## Unreleased
+## 4.15.0 — 2026-10-16
+
+**AFK Pilot is the name, Antigravity joins as a fifth agent, and Projects is the folders you chose.**
+
+### Added
+
+- **Google Antigravity, experimental, on your own computer.** Turn it on in Settings → Advanced, then connect with your Google account or a Gemini API key. With a key you get every Gemini chat model the key can reach, Gemini 4 Argon included, and a new conversation starts on Argon unless its project remembers another model; the key stays inside AFK Pilot and never reaches the agent. Commands show what ran and its output, and a subagent's work sits inside its own card. Not available on cloud machines, and Gemini 2 models are not offered.
 
 ### Changed
 
 - **The extension is now called AFK Pilot** (previously Grok Build (Community)). It runs Grok Build, Muse Code, Codex, Claude Code and, experimentally, Antigravity. Your settings, keybindings and conversations are unchanged.
+- **Messages about the agent name the one you are using.** "Sends when Codex finishes", "Claude is thinking", "Antigravity is mid-turn", and the diff tab "Codex proposed: …" follow the conversation's agent instead of always saying Grok. (The banner when an agent's process exits still says "Grok exited".)
+- **Claude Code starts new conversations in its own Auto mode**, unless you picked a mode. "YOLO" now names only Grok Build's auto-accept: Claude's is "Bypass permissions", Codex's "Full access" and Muse's "Allow all".
+- **Claude's default model says which model it is**, for example "Default (Opus 5.5)".
+- **Muse Code's settings sit in their own group** under Muse in Settings → Providers, folded by default.
 - **Projects are the folders you chose.** In VS Code the Projects list used to include every folder any agent had run in, and benchmark runs and scripts had filled it with folders you never worked in. It now holds the folder VS Code has open, the folders you added, created or cloned, and any folder you pinned, coloured, gave an icon or archived. Once, on upgrade, it adds the folders you sent a message in through AFK Pilot in the last 30 days. After that, the first time you send in a conversation whose folder is not a project, a small strip offers **Add**, **Not now** or **Never for this folder** (on your phone too, and the `grok.askToAddProjects` setting turns it off), and Recent's `⋯` offers **Add to Projects**. **AFK Pilot: Rebuild Projects from recent activity** runs the one-time pass again without touching anything you chose. The desktop app and Cloud machines already listed only the folders they open.
 - **Recent shows what you actually did.** It lists the conversations you sent a message in through AFK Pilot, plus those you opened here in the last three days, across every folder, newest first. Conversations that only appear in an agent's own history no longer fill it, and neither do automated runs (headless Grok, `codex exec`, Claude Code SDK scripts, routines).
 - **Conversations older than 30 days are no longer listed.** Recent, each project's conversations and history search show the last 30 days of activity, for every agent. Older conversations stay on disk exactly as they were, a pinned one still opens from Pinned, and continuing one in its CLI brings it back. Skipping them before anything is read also makes long histories list faster.
+- **The context meter shows large windows in millions** ("1.05M", "1M"), and an Antigravity conversation starts at its real window instead of the previous conversation's.
 
 ### Fixed
 
-- **The phone loads a project's conversations when you open it.** The rail on the phone and in the desktop app opened every project and asked for all their conversations at once, so many showed "Loading…" or "Couldn't load these conversations". Now the first three projects start open and the rest folded, a folded project's conversations load when you open it, and each device remembers what you opened and folded.
+- **Projects fill at once.** On a computer with many projects and a long history, each project's conversations took about a second to list, one project after another, so the rail filled over a minute. They now arrive together in a second or two, and VS Code waits a few seconds for them before drawing Projects, so a quiet project normally goes straight to Project Archive instead of appearing under Projects first.
+- **The rail on the phone and in the desktop app files projects the way VS Code does.** It lists every project's conversations, folded or not, so Project Archive matches across your devices; a project you fold stays folded.
+- **A new conversation shows in the rail while it starts.** Its "New session" row stays while the agent starts, for up to a minute, and an empty project you start one in no longer disappears meanwhile.
+- **A project's conversations no longer flash "Couldn't load"** when the computer answers slowly or a browser tab reconnects; the rail waits one more round before saying so.
 - **The model chip waits for the models.** While a conversation is starting, and its agent has not yet said which models it offers (Antigravity can take over a minute on Windows), the model and effort chip reads "Loading models…" and does not open, instead of opening on the previous conversation's models or a placeholder. It opens as soon as the models arrive, and also when the start fails or the agent needs signing in, so recovery stays one click away. Applies on every surface, including the phone and the Pick Model command.
 - **A click on a conversation always opens it.** Clicking a conversation that a phone or browser tab was still loading was refused with "already being opened in another tab or view", and the selection jumped back. The click now waits for that load and lands on the conversation, with the row reading "opening…" meanwhile. A slow open (Antigravity can take over a minute) no longer snaps the selection back after a few seconds either.
+- **Muse Code says why a turn failed**, for example when your subscription's limit is reached, instead of "Internal error".
 
 ## 4.14.3 — 2026-10-14
 

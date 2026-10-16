@@ -113,7 +113,7 @@ aistudio.google.com/apikey). Vertex AI and Enterprise sign-in are not offered.
   sign-in and opens the choice again with "Google rejected this API key."
 - **Disconnect** keeps both the Google sign-in and the saved key; Connect then
   offers the choice again, marking which way was last used and which are
-  saved. **Sign out** (`Grok: Log Out`) clears only the current method's
+  saved. **Sign out** (`AFK Pilot: Log Out`) clears only the current method's
   credential: for Google, ACP **`logout`** (the method name, measured against a
   server with an empty `GEMINI_HOME`; `auth/logout` and `session/logout` are
   -32601), which clears the token and the saved method; for a key, the saved
@@ -250,13 +250,17 @@ the parent's text unbroken, the card done at the turn's end.
 `listAgySessions` reads the same store directly -- `<id>.db` transcripts with
 `<id>.meta` sidecars naming the folder -- so listing starts no server, recency
 is the transcript's mtime, and Windows case does not split a project. Titles
-come from the host's first-prompt name.
+come from the host's first-prompt name. The store is read once for every
+project (`listAgyCatalog`, split by folder with `agySessionsFor`), and a transcript older than the
+30-day history horizon is skipped before its `.meta` is read, pinned ids
+excepted.
 
 ## Not in v1
 
 Cloud machines, MCP connectors, Plan mode, Vertex AI and Enterprise sign-in,
 signing in from a phone, a usage meter, effort control on a key, and a
-subagent card that shows its child's work.
+subagent card that shows its child's own words or result (its tool calls do
+show, see [Subagents](#subagents)).
 
 ## Decisions to revisit
 
