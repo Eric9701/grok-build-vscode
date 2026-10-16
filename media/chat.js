@@ -6330,6 +6330,8 @@
   let railEl = null;
   let railResolved = false;
   const railProbeTimers = {};
+  /** Projects whose preview has had its one extra wait (armRailProbeDeadline). */
+  const railProbeExtended = {};
   // Monotonic renderer-local counter for railTransition.token. Not a grok
   // session id — never sent to the host; only used so superseded timers and
   // late frames cannot complete a transition that a later click replaced.
@@ -7790,6 +7792,17 @@
     railProbeTimers[key] = setTimeout(() => {
       delete railProbeTimers[key];
       if (!state.repoPreviewsAsked[key]) return;
+      // One more round of "Loading…" before saying it failed: a host busy
+      // starting up, or a tab that reconnected under the request, answers
+      // late, and "Couldn't load" followed by the rows read as broken. The
+      // request is sent again, since one sent before a reconnect is lost.
+      if (!railProbeExtended[key]) {
+        railProbeExtended[key] = true;
+        delete state.repoPreviewsAsked[key];
+        const repo = railRepos().find((r) => sameCwd(r.cwd, cwd));
+        if (repo) { requestRailPreview(repo); return; }
+      }
+      delete railProbeExtended[key];
       failRailPreview(cwd, "deadline-expired");
     }, ms);
   }
@@ -22414,6 +22427,7 @@
         const key = cwdKey(msg.cwd);
         state.repoPreviewsSupported = true;
         clearRailProbeDeadline(msg.cwd);
+        delete railProbeExtended[key];
         delete state.repoPreviewsAsked[key];
         if (msg.error) {
           delete state.repoPreviews[key];
