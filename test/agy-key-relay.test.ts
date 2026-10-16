@@ -149,6 +149,97 @@ describe("the Antigravity key relay", () => {
     expect(relay!.redact(`baseUrl ${lease.baseUrl}`)).not.toContain(SECRET);
   });
 
+  describe("the model listing", () => {
+    const LISTING = '{"models":[{"name":"models/gemini-4-argon","supportedGenerationMethods":["generateContent"]}]}';
+    const FRESH = '{"models":[{"name":"models/gemini-5","supportedGenerationMethods":["generateContent"]}]}';
+    const PATH = "/v1beta/models?pageSize=1000";
+
+    function store() {
+      const saved: { value?: import("../src/agy-key-relay").AgyModelListing } = {};
+      return { saved, listings: { get: () => saved.value, set: (next: NonNullable<typeof saved.value>) => { saved.value = next; } } };
+    }
+
+    async function setupWith(listings: ReturnType<typeof store>["listings"], handler: Parameters<typeof setup>[0]) {
+      const ctx = await setup(handler);
+      const upstream: AgyUpstreamRequest = (url, options) => {
+        ctx.targets.push(url);
+        const port = (fake!.address() as AddressInfo).port;
+        return http.request({ host: "127.0.0.1", port, path: url.pathname + url.search, method: options.method, headers: options.headers });
+      };
+      relay = new AgyKeyRelay({ upstream, secret: SECRET, log: (line) => ctx.lines.push(line), listings });
+      ctx.targets.length = 0;
+      return ctx;
+    }
+
+    const until = async (check: () => boolean) => {
+      for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+      expect(check()).toBe(true);
+    };
+
+    it("answers a later start at once from the last listing, and refreshes it from Google behind", async () => {
+      const { saved, listings } = store();
+      let body = LISTING;
+      let hold = false;
+      const held: Array<() => void> = [];
+      const { seen, lines } = await setupWith(listings, (_req, res) => {
+        const answer = () => { res.writeHead(200, { "content-type": "application/json" }); res.end(body); };
+        if (hold) held.push(answer); else answer();
+      });
+      const lease = await relay!.acquire(KEY);
+      expect(await send(`${lease.baseUrl}${PATH}`)).toMatchObject({ status: 200, body: LISTING });
+      expect(saved.value?.body).toBe(LISTING);
+      expect(JSON.stringify(saved.value)).not.toContain(KEY);
+
+      // Google is now slow: the answer must not wait for it.
+      hold = true;
+      body = FRESH;
+      expect(await send(`${lease.baseUrl}${PATH}`)).toMatchObject({ status: 200, body: LISTING });
+      await until(() => held.length === 1);
+      expect(seen.at(-1)?.headers["x-goog-api-key"]).toBe(KEY);
+      held[0]();
+      await until(() => saved.value?.body === FRESH);
+      expect(lines).toContain("[agy-relay] 200 GET /v1beta/models (remembered)");
+      expect(lines).toContain("[agy-relay] 200 GET /v1beta/models (refresh)");
+    });
+
+    it("keeps a listing that lands after the server has given up", async () => {
+      const { saved, listings } = store();
+      let answer!: () => void;
+      await setupWith(listings, (_req, res) => { answer = () => { res.writeHead(200); res.end(LISTING); }; });
+      const lease = await relay!.acquire(KEY);
+      await new Promise<void>((resolve) => {
+        const req = http.request(`${lease.baseUrl}${PATH}`);
+        req.on("error", () => resolve());
+        req.end();
+        void until(() => answer !== undefined).then(() => { req.destroy(); resolve(); });
+      });
+      // Let the relay see the hang-up before Google answers, as at 08:58:15.
+      await new Promise((r) => setTimeout(r, 150));
+      answer();
+      await until(() => saved.value?.body === LISTING);
+    });
+
+    it("never shows one key's listing to another, and remembers only a real listing", async () => {
+      const { saved, listings } = store();
+      let body = LISTING;
+      const { seen } = await setupWith(listings, (_req, res) => { res.writeHead(200); res.end(body); });
+      const lease = await relay!.acquire(KEY);
+      await send(`${lease.baseUrl}${PATH}`);
+      const before = seen.length;
+      await relay!.acquire("another-key");
+      body = FRESH;
+      expect((await send(`${lease.baseUrl}${PATH}`)).body).toBe(FRESH);
+      expect(seen.length).toBe(before + 1);
+
+      saved.value = undefined;
+      body = '{"error":"nope"}';
+      await send(`${lease.baseUrl}${PATH}`);
+      body = "";
+      await send(`${lease.baseUrl}${PATH}`);
+      expect(saved.value).toBeUndefined();
+    });
+  });
+
   it("closes with its last lease, and the newest key wins while it is open", async () => {
     const { seen } = await setup((_req, res) => res.end());
     const first = await relay!.acquire("first-key");

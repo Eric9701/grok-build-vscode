@@ -7,7 +7,7 @@ import { locateMuseCli, parseMuseVersionOutput } from "./muse-cli-locator";
 import { museInstallCommand } from "./muse-install";
 import { AgyBackend, agyAcpDir, listAgySessions } from "./agy-backend";
 import { agyGatewayAuth, agyGatewayEnv, agyGoogleAuth, agyGoogleSignInPresent, isAgySignInMethod, normalizeAgyApiKey, runAgySignIn, type AgySignInMethod } from "./agy-auth";
-import { AgyKeyRelay, type AgyRelayLease } from "./agy-key-relay";
+import { AgyKeyRelay, type AgyModelListing, type AgyRelayLease } from "./agy-key-relay";
 import { installManagedAgy, locateAgyServer } from "./agy-managed-installer";
 import type {
   Host,
@@ -544,6 +544,8 @@ const PROVIDER_MODEL_CACHE_KEY = "grok.providerModelCache";
 const AGY_SIGN_IN_METHOD_KEY = "grok.agySignInMethod";
 /** HostSecrets key for the pasted Gemini API key. Nowhere else holds it. */
 const AGY_API_KEY_SECRET = "grok.agy.geminiApiKey";
+/** The last Gemini model listing the key relay saw: model names, never the key. */
+const AGY_MODEL_LISTING_KEY = "grok.agyModelListing";
 const PROJECT_PROVIDER_DEFAULTS_KEY = "grok.projectProviderDefaults";
 const REPO_PINS_KEY = "grok.repoPins";
 /** Timestamped archive choices, stored under ~/.grok/client-state rather than
@@ -2745,7 +2747,13 @@ export class GrokSidebar {
   }
 
   private agyKeyRelay(): AgyKeyRelay {
-    return this.agyRelay ??= new AgyKeyRelay({ log: (line) => this.host.appendLine(line) });
+    return this.agyRelay ??= new AgyKeyRelay({
+      log: (line) => this.host.appendLine(line),
+      listings: {
+        get: () => this.state.get<AgyModelListing>(AGY_MODEL_LISTING_KEY),
+        set: (listing) => { void this.state.update(AGY_MODEL_LISTING_KEY, listing); },
+      },
+    });
   }
 
   /** The choice of how to sign in, answering a press at the desk. */

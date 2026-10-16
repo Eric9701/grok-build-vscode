@@ -330,6 +330,22 @@ observable change that should make us look again.
   could go in `_meta.gateway.headers` and the relay could go), or gateway mode
   gains a credential field of its own.
 
+### The remembered model listing
+
+- **Decision:** the relay keeps the last `GET /v1beta/models` listing Google
+  served a key (host state `grok.agyModelListing`: model names and a one-way
+  key fingerprint, never the key). Later starts get that listing at once, and
+  the relay asks Google again behind it; a model Google adds appears from the
+  start after. A listing still in flight when the server gives up is kept.
+- **Why:** the server gives discovery 15 s in total
+  (`gateway/model_discovery.py` `DISCOVERY_TIMEOUT_SECONDS`) and on a miss uses
+  a built-in three-model catalog without Argon for that process, caching the
+  miss for five minutes. A slow cold start hit exactly that (2026-10-16:
+  "Gateway model discovery failed: timed out", then Argon refused for the
+  session), and the picker then remembered the three models.
+- **Revisit when:** the server's discovery budget or its fallback changes, or
+  key mode starts listing Argon itself (then the relay and this go together).
+
 ### The working-folder system-prompt append
 
 - **Decision:** every `session/new` and `session/load` carries the server's

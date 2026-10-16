@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import * as http from "node:http";
 import * as https from "node:https";
 import type { AddressInfo } from "node:net";
@@ -43,12 +43,58 @@ const HOP_BY_HOP = new Set([
 /** Whatever credential the harness sends is replaced, never forwarded. */
 const CREDENTIAL_HEADERS = new Set(["authorization", "x-goog-api-key"]);
 
+/**
+ * The server's model discovery: one GET, 15 s for all of it, and on a miss it
+ * settles for a built-in three-model catalog without Argon for that process
+ * (measured on 1.4.0, 2026-10-16: a slow cold start did exactly that). So the
+ * relay answers it from the last listing Google gave the same key, and asks
+ * Google again behind it. A model Google adds shows from the following start.
+ */
+const LISTING_PATH = "/v1beta/models";
+/** Far above a real listing (~40 models, tens of KB); anything bigger is not remembered. */
+const MAX_LISTING_BYTES = 4 * 1024 * 1024;
+
+/** The last model listing Google served one key. Model names only: no key. */
+export interface AgyModelListing {
+  /** A one-way fingerprint, so a replaced key never sees the old key's models. */
+  keyId: string;
+  /** Path and query after the prefix, e.g. `/v1beta/models?pageSize=1000`. */
+  path: string;
+  body: string;
+}
+
+export interface AgyListingStore {
+  get(): AgyModelListing | undefined;
+  set(listing: AgyModelListing): void;
+}
+
+function memoryListingStore(): AgyListingStore {
+  let listing: AgyModelListing | undefined;
+  return { get: () => listing, set: (next) => { listing = next; } };
+}
+
+function keyId(key: string): string {
+  return createHash("sha256").update(key).digest("hex").slice(0, 16);
+}
+
+/** A body worth replaying: JSON with at least one model. */
+function isListing(body: string): boolean {
+  try {
+    const parsed = JSON.parse(body) as { models?: unknown };
+    return Array.isArray(parsed?.models) && parsed.models.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export interface AgyKeyRelayOptions {
   log?: (line: string) => void;
   /** Tests inject a local upstream; the target URL is still Google's. */
   upstream?: AgyUpstreamRequest;
   /** Tests fix the prefix; otherwise 24 random bytes. */
   secret?: string;
+  /** Where the last model listing survives a restart; memory-only by default. */
+  listings?: AgyListingStore;
 }
 
 export interface AgyRelayLease {
@@ -66,11 +112,14 @@ export class AgyKeyRelay {
   private readonly secret: string;
   private readonly upstream: AgyUpstreamRequest;
   private readonly log: (line: string) => void;
+  private readonly listings: AgyListingStore;
+  private refreshing = false;
 
   constructor(options: AgyKeyRelayOptions = {}) {
     this.secret = options.secret ?? randomBytes(24).toString("base64url");
     this.upstream = options.upstream ?? httpsUpstream;
     this.log = options.log ?? (() => {});
+    this.listings = options.listings ?? memoryListingStore();
   }
 
   /**
@@ -162,6 +211,18 @@ export class AgyKeyRelay {
     }
     headers["x-goog-api-key"] = key;
     const shown = `${method} ${target.pathname}`;
+    const listing = method === "GET" && target.pathname === LISTING_PATH
+      ? { keyId: keyId(key), path: target.pathname + target.search }
+      : undefined;
+    const remembered = listing && this.listings.get();
+    if (listing && remembered?.keyId === listing.keyId && remembered.path === listing.path) {
+      this.log(`[agy-relay] 200 ${shown} (remembered)`);
+      res.writeHead(200, { "content-type": "application/json; charset=UTF-8" });
+      res.end(remembered.body);
+      req.resume();
+      this.refreshListing(target, headers, listing, shown);
+      return;
+    }
     let upstream: http.ClientRequest;
     try {
       upstream = this.upstream(target, { method, headers });
@@ -176,13 +237,65 @@ export class AgyKeyRelay {
       for (const [name, value] of Object.entries(answer.headers)) {
         if (value !== undefined && !HOP_BY_HOP.has(name.toLowerCase())) out[name] = value;
       }
+      if (listing && status === 200) this.remember(answer, listing);
+      if (res.destroyed) { answer.resume(); return; }
       res.writeHead(status, out);
       answer.pipe(res);
     });
     upstream.on("error", (error) => this.fail(res, shown, error));
     // The harness hung up mid-stream (a cancelled turn): stop the upstream too.
-    res.on("close", () => { if (!res.writableFinished) upstream.destroy(); });
+    // Not for the listing: a discovery that gave up still leaves a listing
+    // worth keeping for the next start.
+    res.on("close", () => { if (!res.writableFinished && !listing) upstream.destroy(); });
     req.pipe(upstream);
+  }
+
+  /** Keeps a 200 listing as it streams past, if it is one worth replaying. */
+  private remember(answer: http.IncomingMessage, listing: { keyId: string; path: string }): void {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    answer.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= MAX_LISTING_BYTES) chunks.push(chunk);
+    });
+    answer.on("end", () => {
+      if (size > MAX_LISTING_BYTES) return;
+      const body = Buffer.concat(chunks).toString("utf8");
+      if (isListing(body)) this.listings.set({ ...listing, body });
+    });
+  }
+
+  /** Asks Google for the listing behind a remembered answer. One at a time. */
+  private refreshListing(
+    target: URL,
+    headers: http.OutgoingHttpHeaders,
+    listing: { keyId: string; path: string },
+    shown: string,
+  ): void {
+    if (this.refreshing) return;
+    this.refreshing = true;
+    const done = () => { this.refreshing = false; };
+    let request: http.ClientRequest;
+    try {
+      request = this.upstream(target, { method: "GET", headers });
+    } catch (error) {
+      done();
+      this.log(`[agy-relay] refresh ${shown} failed (${(error as NodeJS.ErrnoException)?.code ?? "error"})`);
+      return;
+    }
+    request.on("response", (answer) => {
+      const status = answer.statusCode ?? 0;
+      this.log(`[agy-relay] ${status} ${shown} (refresh)`);
+      if (status === 200) this.remember(answer, listing);
+      else answer.resume();
+      answer.on("end", done);
+      answer.on("error", done);
+    });
+    request.on("error", (error) => {
+      done();
+      this.log(`[agy-relay] refresh ${shown} failed (${(error as NodeJS.ErrnoException)?.code ?? "error"})`);
+    });
+    request.end();
   }
 
   private fail(res: http.ServerResponse, shown: string, error: unknown): void {
