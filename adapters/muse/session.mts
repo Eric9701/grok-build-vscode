@@ -18,6 +18,19 @@ function approvalModeFor(id: string): ApprovalMode | undefined {
   return Object.hasOwn(APPROVAL_MODES, id) ? APPROVAL_MODES[id as keyof typeof APPROVAL_MODES] : undefined;
 }
 
+/**
+ * A failed Muse turn as an error the host can show. A plain Error reaches the
+ * host as JSON-RPC's bare "Internal error" -- the SDK keeps a message only for
+ * a RequestError -- so an exhausted subscription read as a crash. Muse's own
+ * `message` is human-readable by contract (TurnError); `authRequired` keeps its
+ * kind in the text because that is what the host's sign-in check matches.
+ */
+export function museTurnFailure(terminal: { error?: { kind?: string; message?: string }; reason?: string; terminal?: string }): RequestError {
+  const kind = terminal.error?.kind;
+  const text = terminal.error?.message?.trim() || terminal.reason?.trim() || "Muse Code could not finish this turn.";
+  return new RequestError(-32603, kind === "authRequired" ? `${text} (authRequired)` : text, kind ? { kind } : undefined);
+}
+
 const RESUME_RETRY_DELAY_MS = 300;
 const RESUME_RETRY_WINDOW_MS = 10_000;
 
@@ -404,10 +417,10 @@ export class MuseSession {
       const terminal = await completed;
       await this.updates;
       await this.readSubscriptionUsage();
-      this.log(`Muse turn completed: ${JSON.stringify({ turnId: terminal.turnId, terminal: terminal.terminal })}`);
+      this.log(`Muse turn completed: ${JSON.stringify({ turnId: terminal.turnId, terminal: terminal.terminal, kind: terminal.error?.kind })}`);
       if (terminal.terminal === "completed") return { stopReason: "end_turn" };
       if (terminal.terminal === "cancelled") return { stopReason: "cancelled" };
-      throw new Error(`Muse turn failed: ${JSON.stringify(terminal.error ?? terminal.terminal)}`);
+      throw museTurnFailure(terminal);
     } finally {
       this.pending = undefined;
     }

@@ -731,6 +731,23 @@ describe("Muse turn admission and process ownership", () => {
     await rejected;
   });
 
+  // An exhausted subscription arrived at the host as JSON-RPC's bare "Internal
+  // error": a plain Error loses its message on the wire. Muse's own text has to
+  // survive, and authRequired keeps the word the host's sign-in check matches.
+  it.each([
+    [{ kind: "modelError", message: "You have reached your Muse usage limit. It resets at 5 PM." }, "You have reached your Muse usage limit. It resets at 5 PM."],
+    [{ kind: "authRequired", message: "Sign in to Muse Code." }, "Sign in to Muse Code. (authRequired)"],
+    [undefined, "Muse Code could not finish this turn."],
+  ])("rejects a failed turn with Muse's own words (%o)", async (error, text) => {
+    const s = await ready();
+    const prompt = s.session.prompt("session", [{ type: "text", text: "hello" }]);
+    const rejected = expect(prompt).rejects.toMatchObject({ code: -32603, message: text });
+    s.admission.resolve({ status: "accepted", turnId: "turn", startedNewTurn: true, disposition: "started" });
+    await new Promise(resolve => setImmediate(resolve));
+    s.event("turn/completed", { turnId: "turn", terminal: "failed", ...(error ? { error: { ...error, retryable: false } } : {}) });
+    await rejected;
+  });
+
   it("does not finish shutdown or report an exit until the child has actually exited", async () => {
     const s = await ready();
     const close = s.session.close();
