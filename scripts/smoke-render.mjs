@@ -90,7 +90,17 @@ export async function runRenderSmoke(provider, evidenceParent, cliOverride, sele
     const status = () => desktopFacts(readEvents());
     const settled = () => page.evaluate(() => !document.body.classList.contains("turn-busy")
       && document.querySelector("#send-btn")?.title === "Send" && !document.querySelector("#send-btn")?.disabled);
-    const picker = async () => { await page.locator("#gear-btn").click(); await page.locator("#gear-popover .model-picker-row").first().waitFor({ state: "visible", timeout: rpcMs }); };
+    // The chip is disabled while a conversation's models load (7f38524), and a
+    // click on it then does nothing -- as for a person, who clicks again once it
+    // reads as ready. So wait for it to be usable before clicking.
+    const picker = async () => {
+      await page.waitForFunction(() => {
+        const chip = document.querySelector("#gear-btn");
+        return !!chip && !chip.disabled && chip.getAttribute("aria-disabled") !== "true";
+      }, null, { timeout: rpcMs });
+      await page.locator("#gear-btn").click();
+      await page.locator("#gear-popover .model-picker-row").first().waitFor({ state: "visible", timeout: rpcMs });
+    };
     const closePicker = () => page.keyboard.press("Escape");
     const chooseModel = async model => {
       await picker();

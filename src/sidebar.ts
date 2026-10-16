@@ -8329,6 +8329,18 @@ Only continue if you trust this code.`,
       return;
     }
     const key = normalizeRepoPath(resolved);
+    // Adding a folder is the undo for having removed it. Without this the
+    // tombstone would outlive the decision and the picker would appear to do
+    // nothing at all. First, before "already listed": a hidden folder can still
+    // count as chosen through a colour, a mark or an archive answer, and
+    // returning early for it left the tombstone in place -- Add did nothing.
+    const tombstones = this.state.get<string[]>(REMOVED_PROJECT_FOLDERS_KEY, []);
+    if (Array.isArray(tombstones) && tombstones.some((c) => normalizeRepoPath(c) === key)) {
+      await this.state.update(
+        REMOVED_PROJECT_FOLDERS_KEY,
+        tombstones.filter((c) => normalizeRepoPath(c) !== key),
+      );
+    }
     // Already here on its own — the open workspace folder, or a project Grok has
     // run in. Recording it as hand-added would be a lie with consequences: the
     // row would gain a Remove action, and removing it tombstones a project that
@@ -8345,16 +8357,6 @@ Only continue if you trust this code.`,
       if (select) await this.selectRepo(resolved);
       else this.postRepoCatalog();
       return;
-    }
-    // Adding a folder is the undo for having removed it. Without this the
-    // tombstone would outlive the decision and the picker would appear to do
-    // nothing at all.
-    const tombstones = this.state.get<string[]>(REMOVED_PROJECT_FOLDERS_KEY, []);
-    if (Array.isArray(tombstones) && tombstones.some((c) => normalizeRepoPath(c) === key)) {
-      await this.state.update(
-        REMOVED_PROJECT_FOLDERS_KEY,
-        tombstones.filter((c) => normalizeRepoPath(c) !== key),
-      );
     }
     const stored = this.extraProjectFolders();
     if (!stored.some((c) => normalizeRepoPath(c) === key)) {

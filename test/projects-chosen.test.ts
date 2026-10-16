@@ -191,6 +191,32 @@ describe("the initialization and Rebuild Projects on a VS Code host", () => {
   });
 });
 
+describe("Add project undoes Hide", () => {
+  // A coloured, marked or archived folder still counts as chosen after Hide, so
+  // Add used to take the "already listed" return before it cleared the
+  // tombstone: the folder stayed hidden and the picker appeared to do nothing.
+  it.each([
+    ["coloured", "grok.repoColors", { color: "blue" }],
+    ["marked", "grok.repoIcons", { icon: "rocket" }],
+    ["archived", "grok.repoArchives", { at: 1, archived: true }],
+  ])("brings back a hidden %s project", async (_label, key, choice) => {
+    const f = tempFolders(["lib"]);
+    try {
+      const norm = (cwd: string) => cwd.toLowerCase().replace(/\\/g, "/");
+      const memento: Record<string, unknown> = {
+        [key]: { [norm(f.lib)]: { cwd: f.lib, ...choice } },
+        "grok.removedProjectFolders": [f.lib],
+      };
+      const sidebar = makeSidebar(memento);
+      await sidebar.rememberExtraProjectFolder(f.lib);
+      expect(memento["grok.removedProjectFolders"]).toEqual([]);
+      expect(sidebar.selectRepo).toHaveBeenCalledWith(f.lib);
+    } finally {
+      fs.rmSync(f.root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("the rail lists the chosen folders, not the history catalog", () => {
   it("keeps chosen rows (and the folder in use), marks them removable, and drops history-only rows", () => {
     const memento: Record<string, unknown> = {
