@@ -39,15 +39,19 @@ describe("Muse raw notification projection", () => {
   });
 
   // Measured live 2026-10-16: "…ruling out image handling.Analyzing a conflict…"
-  it("starts a new paragraph for a second reasoning item, and not after other output", () => {
+  // The renderer keeps one thinking block per turn whatever comes in between,
+  // so every new reasoning item opens a paragraph, after other output too
+  // (review 4.15.1: a tool call between two items still ran them together).
+  it("starts a new paragraph for every new reasoning item", () => {
     const updates: any[] = [];
     const p = new Projection(u => updates.push(u), () => {});
     p.accept("item/delta", { itemId: "r1", field: "summary.0", delta: "First thought." });
+    p.accept("item/delta", { itemId: "r1", field: "summary.0", delta: " More." });
     p.accept("item/delta", { itemId: "r2", field: "summary.0", delta: "Second thought." });
     p.accept("item/delta", { itemId: "a", field: "text", delta: "Answer." });
     p.accept("item/delta", { itemId: "r3", field: "summary.0", delta: "Later thought." });
     const thinking = updates.filter(u => u.sessionUpdate === "agent_thought_chunk").map(u => u.content.text);
-    expect(thinking).toEqual(["First thought.", "\n\nSecond thought.", "Later thought."]);
+    expect(thinking).toEqual(["First thought.", " More.", "\n\nSecond thought.", "\n\nLater thought."]);
   });
 
   it("replays a reasoning item from history as thinking", () => {

@@ -1808,6 +1808,19 @@ describe("reasoning trace (regression: thinking traces no longer expandable)", (
     expect(body.hidden).toBe(true);
     expect(block.classList.contains("expanded")).toBe(false);
   });
+
+  // Muse separates reasoning items with a blank line and cannot tell where a
+  // block starts: a block opens on its text, a break inside it stays.
+  it("drops a leading break at the start of a block and keeps one inside it", async () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "thoughtChunk", text: "\n\nFirst thought." });
+    dispatch(window, { type: "thoughtChunk", text: "\n\nSecond thought." });
+    await new Promise((r) => setTimeout(r, 50));
+    const body = doc.querySelector(".msg.thinking .thinking-body") as HTMLElement;
+    expect(body.textContent!.startsWith("First thought.")).toBe(true);
+    expect(body.textContent).toContain("Second thought.");
+    expect(body.textContent!.indexOf("Second")).toBeGreaterThan(body.textContent!.indexOf("First thought.") + "First thought.".length);
+  });
 });
 
 describe("Grokking… indicator (waiting placeholder)", () => {

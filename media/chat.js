@@ -16043,6 +16043,9 @@
       state.activeThoughtEl = body;
       state.activeThoughtHdrEl = hdr;
     }
+    // A block never opens on a blank line: an agent separating its thoughts
+    // (Muse, between reasoning items) cannot tell where a new block starts.
+    if (!state.thoughtBuffer) text = text.replace(/^\n+/, "");
     state.thoughtBuffer += text;
     if (!state.thoughtRenderScheduled) {
       state.thoughtRenderScheduled = true;

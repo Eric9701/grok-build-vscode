@@ -71,18 +71,12 @@ function museToolFailureMessage(item: Record<string, any>): string {
 /** A single session's raw MSP stream, independent of transport and SDK folds. */
 export class Projection {
   private readonly items = new Map<string, ItemState>();
-  /** The reasoning item whose thinking was the last thing emitted, if any. */
+  /** The reasoning item that last emitted thinking, if any. */
   private lastThoughtItem?: string;
-  private readonly emit: (update: SessionUpdate) => void;
   constructor(
-    emit: (update: SessionUpdate) => void,
+    private readonly emit: (update: SessionUpdate) => void,
     private readonly log: (message: string) => void,
-  ) {
-    this.emit = (update) => {
-      if (update.sessionUpdate !== "agent_thought_chunk") this.lastThoughtItem = undefined;
-      emit(update);
-    };
-  }
+  ) {}
 
   clear(): void { this.items.clear(); this.lastThoughtItem = undefined; }
 
@@ -119,8 +113,10 @@ export class Projection {
     }
     let suffix = joined.slice(state.thought.length);
     state.thought = joined;
-    // Two reasoning items back to back are two thoughts: without a break the
-    // renderer, which appends thinking, ran them into one sentence.
+    // A new reasoning item is a new thought. The renderer keeps appending
+    // thinking to one block for the turn, whatever comes in between, so
+    // without a break two summaries ran into one sentence. A block the
+    // renderer has just started drops the leading break itself (appendThought).
     if (this.lastThoughtItem !== undefined && this.lastThoughtItem !== id) suffix = `\n\n${suffix}`;
     this.lastThoughtItem = id;
     this.emit({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: suffix } });
