@@ -3855,7 +3855,9 @@
           void openProviderConfigFiles(name.slice("providerConfig:".length));
         }
         if (name === "explainRemote") showRemoteExplainer();
-        if (name === "openDeviceManager") window.open("/", "_blank", "noopener");
+        // Remote-only row; this page is always served by the relay, which keeps
+        // the device list at /dashboard (/ is the public homepage).
+        if (name === "openDeviceManager") window.open("/dashboard", "_blank", "noopener");
         // Settings → Providers → Connect. The overlay stays open behind the
         // wizard so closing it returns the reader where they were.
         if (typeof name === "string" && name.indexOf("connectWizard:") === 0) {
