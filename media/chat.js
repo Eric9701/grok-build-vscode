@@ -13330,7 +13330,7 @@
     return toggle;
   }
 
-  function appendCommandPreview(container, text, className, language, maxLines = MAX_COMMAND_PREVIEW_LINES, openRef) {
+  function appendCommandPreview(container, text, className, language, maxLines = MAX_COMMAND_PREVIEW_LINES, openRef, isCommand = false) {
     const fullText = text == null ? "" : String(text);
     const logicalPreview = commandTextPreview(fullText, maxLines);
     const pre = document.createElement("pre");
@@ -13388,7 +13388,15 @@
             });
             return;
           }
-          const message = { type: "openText", content: fullText };
+          // VS Code names an untitled tab after its first line, which for a
+          // long command is its cut-off start (#175). A comment line on top
+          // names the tab and leaves the command runnable as written. Output
+          // stays untouched so the editor can still detect JSON and the like.
+          const content = isCommand
+            ? `${openLanguage === "bat" ? "REM" : "#"} Command
+${fullText}`
+            : fullText;
+          const message = { type: "openText", content };
           if (openLanguage) message.language = openLanguage;
           vscode.postMessage(message);
         };
@@ -13472,7 +13480,7 @@
     // Command View all uses the host-supplied shell language (click time, from
     // state.commandLanguage). Output below omits language so the untitled
     // editor can detect file-shaped content.
-    appendCommandPreview(body, command, "tool-cmd");
+    appendCommandPreview(body, command, "tool-cmd", undefined, MAX_COMMAND_PREVIEW_LINES, undefined, true);
     inRow.appendChild(body);
     block.appendChild(inRow);
     details.appendChild(block);
@@ -17132,7 +17140,9 @@
     // card replays as active on every re-focus.
     el.dataset.permReqId = String(req.id);
     el._permTitle = cardTitle;
-    appendCommandPreview(el, cardTitle, "card-title command-card-title", undefined, PERMISSION_COMMAND_PREVIEW_LINES);
+    const isCommandCard = toolKind(req.toolCall) === "execute" || categorize(req.toolCall) === "command";
+    appendCommandPreview(el, cardTitle, "card-title command-card-title",
+      isCommandCard ? state.commandLanguage : undefined, PERMISSION_COMMAND_PREVIEW_LINES, undefined, isCommandCard);
 
     const diff = state.pendingDiffByToolCallId.get(req.toolCall?.toolCallId);
     if (diff) {

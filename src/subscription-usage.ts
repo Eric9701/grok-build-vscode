@@ -47,6 +47,16 @@ export function grokSubscriptionWindows(raw: any, now = Date.now()): Subscriptio
     periodStart, periodEnd, observedAt: new Date(now).toISOString() }];
 }
 
+/** The key names of a `_x.ai/billing` reply (top level, `config`, and
+ *  `config.currentPeriod`) plus the plan name, for a log line when no usage
+ *  window could be read from it. No numbers, dates or other values. */
+export function grokBillingReplyShape(raw: any): string {
+  const keys = (value: unknown) =>
+    value && typeof value === "object" && !Array.isArray(value) ? `{${Object.keys(value).join(", ")}}` : typeof value;
+  const tier = typeof raw?.subscription_tier === "string" ? ` tier=${JSON.stringify(raw.subscription_tier)}` : "";
+  return `reply ${keys(raw)} config ${keys(raw?.config)} currentPeriod ${keys(raw?.config?.currentPeriod)}${tier}`;
+}
+
 const CLAUDE_WINDOW_LABELS: Record<string, string> = {
   five_hour: "5-hour",
   seven_day: "Weekly",

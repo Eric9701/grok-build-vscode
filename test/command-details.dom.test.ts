@@ -233,7 +233,9 @@ describe("command details (#41)", () => {
     expect(details.querySelector(".tool-cmd")!.textContent).toBe(command);
     expect(details.querySelector(".tool-cmd-output")!.textContent).toBe(output);
     expect(posted.filter((m: any) => m.type === "openText")).toEqual([
-      { type: "openText", content: command },
+      // The command opens under a comment naming the tab (#175); output is verbatim.
+      { type: "openText", content: `# Command
+${command}` },
       { type: "openText", content: output },
     ]);
   });
@@ -257,7 +259,8 @@ describe("command details (#41)", () => {
     click(window, viewAll[0]);
     click(window, viewAll[1]);
     expect(posted.filter((m: any) => m.type === "openText")).toEqual([
-      { type: "openText", content: command, language: "powershell" },
+      { type: "openText", content: `# Command
+${command}`, language: "powershell" },
       { type: "openText", content: output },
     ]);
   });
@@ -282,7 +285,8 @@ describe("command details (#41)", () => {
       click(window, viewAll[0]);
       click(window, viewAll[1]);
       expect(posted.filter((m: any) => m.type === "openText")).toEqual([
-        { type: "openText", content: command, language: commandLanguage },
+        { type: "openText", content: `${commandLanguage === "bat" ? "REM" : "#"} Command
+${command}`, language: commandLanguage },
         { type: "openText", content: output },
       ]);
     },
@@ -302,7 +306,8 @@ describe("command details (#41)", () => {
     click(window, doc.querySelector(".tool-flat.has-details") as HTMLElement);
     click(window, doc.querySelector(".command-view-all") as HTMLButtonElement);
     expect(posted.filter((m: any) => m.type === "openText")).toEqual([
-      { type: "openText", content: command },
+      { type: "openText", content: `# Command
+${command}` },
     ]);
   });
 

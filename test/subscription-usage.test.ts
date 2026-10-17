@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
-  grokSubscriptionWindows, claudeSubscriptionWindows, museSubscriptionWindows, subscriptionCredentialContext,
+  grokSubscriptionWindows, grokBillingReplyShape, claudeSubscriptionWindows, museSubscriptionWindows, subscriptionCredentialContext,
   SubscriptionUsageBinding, SubscriptionUsageCache, SUBSCRIPTION_USAGE_MIN_INTERVAL_MS,
 } from "../src/subscription-usage";
 import { GrokSidebar } from "../src/sidebar";
@@ -300,5 +300,22 @@ describe("host subscription lifecycle", () => {
     await sidebar.onMessage({ type: "refreshContextDetails" }, "remote", "phone");
     expect(sidebar.refreshContextFromSessionInfo).toHaveBeenCalledOnce();
     expect(read).not.toHaveBeenCalled();
+  });
+});
+
+describe("grokBillingReplyShape (#202)", () => {
+  it("names the keys and the plan, and no numbers or dates", () => {
+    const line = grokBillingReplyShape({
+      subscription_tier: "X Premium+",
+      isUnifiedBillingUser: false,
+      config: { monthlyLimit: 4200, billingPeriodEnd: "2026-11-01T00:00:00Z" },
+    });
+    expect(line).toBe('reply {subscription_tier, isUnifiedBillingUser, config} config {monthlyLimit, billingPeriodEnd} currentPeriod undefined tier="X Premium+"');
+    expect(line).not.toMatch(/4200|2026/);
+  });
+
+  it("copes with a reply that is not an object", () => {
+    expect(grokBillingReplyShape(null)).toBe("reply object config undefined currentPeriod undefined");
+    expect(grokBillingReplyShape("nope")).toBe("reply string config undefined currentPeriod undefined");
   });
 });

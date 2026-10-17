@@ -93,7 +93,8 @@ describe("preview overlay — View all", () => {
     click(window, buttons[0]);
     expect(doc.getElementById("preview-overlay")).toBeNull();
     expect(posted.filter((m) => m.type === "openText")).toEqual([
-      { type: "openText", content: LONG_CMD, language: "powershell" },
+      { type: "openText", content: `# Command
+${LONG_CMD}`, language: "powershell" },
     ]);
   });
 

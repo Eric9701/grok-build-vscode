@@ -3,7 +3,7 @@ import { supportsSessionDeletion } from "./acp-backend";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
 import { EventEmitter } from "node:events";
-import { claudeSubscriptionWindows, grokSubscriptionWindows, museSubscriptionWindows, type SubscriptionWindow } from "./subscription-usage";
+import { claudeSubscriptionWindows, grokBillingReplyShape, grokSubscriptionWindows, museSubscriptionWindows, type SubscriptionWindow } from "./subscription-usage";
 import * as path from "node:path";
 import {
   collectToolImages,
@@ -1195,16 +1195,30 @@ export class AcpClient extends EventEmitter {
   }
 
   private billingUnsupported = false;
+  private billingProblemLogged = false;
 
   async getSubscriptionUsage(): Promise<SubscriptionWindow[]> {
     if (this.provider !== "grok" || this.billingUnsupported) return [];
     try {
-      return grokSubscriptionWindows(await this.request("_x.ai/billing", {}));
+      const raw = await this.request("_x.ai/billing", {});
+      const windows = grokSubscriptionWindows(raw);
+      // An empty popup is otherwise indistinguishable from "nothing to report"
+      // (#202). Log the reply's SHAPE once, never its numbers or dates, so a
+      // plan that answers differently can be read off the output channel.
+      if (!windows.length && !this.billingProblemLogged) {
+        this.billingProblemLogged = true;
+        this.opts.log(`[billing] no usage window in the _x.ai/billing reply: ${grokBillingReplyShape(raw)}`);
+      }
+      return windows;
     } catch (error) {
       if (isMethodNotFoundError(error)) {
         this.billingUnsupported = true;
         this.opts.log("[billing] CLI does not support _x.ai/billing");
         return [];
+      }
+      if (!this.billingProblemLogged) {
+        this.billingProblemLogged = true;
+        this.opts.log(`[billing] _x.ai/billing failed: ${error instanceof Error ? error.message : String(error)}`);
       }
       throw error;
     }
