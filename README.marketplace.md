@@ -6,7 +6,7 @@
 
 The GUI for **Grok Build CLI** (incl. **Grok 4.7**) and **Meta's Muse Code**, right in your editor. It drives **OpenAI's Codex** and **Anthropic's Claude Code** too — and, experimentally, **Google's Antigravity** on your own computer: one window, one model picker, and every conversation keeps the agent it started with. **Remote Control** is built in: pair your phone at **[afkpilot.com](https://afkpilot.com)** once and watch, approve, and steer your agent from your phone or any browser while away from your desk. Drop open files in as `@`-context, run **multiple sessions** at once, keep **resumable chat history**, generate **images & video inline**, and dictate by **voice**. If you'd rather stay in VS Code than a terminal, this brings Grok Build's agent into your sidebar.
 
-No manual setup: the extension **walks you through installing the `grok` CLI and signing in** — with a **SuperGrok or X Premium+ subscription**, or an **xAI API key** — right from the sidebar, one click per step.
+No manual setup: the extension **walks you through installing the `grok` CLI and signing in** — with a **SuperGrok or X Premium+ subscription**, or an **xAI API key** — right from the sidebar, one click per step. The other agents connect from **Settings → Providers**, each with its own account.
 
 ![Grok Build in VS Code, choosing Grok 4.7 and its reasoning effort](https://raw.githubusercontent.com/phuryn/grok-build-vscode/main/docs/screenshots/grok_4.7.png)
 
@@ -248,7 +248,7 @@ While a device is linked or a local agent turn is in flight, the extension also 
 
 ## Requirements
 
-- **VS Code** 1.106+ (or a compatible editor on the same base — Cursor 3.x qualifies; Antigravity is still on base 1.104 and keeps the last compatible extension version).
+- **VS Code** 1.106+ (or a compatible editor on the same base — Cursor 3.x qualifies; an editor on an older base keeps the last extension version that supports it).
 - **A supported provider CLI** on macOS, Linux, or Windows: Grok Build (`grok`), Codex, Claude Code or Muse Code. Grok and Muse ship native Windows installers, so the extension runs natively on all three — no WSL required (WSL2 + Remote-WSL still works if you prefer it).
 - **A login:** any X or Grok account tries **Grok Build** free, with usage limits (`grok login`). For sustained use, a **SuperGrok or X Premium+** subscription or an xAI API key; with an API key you also get the **grok-4.x** models and **grok-imagine**.
 - **Voice control** is optional and uses Grok sign-in or an OpenAI API key (Codex sign-in alone does not include transcription) — it just needs [`ffmpeg`](https://ffmpeg.org) to record. Setup + advanced options: [docs/voice-setup.md](https://github.com/phuryn/grok-build-vscode/blob/main/docs/voice-setup.md).
@@ -374,8 +374,9 @@ Full diagram, message flow, module map, and design notes: **[docs/architecture.m
 ## Companion apps
 
 This extension is complete on its own, Remote Control included: pair your phone
-at **[afkpilot.com](https://afkpilot.com)** from **Remote control** in the **+**
-menu. One optional companion shares the same chat UI and the same Grok Build CLI:
+at **[afkpilot.com](https://afkpilot.com)** from the **Remote control** phone
+button in the chat's top bar. One optional companion shares the same chat UI and
+the same agents:
 
 - **[Grok Build Desktop (Community)](https://afkpilot.com/desktop)** — the same
   agent as a standalone app for Windows, macOS and Linux, for machines where you

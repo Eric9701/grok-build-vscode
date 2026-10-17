@@ -25,7 +25,7 @@ const header = `# AFK Pilot: Grok Build, Muse Code, Claude, Codex & more in one 
 
 The GUI for **Grok Build CLI** (incl. **Grok 4.7**) and **Meta's Muse Code**, right in your editor. It drives **OpenAI's Codex** and **Anthropic's Claude Code** too — and, experimentally, **Google's Antigravity** on your own computer: one window, one model picker, and every conversation keeps the agent it started with. **Remote Control** is built in: pair your phone at **[afkpilot.com](https://afkpilot.com)** once and watch, approve, and steer your agent from your phone or any browser while away from your desk. Drop open files in as \`@\`-context, run **multiple sessions** at once, keep **resumable chat history**, generate **images & video inline**, and dictate by **voice**. If you'd rather stay in VS Code than a terminal, this brings Grok Build's agent into your sidebar.
 
-No manual setup: the extension **walks you through installing the \`grok\` CLI and signing in** — with a **SuperGrok or X Premium+ subscription**, or an **xAI API key** — right from the sidebar, one click per step.
+No manual setup: the extension **walks you through installing the \`grok\` CLI and signing in** — with a **SuperGrok or X Premium+ subscription**, or an **xAI API key** — right from the sidebar, one click per step. The other agents connect from **Settings → Providers**, each with its own account.
 
 ![Grok Build in VS Code, choosing Grok 4.7 and its reasoning effort](https://raw.githubusercontent.com/phuryn/grok-build-vscode/main/docs/screenshots/grok_4.7.png)
 
@@ -75,8 +75,9 @@ AFK Pilot defaults to the **Secondary Side Bar** (right side, next to other AI t
 const companionBlock = `## Companion apps
 
 This extension is complete on its own, Remote Control included: pair your phone
-at **[afkpilot.com](https://afkpilot.com)** from **Remote control** in the **+**
-menu. One optional companion shares the same chat UI and the same Grok Build CLI:
+at **[afkpilot.com](https://afkpilot.com)** from the **Remote control** phone
+button in the chat's top bar. One optional companion shares the same chat UI and
+the same agents:
 
 - **[Grok Build Desktop (Community)](https://afkpilot.com/desktop)** — the same
   agent as a standalone app for Windows, macOS and Linux, for machines where you
