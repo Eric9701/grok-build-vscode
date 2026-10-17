@@ -13151,7 +13151,7 @@
     // captured output once the terminal finishes. MCP rows reuse this
     // shell via host-normalized `detailInput` (never an empty pending block).
     const cmd = commandDetailText(call);
-    if (cmd) attachCommandDetails(item, cmd, call.toolCallId);
+    if (cmd) attachCommandDetails(item, cmd, call.toolCallId, hasShellCommand(call));
     else if (isReadTool(call) && !item.querySelector(".cmd-block")) {
       const path = String(toolFilePath(call) || "");
       const ref = readLinkRef(call);
@@ -13457,7 +13457,9 @@ ${fullText}`
     // fills it through the identical path.
     state.pendingCommandDetails.push({ command: path, details, done: false, toolCallId });
   }
-  function attachCommandDetails(item, command, toolCallId) {
+  /** `isShell`: the IN text is the shell command itself, not MCP arguments or a
+   *  file path that reuse this box. Only then does View all add a comment line. */
+  function attachCommandDetails(item, command, toolCallId, isShell = false) {
     // Chevron at the END of the (possibly ellipsized) command line: › when
     // collapsed, rotated to v while expanded.
     const chevron = document.createElement("span");
@@ -13482,7 +13484,7 @@ ${fullText}`
     // Command View all uses the host-supplied shell language (click time, from
     // state.commandLanguage). Output below omits language so the untitled
     // editor can detect file-shaped content.
-    appendCommandPreview(body, command, "tool-cmd", undefined, MAX_COMMAND_PREVIEW_LINES, undefined, true);
+    appendCommandPreview(body, command, "tool-cmd", undefined, MAX_COMMAND_PREVIEW_LINES, undefined, isShell);
     inRow.appendChild(body);
     block.appendChild(inRow);
     details.appendChild(block);
@@ -13515,6 +13517,12 @@ ${fullText}`
   // IN text for the shared command-detail shell. Shell rows use
   // `rawInput.command` / `.cmd`. MCP rows use the host-stamped `detailInput`
   // (`null` / absent = pending or not MCP; `{}` is a no-argument call).
+  function hasShellCommand(call) {
+    const raw = (call && (call.rawInput || call.input)) || {};
+    return (typeof raw.command === "string" && !!raw.command.trim())
+      || (typeof raw.cmd === "string" && !!raw.cmd.trim());
+  }
+
   function commandDetailText(call) {
     const raw = (call && (call.rawInput || call.input)) || {};
     if (typeof raw.command === "string" && raw.command.trim()) return raw.command.trim();
@@ -13573,7 +13581,7 @@ ${fullText}`
     // box; attachCommandDetails is a no-op once the row already has one.
     // MCP args that arrive after a pending row use the same attach.
     const cmd = commandDetailText(merged);
-    if (cmd && !item.querySelector(".cmd-block")) attachCommandDetails(item, cmd, id);
+    if (cmd && !item.querySelector(".cmd-block")) attachCommandDetails(item, cmd, id, hasShellCommand(merged));
     else if (isReadTool(merged) && !item.querySelector(".cmd-block")) {
       const path = String(toolFilePath(merged) || "");
       const ref = readLinkRef(merged);
@@ -17142,7 +17150,9 @@ ${fullText}`
     // card replays as active on every re-focus.
     el.dataset.permReqId = String(req.id);
     el._permTitle = cardTitle;
-    const isCommandCard = toolKind(req.toolCall) === "execute" || categorize(req.toolCall) === "command";
+    // Only an execute card's title is a shell command; other kinds fall into
+    // categorize()'s "command" bucket without being one.
+    const isCommandCard = toolKind(req.toolCall) === "execute";
     appendCommandPreview(el, cardTitle, "card-title command-card-title",
       isCommandCard ? state.commandLanguage : undefined, PERMISSION_COMMAND_PREVIEW_LINES, undefined, isCommandCard);
 
@@ -21831,7 +21841,8 @@ ${fullText}`
               const cmd = commandDetailText(item._call)
                 || (typeof msg.command === "string" && msg.command.trim())
                 || "{}";
-              if (!item.querySelector(".cmd-block")) attachCommandDetails(item, cmd, wantedId);
+              const isShell = hasShellCommand(item._call) || (typeof msg.command === "string" && !!msg.command.trim());
+              if (!item.querySelector(".cmd-block")) attachCommandDetails(item, cmd, wantedId, isShell);
               pending = state.pendingCommandDetails.find((p) => p.toolCallId === wantedId);
             }
           }

@@ -364,6 +364,20 @@ describe("AcpClient subscription usage", () => {
     await expect(client.getSubscriptionUsage()).rejects.toMatchObject({ code: -32602 });
   });
 
+  it("logs a failed billing call readably, and still logs a later unreadable reply's shape (#202)", async () => {
+    const { client } = clientWithFakeProc();
+    const log = vi.fn();
+    (client as any).opts.log = log;
+    (client as any).request = vi.fn().mockRejectedValue({ code: -32603, message: "Internal error" });
+    await expect(client.getSubscriptionUsage()).rejects.toMatchObject({ code: -32603 });
+    expect(log).toHaveBeenCalledWith("[billing] _x.ai/billing failed: Internal error (code -32603)");
+    (client as any).request = vi.fn().mockResolvedValue({ config: { creditUsagePercent: 7 }, subscription_tier: "X Premium+" });
+    await expect(client.getSubscriptionUsage()).resolves.toEqual([]);
+    const shape = log.mock.calls.map(([line]) => line).find((line: string) => line.includes("no usage window"));
+    expect(shape).toBe('[billing] no usage window in the _x.ai/billing reply: reply {config, subscription_tier} config {creditUsagePercent} currentPeriod undefined tier="X Premium+"');
+    expect(shape).not.toContain("7");
+  });
+
   it.each([new ClaudeBackend(), new CodexBackend()])("does not pull billing from %s", async (backend) => {
     const { client } = clientWithFakeProc({ backend });
     const request = vi.fn();

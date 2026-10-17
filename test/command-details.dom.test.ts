@@ -1188,6 +1188,23 @@ describe("MCP tool details (host-normalized detailInput + commandOutput)", () =>
     expect(flat.querySelector(".tool-cmd-output")!.textContent).toBe("Echo: MCPSHAPE_9931");
   });
 
+  it("View all opens MCP arguments verbatim, with no shell comment line (#175)", () => {
+    const { window, doc, posted } = bootWebview();
+    const longIn = JSON.stringify(Object.fromEntries(Array.from({ length: 8 }, (_, i) => [`k${i}`, i])), null, 2);
+    dispatch(window, {
+      type: "toolCall",
+      call: {
+        toolCallId: "call-use-va", title: "use_tool", kind: "other",
+        rawInput: { tool_name: "everything__echo", tool_input: { message: "x" } },
+        detailInput: longIn,
+      },
+    });
+    close(window);
+    click(window, doc.querySelector(".tool-flat.has-details") as HTMLElement);
+    click(window, doc.querySelector(".command-view-all") as HTMLButtonElement);
+    expect(posted.filter((m: any) => m.type === "openText").map((m: any) => m.content)).toEqual([longIn]);
+  });
+
   it("a decorated Codex MCP row uses the same IN/OUT shell, not a Run <program> label", () => {
     const { window, doc } = bootWebview();
     const { update } = normalizeCodexUpdate({
