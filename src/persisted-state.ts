@@ -134,6 +134,12 @@ export class PersistedState {
     if (key === "grok.installId" || key === "grok.appPurpose") {
       return typeof value === "string";
     }
+    // Tip id -> the day it was shown (welcome-tips.ts). Rejecting it as not a
+    // record-of-records logged "unexpected JSON shape" on every start (#214).
+    if (key === "grok.welcomeTipsShown") {
+      return !!value && typeof value === "object" && !Array.isArray(value)
+        && Object.values(value).every((day) => typeof day === "string");
+    }
     return isRecordMap(value);
   }
 

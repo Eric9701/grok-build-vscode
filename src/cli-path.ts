@@ -11,7 +11,7 @@ export function isCliFile(candidate: string, platform: NodeJS.Platform = process
   }
 }
 
-/** Avoid a shell on ordinary PATH hits; GUI hosts can still need the shell fallback. */
+/** Scan PATH directly; only POSIX hosts retain a shell fallback. */
 export function findCliOnPath(
   name: string,
   env: NodeJS.ProcessEnv,
@@ -39,15 +39,16 @@ export function findCliOnPath(
       } catch { /* A removed or inaccessible PATH entry must not stop discovery. */ }
     }
   }
+  // `where` searches the same PATH/PATHEXT we just exhausted. Spawning it
+  // synchronously for every absent provider freezes the extension host while
+  // startup repeatedly builds provider state (#214). A Windows miss is final;
+  // provider locators still check their installer/bundled paths afterward.
+  if (win) return undefined;
   try {
-    const command = win ? `where ${name}` : `command -v ${name}`;
-    const found = execSync(command, {
+    const found = execSync(`command -v ${name}`, {
       encoding: "utf8", windowsHide: true, stdio: ["pipe", "pipe", "ignore"],
     }).trim().split(/\r?\n/)[0]?.trim();
-    // `where` can return extensionless POSIX launchers even on Windows.
-    const matchesName = found && (!win || names.some((candidateName) =>
-      candidateName.toLowerCase() === paths.basename(found).toLowerCase()));
-    return found && matchesName && isFile(found) ? found : undefined;
+    return found && isFile(found) ? found : undefined;
   } catch {
     return undefined;
   }

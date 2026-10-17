@@ -108,6 +108,13 @@ describe("PersistedState", () => {
     expect(JSON.parse(fs.files.get(installFile)!)).toBe("abc-123");
   });
 
+  it("reads the welcome-tips file, a map of tip id to day, without calling it malformed (#214)", () => {
+    const tipsFile = `${DIR}/${DISK_KEYS["grok.welcomeTipsShown"]}`;
+    const { state, logs } = make((f) => f.setFile(tipsFile, JSON.stringify({ providers: "2026-10-16" })));
+    expect(state.get("grok.welcomeTipsShown")).toEqual({ providers: "2026-10-16" });
+    expect(logs.join("\n")).not.toMatch(/unexpected JSON shape/);
+  });
+
   it("prefers the file over globalState once it exists", () => {
     const { state } = make((f, m) => {
       f.setFile(metaFile, JSON.stringify({ s1: { customName: "from disk" } }));

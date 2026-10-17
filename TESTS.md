@@ -257,6 +257,8 @@ These actually spawn real shell children (the resolved POSIX `$SHELL` or `/bin/s
 - Returns `undefined` when nothing is found
 - **`extensionWasUpgraded`** — true on any version change (incl. a downgrade), false on a fresh install / unchanged version / empty stored version; gates the silent `grok update` the extension runs once when its own version changes
 
+`test/cli-path-discovery.test.ts` covers Windows PATH/PATHEXT discovery without shell processes, including repeated missing-provider lookups on a Grok-only machine (#214), finding a CLI installed after a miss, and installer/bundled fallback locations. It also retains the POSIX shell fallback contract.
+
 ### `test/sessions.test.ts` — session listing & naming
 
 - **`capAutoName` / `capSessionMetaAutoNames`** — storage ceiling for `autoName` (`AUTO_NAME_MAX_CHARS` 120): long prompts cut on a nearby word boundary, multi-line whitespace collapsed, already-short and exactly-at-limit names unchanged, empty/undefined → `""`. The map helper caps only `autoName`, leaves `customName` and already-short entries byte-identical, and is a no-op the second time.

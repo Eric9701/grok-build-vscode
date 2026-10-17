@@ -27,9 +27,8 @@ import {
   type CliVersionCache,
 } from "../src/cli-locator";
 
-// cli-path's shell fallback runs a REAL `where grok` when the PATH scan finds
-// nothing, and on a machine with the CLI installed that returns the very binary
-// these tests assert is absent. Mock it, as cli-path-discovery.test.ts does.
+// Keep POSIX's shell fallback from finding a real installed CLI when a test's
+// injected PATH is empty. Windows discovery never starts a shell.
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   execSync: vi.fn(() => { throw new Error("not on PATH"); }),
