@@ -52,6 +52,9 @@ rows("ignored", "ACP method", "_x.ai/task_backgrounded _x.ai/task_completed", "s
 rows("ignored", "ACP method", "_x.ai/session/interjection", "ACCEPTED pre-existing gap (backlog): no host reader for Grok's interjection notice.");
 // ACCEPTED entries are real, pre-existing gaps that were triaged and backlogged. They stay
 // listed with their reason in every report; only a NEW unknown kind fails the audit.
+// Seen once in the 4.15.2 release gate's test:live (grok 1.0.62): session/request_permission carried
+// _meta {kind:"sensitive"} on an execute approval. The card renders and asks like any other.
+meta("ignored", "kind", "ACCEPTED pre-existing gap (backlog: Grok marks some approvals sensitive): the permission card asks as usual; the sensitivity label is not shown, and Auto accept answers it as Grok's own --always-approve would.");
 rows("ignored", "ACP update", "retry_state", "ACCEPTED pre-existing gap (backlog): Grok reports a model-request retry and no host code shows it; the turn continues normally once the retry succeeds.");
 // New in grok 1.0.41 (auto-updated 2026-09-28, after 4.13.3 shipped). All notifications, none awaits a reply;
 // the render sections stay clean without them. Backlog: "Grok 1.0.41 sends ten kinds nothing reads".

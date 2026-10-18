@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.15.2 — 2026-10-18
+
+**A faster start on Windows when only some agents are installed.**
+
+### Fixed
+
+- **VS Code no longer freezes for half a minute on start when an agent isn't installed (#214).** On Windows, looking for an agent that isn't installed (Codex, Claude Code or Muse Code on a Grok-only machine) ran a slow system search every time, and AFK Pilot looks once per project, so VS Code reported the extension host as unresponsive and the panel sat on "Starting" for 30–60 seconds. Measured in VS Code with the same projects: the first conversation opened after 37 seconds before, 7 seconds now. Thanks to FireInWinter for the timed report.
+- **In VS Code, View all on a command opens in a tab named "# Command"** ("REM Command" when your shell is cmd) instead of a cut-off start of the command (#175). Tool arguments, file reads and command output open unchanged. Thanks to padixa.
+- **Dismissed tips stay dismissed on your other devices.** A tip you closed on your computer could come back on your phone; the start-up log no longer reports the tip settings as unreadable.
+- **Settings → Remote control → Device manager** opens your device list again on a phone or browser.
+- **An empty subscription usage popup now says why in the log (#202).** When Grok's usage reply can't be read, the AFK Pilot output channel shows one `[billing]` line naming the reply's fields and your plan, never your numbers. Thanks to padixa.
+
 ## 4.15.1 — 2026-10-16
 
 **Muse Code sees pictures and shows its reasoning.**
