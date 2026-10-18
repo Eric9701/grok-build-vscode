@@ -27,7 +27,7 @@ describe("Grok lifecycle hook calls (#215)", () => {
     expect(hooks.finish()).toEqual([]);
   });
 
-  it("a failure row lists only the hooks that failed, and names the one that did", () => {
+  it("a failure row lists only the hooks that failed, by name, under a short title", () => {
     const hooks = new GrokHookCalls();
     hooks.update({ ...start(), count: 2 }, "parent");
     const settled = hooks.update({ sessionUpdate: "hook_execution", event_name: "stop", prompt_id: "p1", runs: [
@@ -35,14 +35,14 @@ describe("Grok lifecycle hook calls (#215)", () => {
       { name: "project/stop-fail:stop[0].hooks[0]", status: { status: "failed", error: "exit code 1: intentional hook failure", elapsed_ms: 659 } },
     ] }, "parent")![0];
     expect(settled.status).toBe("failed");
-    expect(settled.title).toBe("Stop hook failed (project/stop-fail:stop[0].hooks[0])");
+    expect(settled.title).toBe("Stop hook failed");
     expect(settled.content?.[0].content.text).toBe("stop hook (project/stop-fail:stop[0].hooks[0]) failed, ignored: exit code 1: intentional hook failure");
   });
 
   it("renders cold-replayed failures without requiring a start, and deduplicates both rails", () => {
     const hooks = new GrokHookCalls();
     const update = hooks.update(result("p1", "stop", true), "parent", { eventId: "e1" })![0];
-    expect(update).toMatchObject({ sessionUpdate: "tool_call", status: "failed", title: "Stop hook failed (global/test-hook)" });
+    expect(update).toMatchObject({ sessionUpdate: "tool_call", status: "failed", title: "Stop hook failed" });
     expect(update.content?.[0].content.text).toBe("stop hook (global/test-hook) failed, ignored: exit code 1: intentional hook failure");
     expect(hooks.update(result("p1", "stop", true), "parent", { eventId: "e1" })).toEqual([]);
   });
@@ -76,7 +76,7 @@ describe("Grok lifecycle hook calls (#215)", () => {
     const hooks = new GrokHookCalls();
     const blocked = { ...result(), runs: [{ name: "gate", status: { status: "failed", blocked: true, error: "Tests failed" } }] };
     const first = hooks.update(blocked, "s", { eventId: "same" })![0];
-    expect(first.title).toBe("Stop hook blocked (gate)");
+    expect(first.title).toBe("Stop hook blocked");
     expect(first.content?.[0].content.text).toBe("stop hook (gate) blocked: Tests failed");
     hooks.reset();
     expect(hooks.update(blocked, "s", { eventId: "same" })).toHaveLength(1);
@@ -152,7 +152,7 @@ describe("ACP hook routing", () => {
     h.notify(result("p1", "subagent_stop", true), "child", "_x.ai/session/update");
     h.notify(result(), "wire-parent", "_x.ai/session/update");
     expect(h.children).toHaveLength(1);
-    expect(h.children[0]).toMatchObject({ childSessionId: "child", route: { event: "toolCall", payload: { title: "SubagentStop hook failed (global/test-hook)" } } });
+    expect(h.children[0]).toMatchObject({ childSessionId: "child", route: { event: "toolCall", payload: { title: "SubagentStop hook failed" } } });
     // The parent's hook succeeded and was never seen running: a success leaves no row.
     expect(h.calls).toHaveLength(0);
   });

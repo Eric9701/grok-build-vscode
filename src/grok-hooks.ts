@@ -73,8 +73,9 @@ export class GrokHookCalls {
     if (!failed && !existing) return [];
     const blocked = failures.some((run: any) => run.status.blocked === true);
     // A failure row lists only the hooks that failed; the ones that succeeded beside
-    // them are not news (and read as errors inside a red row).
-    const title = `${label}${blocked ? " blocked" : failed ? " failed" : ""}${failures.length === 1 ? ` (${failures[0].name})` : ""}`;
+    // them are not news (and read as errors inside a red row). The hook names live in
+    // that text: Grok's internal names are long and would be cut short in the title.
+    const title = `${label}${blocked ? " blocked" : failed ? " failed" : ""}`;
     const text = failures.map((run: any) =>
       `${u.event_name} hook (${run.name}) ${run.status.blocked === true ? "blocked" : "failed, ignored"}: ${typeof run.status.error === "string" ? run.status.error : "Unknown error"}`).join("\n");
     return [{ ...this.call(batch, existing ? "tool_call_update" : "tool_call", failed ? "failed" : "completed", title),
