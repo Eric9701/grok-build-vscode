@@ -1724,6 +1724,18 @@ describe("splitHistoryWindow (#102)", () => {
     expect(split.suffix).toHaveLength(msgs.length);
   });
 
+  it("does not count synthesized hook rows as history events (#215)", () => {
+    const hook = { toolCallId: "afk-hook-1", status: "failed", _meta: { afkPilotHook: true } };
+    const msgs = [
+      { type: "userMessage", text: "u1" },
+      { type: "messageChunk", text: "reply" },
+      { type: "toolCall", call: hook },
+      { type: "toolCallUpdate", call: hook },
+      { type: "toolCall", call: { toolCallId: "t1", title: "Read a.txt" } },
+    ];
+    expect(countHistoryReplayCounters(msgs).historyEventCount).toBe(2);
+  });
+
   it("splits on counted user bubbles and keeps the live tail", () => {
     const msgs = turns(10);
     const split = splitHistoryWindow(msgs, 4);

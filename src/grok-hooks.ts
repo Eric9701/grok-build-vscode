@@ -1,4 +1,13 @@
 /** Grok's lifecycle hooks use xAI notifications, not ACP tool calls. */
+
+/** A synthesized hook row. It is display-only and does not replay one-for-one (a
+ *  success leaves nothing on reopen), so NO history-event counter may count it:
+ *  the live one (sidebar emitToolCallEvent), the buffer recount (rewind.ts) and the
+ *  webview's live and windowed counters all skip it, or plan anchors and rewind
+ *  points drift after a reopen. */
+export function isHookRow(call: unknown): boolean {
+  return !!(call as { _meta?: { afkPilotHook?: unknown } } | undefined)?._meta?.afkPilotHook;
+}
 const HOOK_LABELS: Record<string, string> = {
   stop: "Stop hook",
   stop_failure: "StopFailure hook",

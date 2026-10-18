@@ -3,6 +3,7 @@ import { GrokSidebar } from "../src/sidebar";
 import { RemoteClientState } from "../src/remote-client-state";
 import { Session } from "../src/session";
 import {
+  historyEventCount,
   parseRewindPoint,
   parseRewindPoints,
   parseRewindExecute,
@@ -269,6 +270,18 @@ describe.each(["editLastMessage", "rewindSession"] as const)("%s lifecycle", (ty
     await pending;
     expect(original.executeRewind).not.toHaveBeenCalled();
     expect(sidebar.reportRequester).not.toHaveBeenCalled();
+  });
+});
+
+describe("historyEventCount", () => {
+  it("skips synthesized hook rows, which do not replay one-for-one (#215)", () => {
+    const hook = { toolCallId: "afk-hook-1", status: "in_progress", _meta: { afkPilotHook: true } };
+    expect(historyEventCount([
+      { type: "messageChunk", text: "reply" },
+      { type: "toolCall", call: hook },
+      { type: "toolCallUpdate", call: { ...hook, status: "completed" } },
+      { type: "toolCall", call: { toolCallId: "t1" } },
+    ] as any)).toBe(2);
   });
 });
 

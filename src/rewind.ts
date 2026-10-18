@@ -17,6 +17,7 @@
  */
 
 import { isPrimerText } from "./grok-primer";
+import { isHookRow } from "./grok-hooks";
 import type { HostMsg } from "./protocol";
 import { unwrapExtResult } from "./worktree";
 
@@ -25,8 +26,8 @@ export function historyEventCount(messages: readonly HostMsg[]): number {
     (count, message) => count + (
       message.type === "thoughtChunk" ||
       message.type === "messageChunk" ||
-      message.type === "toolCall" ||
-      message.type === "toolCallUpdate"
+      ((message.type === "toolCall" || message.type === "toolCallUpdate")
+        && !isHookRow((message as { call?: unknown }).call))
         ? 1
         : 0
     ),

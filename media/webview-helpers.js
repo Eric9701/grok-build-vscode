@@ -1643,7 +1643,8 @@
         userMsgCount += 1;
         continue;
       }
-      if (!suppressTurn && HISTORY_EVENT_TYPES.has(ev.type)) historyEventCount += 1;
+      // Hook rows are display-only and never counted (see isHookRow in grok-hooks.ts).
+      if (!suppressTurn && HISTORY_EVENT_TYPES.has(ev.type) && !ev.call?._meta?.afkPilotHook) historyEventCount += 1;
       i += 1;
     }
     return { userMsgCount, interjectionCount, historyEventCount };

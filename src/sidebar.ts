@@ -472,6 +472,7 @@ import {
   selectableRewindPoints,
   userFacingRewindPoints,
 } from "./rewind";
+import { isHookRow } from "./grok-hooks";
 import {
   commandsAdvertiseFeedback,
   decideFeedbackAvailability,
@@ -11651,7 +11652,7 @@ ${many ? `${working.length} conversations are` : "A conversation is"} still work
       // Hook rows are display-only and do not replay one-for-one (a success leaves
       // nothing on reopen), so they must not move the history index that anchors
       // plan cards and rewind points. The webview skips them the same way.
-      if (!(prepared.call as { _meta?: { afkPilotHook?: unknown } })?._meta?.afkPilotHook) session.historyEventCount += 1;
+      if (!isHookRow(prepared.call)) session.historyEventCount += 1;
       this.emit(session, { type, call: prepared.call });
       this.noteAdapterCompactSignal(session, prepared.call);
       if (prepared.commandOutput) {
