@@ -31,6 +31,8 @@ State the rule, name the function / constant / config-key an agent would grep fo
 
 Grok session context-window choices use `AcpClient.contextWindowSelection` and the identity-checked `setContextWindow` control. A size is chosen in the context popup's dropdown or with host-routed `/context-window <size>`; both track the last size `session/info` confirmed, except that while a change is in flight the dropdown shows the size just requested. A model change only changes the model. See [native context-window selection](research/context-window-selection.md).
 
+Thinking traces have a bottom **Show Less** button that collapses and focuses the header without following new output. `GrokHookCalls` maps Stop, StopFailure and SubagentStop notifications onto tool rows, including running state and failure diagnostics; child hooks stay in their child stream. See [thinking and hook display](research/thinking-and-hook-display.md).
+
 ## Where the detail lives
 
 This file is rules and orientation. Reference material that used to live here

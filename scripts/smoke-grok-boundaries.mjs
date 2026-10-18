@@ -38,7 +38,7 @@ rows("ignored", "ACP method", "_x.ai/models/update", "src/acp.ts newSession/load
 rows("ignored", "ACP method", "_x.ai/queue/changed", "src/sidebar.ts send: host owns its prompt queue; CLI queue broadcasts are not a host control surface.");
 rows("ignored", "ACP method", "_x.ai/sessions/changed", "src/sidebar.ts postSessionsList/buildSessionsList: host history refresh owns the catalog; CLI global list invalidations are unused.");
 rows("ignored", "ACP method", "_x.ai/settings/update", "src/sidebar.ts: host configuration and acknowledged model/mode changes own settings; CLI global settings broadcasts are unused.");
-rows("ignored", "ACP update", "hook_execution", "src/sidebar.ts xaiNotification: CLI hook diagnostics have no host hook-execution surface.");
+rows("handled", "ACP update", "hook_execution", "src/grok-hooks.ts / src/acp.ts routeHookUpdate: Stop, StopFailure and SubagentStop results become tool rows with failure diagnostics; other hook events remain ignored.");
 rows("ignored", "ACP update", "pending_interaction interaction_resolved", "src/acp.ts handleServerRequest: session/request_permission and question RPC responses own interactive cards; lifecycle echoes are unused.");
 rows("ignored", "ACP update", "response_completed", "src/acp-dispatch.ts extractPromptUsage / src/sidebar.ts prompt completion: aggregate prompt usage is authoritative, not per-inference usage/signatures.");
 rows("ignored", "ACP update", "session_summary_generated", "src/sidebar.ts xaiNotification/postSessionName: summary notification is unused; cliSessionTitle reads persisted titles on history refresh (live titles arrive through session_info_update).");
@@ -58,7 +58,7 @@ meta("ignored", "kind", "ACCEPTED pre-existing gap (backlog: Grok marks some app
 rows("ignored", "ACP update", "retry_state", "ACCEPTED pre-existing gap (backlog): Grok reports a model-request retry and no host code shows it; the turn continues normally once the retry succeeds.");
 // New in grok 1.0.41 (auto-updated 2026-09-28, after 4.13.3 shipped). All notifications, none awaits a reply;
 // the render sections stay clean without them. Backlog: "Grok 1.0.41 sends ten kinds nothing reads".
-rows("ignored", "ACP update", "hook_run_started", "ACCEPTED pre-existing gap (backlog: Grok 1.0.41 kinds): a pre/post tool hook started; the tool row itself is unaffected.");
+rows("handled", "ACP update", "hook_run_started", "src/grok-hooks.ts / src/acp.ts routeHookUpdate: awaited Stop, StopFailure and SubagentStop batches show running tool rows; pre/post tool hooks remain ignored.");
 rows("ignored", "ACP update", "last_turn_summary", "ACCEPTED pre-existing gap (backlog: Grok 1.0.41 kinds): an end-of-turn summary notification; nothing shows it.");
 rows("ignored", "ACP update", "background_tasks", "ACCEPTED pre-existing gap (backlog: Grok 1.0.41 kinds): a snapshot list of the session's background tasks; the per-task task_backgrounded / task_completed events already drive the cards.");
 meta("ignored", "bareName qualifiedName pluginName workflowPath workflowSource feedbackTraceOffer x.ai/memoryMode", "ACCEPTED pre-existing gap (backlog: Grok 1.0.41 kinds): extra labels on tool, workflow and session events; the fields the renderer reads are unchanged.");

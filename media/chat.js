@@ -14871,6 +14871,7 @@ ${fullText}`
     row.className = "subagent-tool";
     if (id) row.dataset.toolCallId = id;
     applyToolLabel(row, call);
+    paintChildHook(row, call);
     stream.appendChild(row);
     if (id) el._childTools.set(id, row);
   }
@@ -14884,8 +14885,25 @@ ${fullText}`
     }
     const label = toolLabel(call);
     if (label && label !== "tool") applyToolLabel(row, call);
+    paintChildHook(row, call);
     const status = String(call && call.status || "").toLowerCase();
     if (status === "failed") row.classList.add("subagent-tool-failed");
+  }
+
+  function paintChildHook(row, call) {
+    if (!call?._meta?.afkPilotHook) return;
+    if (call.status === "in_progress") {
+      row.textContent = `Running ${call.tool}`;
+      row.insertAdjacentHTML("beforeend", BLINK_DOTS);
+    }
+    const failure = toolFailureText(call);
+    if (failure) {
+      row.classList.add("subagent-tool-failed");
+      const error = document.createElement("div");
+      error.className = "tool-error";
+      error.textContent = failure;
+      row.appendChild(error);
+    }
   }
 
   function applyChildStream(msg) {
@@ -16045,18 +16063,43 @@ ${fullText}`
       el.className = "msg thinking";
       const hdr = document.createElement("div");
       hdr.className = "thinking-header";
+      hdr.tabIndex = 0;
+      hdr.setAttribute("role", "button");
+      hdr.setAttribute("aria-expanded", "false");
       // Chevron on the RIGHT (after the label), same glyph as tool groups; expand
       // state is driven by the `.expanded` class (CSS rotates it), like tools.
       hdr.innerHTML = `<span class="thinking-icon">${ICON.brain}</span><span class="thinking-label">Thinking</span>${BLINK_DOTS}<span class="thinking-chevron" aria-hidden="true">${ICON.chevronRight}</span>`;
       const body = document.createElement("div");
       body.className = "thinking-body";
       body.hidden = true;
-      hdr.onclick = () => {
-        body.hidden = !body.hidden;
-        el.classList.toggle("expanded", !body.hidden);
+      const less = document.createElement("button");
+      less.type = "button";
+      less.className = "thinking-show-less";
+      less.textContent = "Show Less";
+      less.hidden = true;
+      el._setExpanded = (expanded) => {
+        body.hidden = !expanded;
+        less.hidden = !expanded;
+        el.classList.toggle("expanded", expanded);
+        hdr.setAttribute("aria-expanded", String(expanded));
+      };
+      hdr.onclick = () => el._setExpanded(body.hidden);
+      hdr.onkeydown = (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        hdr.click();
+      };
+      less.onclick = () => {
+        // Reading a trace is deliberate navigation, even during streaming.
+        state.stickToBottom = false;
+        el._setExpanded(false);
+        hdr.focus({ preventScroll: true });
+        hdr.scrollIntoView({ block: "nearest", inline: "nearest" });
+        updateScrollBtn();
       };
       el.appendChild(hdr);
       el.appendChild(body);
+      el.appendChild(less);
       appendTranscriptChild(el);
       state.activeThoughtEl = body;
       state.activeThoughtHdrEl = hdr;
@@ -19782,8 +19825,7 @@ ${fullText}`
       thinking.classList.add("find-reveal");
       const body = thinking.querySelector(".thinking-body");
       if (body && body.hidden) {
-        body.hidden = false;
-        thinking.classList.add("expanded");
+        thinking._setExpanded(true);
       }
     }
     const group = el.closest(".tool-group");
@@ -21517,7 +21559,10 @@ ${fullText}`
       if (isMediaGenToolCall(msg.call, state.activeProvider) && msg.call.toolCallId) {
           state.mediaGenCallIds.add(msg.call.toolCallId);
         }
+        // A lifecycle hook gets its own row, including after a tool-only turn.
+        if (msg.call?._meta?.afkPilotHook) closeToolGroup();
         addToToolGroup(msg.call);
+        if (msg.call?._meta?.afkPilotHook && msg.call.status !== "in_progress") closeToolGroup();
         syncWorkflowLaunchRows();
         // Reads replay as a completed tool_call with the file text in `content`.
         // Shell rows wait for host `commandOutput` (grok) or a later update (Claude).
@@ -21588,6 +21633,15 @@ ${fullText}`
         // arrive on this update. Attach the IN box first so maybeAttach can
         // fill OUT from this same completed payload.
         refreshToolRowFromUpdate(msg.call);
+        if (msg.call?._meta?.afkPilotHook && msg.call.status !== "in_progress"
+          && state.activeToolGroupEl?._calls.some((call) => call.toolCallId === msg.call.toolCallId)) closeToolGroup();
+        // A hook that succeeded leaves no row: only the running state and failures
+        // are worth showing (#215). The closed lone row is its own element.
+        if (msg.call?._meta?.afkPilotHook && msg.call.status === "completed") {
+          state.toolItemsByToolCallId.get(msg.call.toolCallId)?.remove();
+          state.toolItemsByToolCallId.delete(msg.call.toolCallId);
+          break;
+        }
         syncWorkflowLaunchRows();
         // A self-executed command (cursor/Composer runs it in its own shell and
         // reports the result here, not via terminal/create) — fill the row's #41

@@ -337,6 +337,10 @@ happy-dom test (see [Webview DOM tests](#webview-dom-tests) below). Drives the s
 - **Advertised `clientCapabilities` (#79)** — `acpClientCapabilities(provider, grokVersion, versionVerified)` withholds `readTextFile` only for a live-verified grok >= 1.0.4 (no upper cap). A live 1.0.3, a cache/unverified 1.x banner, grok 0.2.117, Codex, and an unknown version keep the delegated handshake. The fake-CLI integration lifecycle test asserts the 1.0.4 wire payload; a second case asserts 0.2.117 still advertises `readTextFile`.
 - **Spawn argv** — `buildGrokAgentArgs()` returns `["agent", "stdio"]` with no effort, and `["agent", "--reasoning-effort", <value>, "stdio"]` (flag before the subcommand) for a valid effort.
 
+### `test/grok-hooks.test.ts` / `test/display-features.dom.test.ts` — hook activity and thinking collapse
+
+Hook start/result routing across live and replay rails, delayed batches, child isolation, ignored failures versus blocked outcomes, cancellation/disposal, provider isolation and replay deduplication. DOM checks cover the running row, visible escaped diagnostics, SubagentStop child rows, and the thinking footer's collapse, focus and keyboard behavior on live/rebuilt traces.
+
 ### `test/acp-integration.test.ts` — ACP wire layer + plan-mode gate (17 tests)
 
 Spawns the fake `grok agent stdio` from `test/fixtures/fake-grok-acp.cjs` (a ~190-line ACP server encoding only what the protocol requires, not grok version quirks), and drives `src/acp.ts` AcpClient against it over real JSON-RPC stdio. Cross-platform: `.cmd` wrapper on Windows, `.sh` wrapper elsewhere; subprocess startup adds ~50–100ms per test (same order as terminal-manager).

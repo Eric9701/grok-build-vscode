@@ -1,5 +1,6 @@
 import { contextWindowSizes, type ContextWindowSelection } from "./context-selection";
 import { supportsSessionDeletion } from "./acp-backend";
+import { GrokHookCalls } from "./grok-hooks";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createInterface, Interface } from "node:readline";
 import { EventEmitter } from "node:events";
@@ -325,6 +326,7 @@ export class AcpClient extends EventEmitter {
   private rl?: Interface;
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  private readonly hookCalls = new GrokHookCalls();
   private readonly backend: AcpBackend;
   private readonly timeouts: AcpTimeouts;
   private humanWaitActive = false;
@@ -555,6 +557,7 @@ export class AcpClient extends EventEmitter {
         if (p.timer) clearTimeout(p.timer);
         p.reject(new Error(`${this.backend.processName} exited (code ${code})`));
       }
+      this.finishHooks();
       this.emit("exit", code);
     });
     this.proc.on("error", (err) => {
@@ -690,6 +693,7 @@ export class AcpClient extends EventEmitter {
     // Replay precedes the response and may use a different parent wire ID.
     // Only an explicit spawn identifies a child until the load completes.
     this.loadingChildSessionIds = new Set();
+    this.hookCalls.reset();
     let raw: any;
     try {
       raw = await this.request("session/load", { sessionId, cwd: this.opts.cwd, mcpServers, ...this.backend.sessionParams?.(this.opts.cwd) });
@@ -1357,6 +1361,7 @@ export class AcpClient extends EventEmitter {
   private readonly onAbort = () => { void this.dispose(); };
 
   dispose(timeoutMs = 3000): Promise<void> {
+    this.finishHooks();
     this.opts.signal?.removeEventListener("abort", this.onAbort);
     this.setHumanWaitActive(false);
     this.rl?.close();
@@ -1576,6 +1581,7 @@ export class AcpClient extends EventEmitter {
   }
 
   private handleSessionUpdate(u: any, meta?: any, sessionId?: string): void {
+    if (this.routeHookUpdate(u, meta, sessionId)) return;
     if (this.loadingChildSessionIds && u?.sessionUpdate === "subagent_spawned") {
       const childId = u.subagentSessionId ?? u.child_session_id ?? u.subagent_id;
       if (typeof childId === "string" && childId) this.loadingChildSessionIds.add(childId);
@@ -1638,7 +1644,31 @@ export class AcpClient extends EventEmitter {
 
   /** What a backend still holds open when a turn or a replay ends. */
   private endTurn(outcome: "completed" | "cancelled" | "failed"): void {
+    this.finishHooks(this.loadingChildSessionIds ? undefined : this.sessionId);
     for (const update of this.backend.turnEnded?.(outcome) ?? []) this.routeUpdate(update, undefined);
+  }
+
+  private routeHookUpdate(u: any, meta?: any, sessionId = this.sessionId): boolean {
+    if (this.provider !== "grok" || !sessionId) return false;
+    if (u?.sessionUpdate !== "hook_run_started" && u?.sessionUpdate !== "hook_execution") return false;
+    const generation = meta?.generation ?? u?._meta?.generation;
+    if (typeof generation === "number" && generation !== this.contextGeneration) return true;
+    const updates = this.hookCalls.update(u, sessionId, meta);
+    if (updates === null) return false;
+    const foreign = this.loadingChildSessionIds
+      ? this.loadingChildSessionIds.has(sessionId)
+      : isForeignSessionUpdate(sessionId, this.sessionId);
+    for (const update of updates) this.routeUpdate(update, meta, foreign ? sessionId : undefined);
+    return true;
+  }
+
+  private finishHooks(sessionId?: string): void {
+    for (const entry of this.hookCalls.finish(sessionId)) {
+      const foreign = this.loadingChildSessionIds
+        ? this.loadingChildSessionIds.has(entry.sessionId)
+        : isForeignSessionUpdate(entry.sessionId, this.sessionId);
+      this.routeUpdate(entry.update, undefined, foreign ? entry.sessionId : undefined);
+    }
   }
 
   /**
@@ -1880,6 +1910,10 @@ export class AcpClient extends EventEmitter {
         method === "_x.ai/session_notification" ||
         method === "x.ai/session_notification"
       ) {
+        if (this.routeHookUpdate(params?.update, params?._meta, params?.sessionId)) {
+          if (id != null) this.respondOk(id, {});
+          return;
+        }
         // `model_changed` carries the EFFECTIVE reasoning effort the CLI actually
         // applied (post-resolution) — the authoritative signal that a live
         // set_model override took (or, on a non-conforming build, didn't). Keep
@@ -1914,6 +1948,15 @@ export class AcpClient extends EventEmitter {
         method === "_x.ai/session/update" ||
         method === "x.ai/session/update"
       ) {
+        if (this.loadingChildSessionIds && params?.update?.sessionUpdate === "subagent_spawned") {
+          const u = params.update;
+          const childId = u.subagentSessionId ?? u.child_session_id ?? u.subagent_id;
+          if (typeof childId === "string" && childId) this.loadingChildSessionIds.add(childId);
+        }
+        if (this.routeHookUpdate(params?.update, params?._meta, params?.sessionId)) {
+          if (id != null) this.respondOk(id, {});
+          return;
+        }
         // Subagent lifecycle stream (subagent_spawned / subagent_finished) —
         // carries the duration_ms + child output that Composer's completed
         // tool_call_update lacks (wire capture:

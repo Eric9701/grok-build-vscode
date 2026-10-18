@@ -2335,6 +2335,19 @@ body.turn-busy .queued-steer:hover {
   user-select: none;
 }
 .thinking-header:hover { color: var(--vscode-foreground); }
+.thinking-show-less {
+  background: none;
+  border: 0;
+  color: var(--vscode-descriptionForeground);
+  font: inherit;
+  cursor: pointer;
+  margin-left: 22px;
+  padding: 4px 0;
+}
+.thinking-show-less:hover { color: var(--vscode-foreground); }
+.thinking-show-less:focus-visible,
+.thinking-header:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 2px; }
+.thinking-show-less[hidden] { display: none; }
 /* Leading brain icon ÔÇö mirrors the tool rows' .tool-icon so a thinking row reads
    as a sibling of the tool rows (and matches the "ThinkingÔÇŽ" stand-in). */
 .thinking-icon { width: 16px; height: 16px; flex: 0 0 auto; opacity: 0.85; }
