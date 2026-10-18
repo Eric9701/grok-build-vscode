@@ -115,6 +115,16 @@ describe("PersistedState", () => {
     expect(logs.join("\n")).not.toMatch(/unexpected JSON shape/);
   });
 
+  it("reads and writes the dismissed-tips file, a map of tip id to true, on disk", async () => {
+    const dismissedFile = `${DIR}/${DISK_KEYS["grok.welcomeTips"]}`;
+    const { state, fs, logs } = make((f) => f.setFile(dismissedFile, JSON.stringify({ providers: true })));
+    expect(state.get("grok.welcomeTips")).toEqual({ providers: true });
+    await state.update("grok.welcomeTips", { providers: true, remote: true });
+    await state.flush();
+    expect(JSON.parse(fs.files.get(dismissedFile)!)).toEqual({ providers: true, remote: true });
+    expect(logs.join("\n")).not.toMatch(/unexpected JSON shape/);
+  });
+
   it("prefers the file over globalState once it exists", () => {
     const { state } = make((f, m) => {
       f.setFile(metaFile, JSON.stringify({ s1: { customName: "from disk" } }));

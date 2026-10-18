@@ -134,11 +134,14 @@ export class PersistedState {
     if (key === "grok.installId" || key === "grok.appPurpose") {
       return typeof value === "string";
     }
-    // Tip id -> the day it was shown (welcome-tips.ts). Rejecting it as not a
-    // record-of-records logged "unexpected JSON shape" on every start (#214).
-    if (key === "grok.welcomeTipsShown") {
+    // The two tip stores are flat maps, not records of records (welcome-tips.ts):
+    // dismissed tip id -> true, and shown tip id -> the day it was shown.
+    // Rejecting them logged "unexpected JSON shape" on every start (#214) and
+    // kept both off disk, so a tip dismissed on the desk came back on a phone.
+    if (key === "grok.welcomeTips" || key === "grok.welcomeTipsShown") {
+      const want = key === "grok.welcomeTips" ? "boolean" : "string";
       return !!value && typeof value === "object" && !Array.isArray(value)
-        && Object.values(value).every((day) => typeof day === "string");
+        && Object.values(value).every((v) => typeof v === want);
     }
     return isRecordMap(value);
   }
