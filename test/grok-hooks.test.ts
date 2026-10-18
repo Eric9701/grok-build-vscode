@@ -27,6 +27,18 @@ describe("Grok lifecycle hook calls (#215)", () => {
     expect(hooks.finish()).toEqual([]);
   });
 
+  it("a failure row lists only the hooks that failed, and names the one that did", () => {
+    const hooks = new GrokHookCalls();
+    hooks.update({ ...start(), count: 2 }, "parent");
+    const settled = hooks.update({ sessionUpdate: "hook_execution", event_name: "stop", prompt_id: "p1", runs: [
+      { name: "project/stop-slow-ok:stop[0].hooks[0]", status: { status: "success", elapsed_ms: 3565 } },
+      { name: "project/stop-fail:stop[0].hooks[0]", status: { status: "failed", error: "exit code 1: intentional hook failure", elapsed_ms: 659 } },
+    ] }, "parent")![0];
+    expect(settled.status).toBe("failed");
+    expect(settled.title).toBe("Stop hook failed (project/stop-fail:stop[0].hooks[0])");
+    expect(settled.content?.[0].content.text).toBe("stop hook (project/stop-fail:stop[0].hooks[0]) failed, ignored: exit code 1: intentional hook failure");
+  });
+
   it("renders cold-replayed failures without requiring a start, and deduplicates both rails", () => {
     const hooks = new GrokHookCalls();
     const update = hooks.update(result("p1", "stop", true), "parent", { eventId: "e1" })![0];

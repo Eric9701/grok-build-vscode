@@ -72,10 +72,11 @@ export class GrokHookCalls {
     // renderer removes it; a success with no running row (replay) emits nothing.
     if (!failed && !existing) return [];
     const blocked = failures.some((run: any) => run.status.blocked === true);
-    const title = `${label}${blocked ? " blocked" : failed ? " failed" : ""}${runs.length === 1 ? ` (${runs[0].name})` : ""}`;
-    const text = runs.map((run: any) => run.status.status === "failed"
-      ? `${u.event_name} hook (${run.name}) ${run.status.blocked === true ? "blocked" : "failed, ignored"}: ${typeof run.status.error === "string" ? run.status.error : "Unknown error"}`
-      : `${u.event_name} hook (${run.name}): ${run.status.status}`).join("\n");
+    // A failure row lists only the hooks that failed; the ones that succeeded beside
+    // them are not news (and read as errors inside a red row).
+    const title = `${label}${blocked ? " blocked" : failed ? " failed" : ""}${failures.length === 1 ? ` (${failures[0].name})` : ""}`;
+    const text = failures.map((run: any) =>
+      `${u.event_name} hook (${run.name}) ${run.status.blocked === true ? "blocked" : "failed, ignored"}: ${typeof run.status.error === "string" ? run.status.error : "Unknown error"}`).join("\n");
     return [{ ...this.call(batch, existing ? "tool_call_update" : "tool_call", failed ? "failed" : "completed", title),
       content: [{ type: "content", content: { type: "text", text } }] }];
   }
