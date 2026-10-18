@@ -39,6 +39,11 @@ export function permissionSmokeNotApplicable(provider) {
 
 export const SUBAGENT_PROMPT = "This is a delegation plumbing test. You MUST actually invoke your subagent/Agent tool exactly once, even though the task is trivial; answering yourself does not test it. Its only job: reply with the single word ok. Wait for the child to finish, then tell me what it said. Keep it minimal and do nothing else. Use the cheapest available model and lowest supported reasoning effort for the subagent.";
 export const WORKFLOW_PROMPT = "This is a workflow plumbing test. You MUST actually invoke your workflow tool, even though the task is trivial; answering yourself or launching ordinary subagents does not test it. Run exactly 2 steps, one agent per step. Step one: reply with the single word one. Step two: reply with the single word two. Declare both steps in the script's metadata before starting, wait for completion and report the result. Keep it minimal and do nothing else. Use the cheapest available model and lowest supported reasoning effort for both agents.";
+// Grok 1.0.41+ rejects an explicit per-agent model ("Explicit subagent model selection is unavailable for
+// this catalog"): asked for the cheapest model, the model names one, every step fails in 0 ms and it relaunches
+// the workflow. The session is already on the cheapest selectable model, so Grok is told not to set one.
+export const GROK_WORKFLOW_PROMPT = WORKFLOW_PROMPT.replace("Use the cheapest available model and lowest", "Do not set a model for the agents; use the lowest");
+if (GROK_WORKFLOW_PROMPT === WORKFLOW_PROMPT) throw new Error("WORKFLOW_PROMPT changed; update GROK_WORKFLOW_PROMPT");
 
 export function inconclusive(code, message) {
   return Object.assign(new Error(message), { code });

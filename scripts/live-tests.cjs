@@ -1340,7 +1340,7 @@ async function selectGrokSmokeModel(acp, session, composerOnly = false) {
 // Use the shared real ACP peer here: real terminal handlers, retained wire and
 // normalized evidence, bounded process-tree cleanup, and no provider-home move.
 async function testWorkflow() {
-  const { Peer, selectSmokeModel, checkWorkflow, delegationAttempted, WORKFLOW_PROMPT, timeoutMs } = await import("./acp-smoke.mjs");
+  const { Peer, selectSmokeModel, checkWorkflow, delegationAttempted, WORKFLOW_PROMPT, GROK_WORKFLOW_PROMPT, timeoutMs } = await import("./acp-smoke.mjs");
   const { grokBackend } = require(path.join(REPO, "out", "grok-backend.js"));
   const { TerminalManager } = require(path.join(REPO, "out", "terminal-manager.js"));
   const { parseRunProgressUpdate } = require(path.join(REPO, "out", "run-progress.js"));
@@ -1372,12 +1372,9 @@ async function testWorkflow() {
     report.model = selected;
     console.log(`grok workflow model=${selected.modelId}; effort=${selected.effort || "N/A (not advertised)"}; ${selected.basis}`);
     const from = peer.normalized.length;
-    // Grok 1.0.41 rejects an explicit per-agent model ("Explicit subagent model selection is unavailable for this
-    // catalog"): asked for "the cheapest available model", the model set one, every step failed in 0 ms, and it
-    // relaunched the workflow — two runs where the check expects one. The session is already on the cheapest
-    // selectable model, so tell it not to set one (backlog: Grok 1.0.41 kinds).
-    const prompt = WORKFLOW_PROMPT.replace("Use the cheapest available model and lowest", "Do not set a model for the agents; use the lowest");
-    assert(prompt !== WORKFLOW_PROMPT, "WORKFLOW_PROMPT changed; update the Grok agent-model pin above");
+    // Grok rejects an explicit per-agent model; see GROK_WORKFLOW_PROMPT (backlog: Grok 1.0.41 kinds).
+    const prompt = GROK_WORKFLOW_PROMPT;
+    assert(prompt !== WORKFLOW_PROMPT, "WORKFLOW_PROMPT changed; update GROK_WORKFLOW_PROMPT in acp-smoke.mjs");
     const turn = peer.prompt(session.sessionId, prompt);
     const result = await turn.promise;
     assert(result.stopReason === "end_turn", "workflow prompt failed: " + JSON.stringify(result));
