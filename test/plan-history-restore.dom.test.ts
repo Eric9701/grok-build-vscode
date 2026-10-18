@@ -276,6 +276,25 @@ describe("plan-history queue (restore-flow rendering)", () => {
     ]);
   });
 
+  it("a hook row in the replay does not shift a plan anchored by history event (#215)", () => {
+    const { window, doc } = bootWebview();
+    plays(window, [
+      { type: "planHistoryQueue", plans: [
+        { text: "approved plan", verdict: "approved", afterUserMessage: 1, afterInterjection: 0, afterHistoryEvent: 1 },
+      ]},
+      { type: "historyReplay", active: true },
+      { type: "userMessageChunk", text: "make a plan" },
+      { type: "toolCall", call: { toolCallId: "afk-hook-1", kind: "other", tool: "Stop hook", title: "Stop hook failed (g)",
+        status: "failed", _meta: { afkPilotHook: true },
+        content: [{ type: "content", content: { type: "text", text: "stop hook (g) failed, ignored: boom" } }] } },
+      { type: "messageChunk", text: "here is the plan" },
+      { type: "messageChunk", text: "implementing now" },
+      { type: "historyReplay", active: false },
+    ]);
+    const rows = transcript(doc);
+    expect(rows.indexOf("plan[Approved]: approved plan")).toBe(rows.indexOf("agent: here is the plan") + 1);
+  });
+
   it("uses chronological array order for old same-prompt entries without the secondary coordinate", () => {
     const { window, doc } = bootWebview();
     const interjection = (text: string) =>

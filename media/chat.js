@@ -21526,7 +21526,8 @@ ${fullText}`
         state.historyEventCount = 0;
         break;
       case "toolCall":
-        advanceHistoryEvent();
+        // Hook rows never count as history events (see emitToolCallEvent).
+        if (!msg.call?._meta?.afkPilotHook) advanceHistoryEvent();
         if (state.suppressReplayTurn) break; // tool calls inside the primer turn (unlikely but defensive)
         if (isPlanReviewTool(msg.call)) {
           // Plan text belongs on the review card, not a generic tool row.
@@ -21587,7 +21588,7 @@ ${fullText}`
         renderRestoredPermissionForTool(msg.call.toolCallId, msg.call.title);
         break;
       case "toolCallUpdate": {
-        advanceHistoryEvent();
+        if (!msg.call?._meta?.afkPilotHook) advanceHistoryEvent();
         if (state.suppressReplayTurn) break;
         if (isPlanReviewTool(msg.call)) break;
         // Resume: anchor a restored permission card here — the update carries the
