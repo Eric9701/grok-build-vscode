@@ -40,6 +40,19 @@ describe("thinking Show Less (#216)", () => {
 });
 
 describe("hook rows (#215)", () => {
+  it("a subagent's hook that succeeds leaves no line in its card", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "toolCall", call: { toolCallId: "spawn", title: "spawn_subagent", rawInput: { description: "Child", subagent_type: "explore" } } });
+    dispatch(window, { type: "subagentUpdate", update: { sessionUpdate: "subagent_spawned", subagent_id: "child", child_session_id: "child" } });
+    const hooks = new GrokHookCalls();
+    const starting = hooks.update({ sessionUpdate: "hook_run_started", event_name: "subagent_stop", prompt_id: "p", count: 1 }, "child")![0];
+    dispatch(window, { type: "childStream", childSessionId: "child", event: "toolCall", call: starting });
+    expect(doc.querySelector(".subagent-tool")?.textContent).toContain("Running SubagentStop hook");
+    const finished = hooks.update({ sessionUpdate: "hook_execution", event_name: "subagent_stop", prompt_id: "p", runs: [{ name: "child hook", status: { status: "success", elapsed_ms: 40 } }] }, "child")![0];
+    dispatch(window, { type: "childStream", childSessionId: "child", event: "toolCallUpdate", call: finished });
+    expect(doc.body.textContent).not.toContain("SubagentStop hook");
+  });
+
   it("shows SubagentStop activity and errors only inside the child card", () => {
     const { window, doc } = bootWebview();
     dispatch(window, { type: "toolCall", call: { toolCallId: "spawn", title: "spawn_subagent", rawInput: { description: "Child", subagent_type: "explore" } } });

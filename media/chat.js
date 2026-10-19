@@ -14879,6 +14879,11 @@ ${fullText}`
   function updateChildToolRow(el, stream, call) {
     const id = call && call.toolCallId;
     const row = id && el._childTools && el._childTools.get(id);
+    // A subagent's hook that succeeded leaves no line, like the parent's (#215).
+    if (call?._meta?.afkPilotHook && call.status === "completed") {
+      if (row) { row.remove(); el._childTools.delete(id); }
+      return;
+    }
     if (!row) {
       addChildToolRow(el, stream, call);
       return;
