@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.15.3 — 2026-10-19
+
+**See a Grok Stop hook run, and fold long thinking from the bottom.**
+
+### Added
+
+- **A running Grok Stop hook shows at the end of the turn (#215).** While a Stop hook runs after Grok's reply (for example one that reads the reply aloud), the chat shows "Running Stop hook". If it succeeds the line disappears; if it fails, a "Stop hook failed" row stays with Grok's own message, e.g. `stop hook (name) failed, ignored: exit code 1: …`, listing only the hooks that failed ("Stop hook blocked" when a hook stopped the turn). A subagent's hook stays inside its subagent card. Thanks to FireInWinter.
+- **Show Less at the bottom of an expanded thinking block (#216).** After reading a long trace to the end, fold it from there; its header stays in view. The header also works with Enter and Space. Thanks to FireInWinter.
+
 ## 4.15.2 — 2026-10-18
 
 **A faster start on Windows when only some agents are installed.**
