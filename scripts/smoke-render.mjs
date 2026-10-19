@@ -97,10 +97,18 @@ export async function runRenderSmoke(provider, evidenceParent, cliOverride, sele
     const picker = async (rows = "#gear-popover .model-picker-row") => {
       const deadline = Date.now() + rpcMs;
       for (;;) {
-        await page.waitForFunction(() => {
-          const chip = document.querySelector("#gear-btn");
-          return !!chip && !chip.disabled && chip.getAttribute("aria-disabled") !== "true";
-        }, null, { timeout: Math.max(1, deadline - Date.now()) });
+        // Poll with evaluate, not waitForFunction: the webview's CSP has no
+        // 'unsafe-eval', which waitForFunction needs as soon as its first check
+        // is false (a chip still loading models), so it failed only sometimes.
+        for (;;) {
+          const ready = await page.evaluate(() => {
+            const chip = document.querySelector("#gear-btn");
+            return !!chip && !chip.disabled && chip.getAttribute("aria-disabled") !== "true";
+          });
+          if (ready) break;
+          if (Date.now() >= deadline) throw new Error("model chip never became ready");
+          await page.waitForTimeout(200);
+        }
         const open = await page.locator(rows).first().isVisible().catch(() => false);
         if (!open) await page.locator("#gear-btn").click();
         try {
