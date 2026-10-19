@@ -78,6 +78,16 @@ const usableItem = (menu: Element, label: string) => {
   return !!el && !el.disabled;
 };
 
+// The rail probe times out on a real timer (5 ms here) and repaints after it. A fixed
+// 40 ms sleep was not enough under a loaded parallel suite; wait for the note itself.
+async function untilRailNote(doc: Document, text: string, ms = 2000): Promise<void> {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if ([...doc.querySelectorAll(".rail-note")].some((e) => e.textContent === text)) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
 describe("projects rail", () => {
   it("offers phone handoff for a nonfocused desktop worktree row, never for remotes", () => {
     for (const remote of [false, true]) {
@@ -463,7 +473,7 @@ describe("projects rail", () => {
     dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
     dispatch(h.window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
 
-    await new Promise((r) => setTimeout(r, 40));
+    await untilRailNote(h.doc, "Couldn't load these conversations. Retry");
 
     const notes = [...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent);
     expect(notes.filter((t) => t === "Couldn't load these conversations. Retry")).toHaveLength(1);
@@ -510,7 +520,7 @@ describe("projects rail", () => {
     });
     dispatch(h.window, { type: "repos", entries: repos, selectedCwd: "/work/alpha", activeCwd: "/work/alpha" });
     dispatch(h.window, sessionsFrame([row("a1", "/work/alpha", "alpha one", 9)]));
-    await new Promise((r) => setTimeout(r, 40));
+    await untilRailNote(h.doc, "Couldn't load these conversations. Retry");
     expect([...h.doc.querySelectorAll(".rail-note")].map((e) => e.textContent))
       .toContain("Couldn't load these conversations. Retry");
 
