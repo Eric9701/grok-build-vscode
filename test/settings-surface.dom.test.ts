@@ -2077,7 +2077,7 @@ describe("settings About section", () => {
     expect(api.GITHUB_ISSUE_FEATURE_URL).toBe("https://github.com/phuryn/grok-build-vscode/issues/new?labels=enhancement");
     expect(api.ROWS.find((r: { id: string }) => r.id === "reportBug")?.href).toBe(api.GITHUB_ISSUE_BUG_URL);
     expect(api.ROWS.find((r: { id: string }) => r.id === "requestFeature")?.href).toBe(api.GITHUB_ISSUE_FEATURE_URL);
-    expect(api.SUPPORT_MAILTO).toBe("mailto:support@productcompass.pm");
+    expect(api.SUPPORT_MAILTO).toBe("mailto:contact@afkpilot.com");
   });
 
   it("puts the non-affiliation disclaimer only at the bottom of the About page", () => {
@@ -2100,7 +2100,7 @@ describe("settings About section", () => {
     expect(body.lastElementChild).toBe(disclaimer);
     expect(root.textContent).toContain("Report a bug");
     expect(root.textContent).toContain("Request a feature");
-    expect(root.textContent).toContain("support@productcompass.pm");
+    expect(root.textContent).toContain("contact@afkpilot.com");
 
     const general = doc.createElement("div");
     doc.body.appendChild(general);

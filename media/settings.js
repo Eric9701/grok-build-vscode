@@ -143,7 +143,7 @@
   };
   const GITHUB_ISSUE_BUG_URL = GITHUB_REPO_URL + "/issues/new?labels=bug";
   const GITHUB_ISSUE_FEATURE_URL = GITHUB_REPO_URL + "/issues/new?labels=enhancement";
-  const SUPPORT_MAILTO = "mailto:support@productcompass.pm";
+  const SUPPORT_MAILTO = "mailto:contact@afkpilot.com";
   const ABOUT_DISCLAIMER =
     "Unofficial · community-built · MIT | " +
     "A VS Code UI for SpaceXAI’s Grok Build CLI - not affiliated with or endorsed by SpaceXAI (formerly xAI). " +
@@ -1549,7 +1549,7 @@
       category: "about",
       icon: "mail",
       title: "Contact",
-      description: "support@productcompass.pm",
+      description: "contact@afkpilot.com",
       kind: "action",
       actionLabel: "Email",
       href: SUPPORT_MAILTO,

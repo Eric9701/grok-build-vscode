@@ -1667,7 +1667,7 @@ describe("window navigation and open locks", () => {
     expect(shouldOpenExternally("https://github.com/phuryn/grok-build-vscode")).toBe(
       true,
     );
-    expect(shouldOpenExternally("mailto:support@productcompass.pm")).toBe(true);
+    expect(shouldOpenExternally("mailto:contact@afkpilot.com")).toBe(true);
     expect(shouldOpenExternally("javascript:alert(1)")).toBe(false);
     const d = windowOpenDecision({ url: "https://example.com" });
     expect(d.action).toBe("deny");
@@ -2568,7 +2568,7 @@ describe("desktop openFile / openUrl policy (A1)", () => {
   it("refuses openUrl schemes other than http(s) and mailto", () => {
     expect(authorizeOpenUrl("https://example.com/x").ok).toBe(true);
     expect(authorizeOpenUrl("http://localhost:3000").ok).toBe(true);
-    expect(authorizeOpenUrl("mailto:support@productcompass.pm").ok).toBe(true);
+    expect(authorizeOpenUrl("mailto:contact@afkpilot.com").ok).toBe(true);
     expect(authorizeOpenUrl("file:///etc/passwd").ok).toBe(false);
     expect(authorizeOpenUrl("javascript:alert(1)").ok).toBe(false);
     expect(authorizeOpenUrl("vscode://file/x").ok).toBe(false);
