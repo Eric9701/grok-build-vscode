@@ -3232,8 +3232,11 @@ button.workflow-step:focus-visible { outline: 1px solid var(--vscode-focusBorder
    name collapsed to "Read …". A label holding the link lays out as a row the
    link can shrink in; the name's start ellipsizes and its tail (end of the
    name + line range, applyToolLabel) never does. `pre` keeps the space after
-   the verb, which a flex item would drop. */
+   the verb, which a flex item would drop — and it has to outrank the `nowrap`
+   on a lone settled row and a subagent's row, or those read "ReadREADME.md". */
 .tool-label-split { display: flex; white-space: pre; }
+.tool-flat .tool-label.tool-label-split { white-space: pre; }
+.subagent-card .subagent-tool.tool-label-split { white-space: pre; }
 .tool-label-split > .tool-label-ref { display: flex; flex: 0 1 auto; min-width: 0; }
 .tool-label-ref-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tool-label-ref-tail { flex: 0 0 auto; }

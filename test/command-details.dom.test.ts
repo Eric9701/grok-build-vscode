@@ -904,6 +904,41 @@ ${command}` },
     expect(css(long.querySelector(".tool-label-ref-tail")!).flexShrink).toBe("0");
   });
 
+  // A lone settled Read and a subagent's Read sit under their own `nowrap`
+  // rules; there the flex item's trailing space collapsed into "ReadREADME.md".
+  it("a lone Read and a subagent Read keep the space after the verb (#226)", () => {
+    const { window, doc } = bootWebview();
+    const style = doc.createElement("style");
+    style.textContent = readFileSync(new URL("../media/chat.css", import.meta.url), "utf8");
+    doc.head.appendChild(style);
+    dispatch(window, readCall("r1", { target_file: "README.md", offset: 1, limit: 30 }));
+    dispatch(window, readDone("r1", "a", { type: "ReadFile", FileContent: { content: "a", offset: 1, limit: 30 } }));
+    close(window);
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "spawn-1", title: "spawn_subagent",
+              _meta: { "x.ai/tool": { name: "spawn_subagent" } },
+              rawInput: { description: "Look around", subagent_type: "explore" } },
+    });
+    dispatch(window, {
+      type: "subagentUpdate",
+      update: { sessionUpdate: "subagent_spawned", subagent_id: "kid", child_session_id: "kid" },
+    });
+    dispatch(window, {
+      type: "childStream", childSessionId: "kid", event: "toolCall",
+      call: { toolCallId: "s1", kind: "read", title: "read_file",
+              rawInput: { target_file: "src/a.ts", offset: 1, limit: 12 } },
+    });
+
+    const flat = doc.querySelector(".tool-flat .tool-label") as HTMLElement;
+    const child = doc.querySelector(".subagent-tool") as HTMLElement;
+    for (const [row, text] of [[flat, "Read README.md lines 1-30"], [child, "Read a.ts lines 1-12"]] as const) {
+      expect(row.textContent).toBe(text);
+      expect(row.classList.contains("tool-label-split")).toBe(true);
+      expect([text, window.getComputedStyle(row).whiteSpace]).toEqual([text, "pre"]);
+    }
+  });
+
   it("a Read row with no line range on the wire links the file with no fragment (#122)", () => {
     const { window, doc, posted } = bootWebview();
     dispatch(window, readCall("r2", { target_file: "notes.md" }));
