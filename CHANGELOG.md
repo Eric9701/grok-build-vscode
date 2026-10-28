@@ -1,5 +1,23 @@
 # Changelog
 
+## 4.15.4 — 2026-10-28
+
+**Copy from the chat again, Muse's Allow all reaches its subagents, and tool rows say which file.**
+
+### Fixed
+
+- **Copying a highlight from the chat works again in VS Code (#223, #225).** Selecting text in a message after typing in the composer and pressing Ctrl+C (or right-click Copy) copied the composer's text, or nothing, and jumped the cursor back to the composer. Thanks to youpJiang, padixa, and FireInWinter for the steps to reproduce.
+- **Muse Code's Allow all no longer asks about a subagent's commands (#221).** Muse starts each subagent and workflow agent in its own stricter mode, so under Allow all their commands could still stop for approval, one by one. While a conversation is in Allow all, those approvals are now answered for you. A protected write, or a request Muse itself escalates, still asks. Thanks to zpanos74 for the detailed report.
+- **A custom model's 401 no longer asks you to sign in to Grok (#218).** When your own endpoint refuses its API key, the message names that endpoint and where its key is set, and the model picker stays usable; signing in to Grok again could never have fixed it. Thanks to FireInWinter.
+- **Tool rows keep the end of a long file name visible (#226).** On a narrow panel every Read row could read "Read …"; now the start of the name shortens and its end and line range stay, so similar files can be told apart. Thanks to padixa.
+- **A search narrowed to a folder says so (#220),** e.g. "Search useState in src/components". Searches of the whole project read as before. Thanks to padixa.
+- **Muse Code's search and PowerShell rows say what they did.** They read a bare "search" and "powershell"; now a search reads "Search <pattern> in <folder>" (or the file patterns, for a search by file name), and a PowerShell row reads "Run Get-ChildItem" like any other command, with the whole command on its approval card.
+- **A long tool row stays on one line beside its icon** instead of dropping below it in a narrow panel.
+
+### Changed
+
+- **Settings → About's contact address is contact@afkpilot.com,** matching afkpilot.com.
+
 ## 4.15.3 — 2026-10-19
 
 **See a Grok Stop hook run, and fold long thinking from the bottom.**

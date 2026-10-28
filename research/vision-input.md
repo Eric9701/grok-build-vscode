@@ -12,6 +12,11 @@ would kill a working feature), and instead pins the behavior with the
 `-32602` (see [voice-input.md](voice-input.md)) — fails the release gate
 instead of shipping.
 
+**grok 1.0.70 (2026-10-28) advertises `image: true`.** The advertisement now
+matches the behavior; `vision-prompt` still passes ("red"). Nothing in the
+extension read the flag, so nothing changed but the `capabilities` live test's
+baseline. Sends still are not gated on it, since older CLIs advertise `false`.
+
 ## Probe results (`vision-probe.cjs`)
 
 | Probe | Result |

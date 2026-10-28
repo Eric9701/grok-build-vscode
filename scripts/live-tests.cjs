@@ -379,14 +379,14 @@ async function testHandshake() {
   } finally { acp.kill(); }
 }
 
-// CLI-drift resilience: the extension carries workarounds for the CLI *lying* about
-// its own capabilities — most notably `promptCapabilities.image:false` while the CLI
-// actually accepts image blocks (research/vision-input.md). This probe pins the
-// ADVERTISEMENT; the `vision-prompt` test pins the ACTUAL behavior. Together they're
-// an advertised-vs-actual drift detector: the day grok flips `image` to true (or
-// changes what it advertises), this FAILs with an actionable message so the workaround
-// gets re-verified/removed instead of silently rotting. Handshake-only, so it's cheap
-// enough to run in every gate (and in the --smoke lane).
+// CLI-drift resilience: the extension never gates image sends on the advertisement,
+// because grok up to 1.0.62 advertised `promptCapabilities.image:false` while it
+// accepted image blocks (research/vision-input.md); 1.0.70 advertises true. This probe
+// pins the ADVERTISEMENT; the `vision-prompt` test pins the ACTUAL behavior. Together
+// they're an advertised-vs-actual drift detector: when grok changes what it advertises,
+// this FAILs with an actionable message so the change gets looked at instead of
+// silently rotting. Handshake-only, so it's cheap enough to run in every gate (and in
+// the --smoke lane).
 async function testCapabilities() {
   const cwd = mkTmp("caps");
   const acp = new Acp(cwd);
@@ -394,17 +394,17 @@ async function testCapabilities() {
     const init = await withTimeout(acp.send("initialize", INIT), 30000, "initialize");
     assert(!init.error, "initialize errored: " + JSON.stringify(init.error));
     const caps = (init.result && init.result.agentCapabilities && init.result.agentCapabilities.promptCapabilities) || {};
-    // Documented baseline (research/vision-input.md): image:false, audio:false,
-    // embeddedContext:true — captured against 0.2.87. We only hard-assert `image`
-    // (the one that gates a real workaround); the rest ride along in the detail so
-    // any change is visible in the PASS line.
+    // Documented baseline (research/vision-input.md): image:true since grok 1.0.70
+    // (false from 0.2.87 to 1.0.62, while vision worked anyway). We only hard-assert
+    // `image`; the rest ride along in the detail so any change is visible in the
+    // PASS line.
     assert(
-      caps.image === false,
-      `DRIFT: grok advertises promptCapabilities.image=${JSON.stringify(caps.image)} (baseline: false). ` +
-      "If it's now true, the image:false workaround (research/vision-input.md + the vision-prompt gate) " +
-      "may be removable — re-verify vision behavior and update this baseline.",
+      caps.image === true,
+      `DRIFT: grok advertises promptCapabilities.image=${JSON.stringify(caps.image)} (baseline: true since 1.0.70). ` +
+      "The host does not gate image sends on this flag, so nothing breaks by itself; check that vision-prompt " +
+      "still passes, record the change in research/vision-input.md and update this baseline.",
     );
-    return `promptCapabilities=${JSON.stringify(caps)} — image:false baseline holds (vision-prompt pins that vision works anyway)`;
+    return `promptCapabilities=${JSON.stringify(caps)} — image:true baseline holds (vision-prompt pins the behavior)`;
   } finally { acp.kill(); }
 }
 
@@ -779,8 +779,8 @@ async function testParallelSessions() {
 }
 
 // Vision INPUT (paste/upload → inline {type:"image"} blocks in session/prompt).
-// This wire surface is invisible to every grok-free layer: the CLI still
-// ADVERTISES promptCapabilities.image:false but actually accepts image blocks
+// This wire surface is invisible to every grok-free layer: the CLI advertised
+// promptCapabilities.image:false up to 1.0.62 while it accepted image blocks
 // (verified on 0.2.87 — see research/vision-input.md), so only a live check can
 // catch a build that starts rejecting them (the audio precedent: -32602 killed
 // the whole turn). A solid 256×256 red PNG is generated in-process; the model

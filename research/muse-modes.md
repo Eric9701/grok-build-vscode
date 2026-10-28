@@ -93,6 +93,13 @@ unless the owner selects another mode; there is no migration to reverse.
 - Refused switches change neither the badge nor saved posture/defaults. The
   old one-time host approval fallback has been removed: Allow all means Muse
   accepted allowAll. The host does not auto-answer Muse's pending cards.
+- Muse starts every subagent and workflow child in its own On request
+  profile and does not pass the parent's Allow all down (#221). While Muse
+  has confirmed the parent as Allow all, the adapter answers an approval
+  that carries `subagentOrigin` with Muse's offered once-allow. It still
+  forwards a protected write, a judge escalation, a subject kind MSP does
+  not name, and any request with no once-allow, and never answers the
+  parent's own approvals.
 
 The host-local Settings rows name the offered modes and explain the sandbox
 exception. They remain unavailable to phones. Boot scripts, terminal

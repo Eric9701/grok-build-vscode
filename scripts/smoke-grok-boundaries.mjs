@@ -67,6 +67,8 @@ meta("handled", "contextWindows", "src/acp.ts contextWindowSizes: a model's sele
 meta("ignored", "requestTrimmedTokens", "ACCEPTED pre-existing gap (backlog: Grok 1.0.52 metadata): tokens the CLI trimmed from a request, beside totalTokens on session updates; the meter reads totalTokens.");
 meta("ignored", "x.ai/memoryNotesWritable", "ACCEPTED pre-existing gap (backlog: Grok 1.0.52 metadata): whether the CLI's memory notes are writable for the session; no host surface for memory notes.");
 meta("ignored", "x.ai/requestingSessionId", "ACCEPTED pre-existing gap (backlog: Grok 1.0.52 metadata): the session that raised a permission request; approval already answers on the request's own session, the card does not name a requesting child.");
+// New by grok 1.0.70 (seen in the 4.15.4 release test:live, 2026-10-28). Backlog: "Grok 1.0.70 displayName".
+meta("ignored", "displayName", "ACCEPTED pre-existing gap (backlog: Grok 1.0.70 displayName): another label beside bareName/qualifiedName on a skill command and beside workflowPath on a workflow_updated rollup; the slash menu reads the command's name and the workflow card its title.");
 rows("handled", "ACP update", "workflow_updated", "src/run-progress.ts parseRunProgressUpdate / src/sidebar.ts xaiNotification: workflow phase/status/result snapshots drive cards.");
 rows("handled", "ACP update", "subagent_spawned subagent_finished turn_completed", "src/sidebar.ts subagentLifecycle/xaiNotification / media/chat.js: child lifecycle and replayed turn completion.");
 rows("handled", "ACP update", "model_changed", "src/acp.ts handleServerRequest: synchronizes current model and effective effort.");
