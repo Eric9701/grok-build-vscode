@@ -106,3 +106,43 @@ describe("a running search names its pattern (#145)", () => {
     expect(doc.querySelector(".tool-item .cmd-block")).toBeNull();
   });
 });
+
+// Muse names its tools `search` (pattern, glob[], paths[]) and, on Windows,
+// `powershell`. Neither was in the verb table, so the rows read a bare
+// "search" / "powershell". Older adapters send them as kind "other" and the
+// relay serves this renderer to those too, so both shapes are covered.
+describe("Muse's search and powershell rows say what they did", () => {
+  const settledLabel = (doc: any) => (doc.querySelector(".tool-label") as HTMLElement).textContent!.trim();
+  function settle(window: any, call: Record<string, unknown>) {
+    dispatch(window, { type: "toolCall", call: { ...call, status: "in_progress" } });
+    dispatch(window, { type: "toolCallUpdate", call: { ...call, status: "completed" } });
+    dispatch(window, { type: "messageChunk", text: "done" });
+  }
+
+  it.each(["search", "other"])("a file-name search shows its globs and folder (kind %s)", (kind) => {
+    const { window, doc } = bootWebview();
+    settle(window, { toolCallId: "m1", title: "search", kind,
+      rawInput: { pattern: "^", glob: ["**/*.md", "**/*.txt"], paths: ["docs"], output_mode: "files_with_matches" } });
+    expect(settledLabel(doc)).toBe("Search **/*.md, **/*.txt in docs");
+  });
+
+  it("a content search shows its pattern, not the globs that narrowed it", () => {
+    const { window, doc } = bootWebview();
+    settle(window, { toolCallId: "m2", title: "search", kind: "other",
+      rawInput: { pattern: "Astra|Codex", glob: "**/*.md", paths: ["README.md"] } });
+    expect(settledLabel(doc)).toBe("Search Astra|Codex in README.md");
+  });
+
+  it("a running file-name search names the globs", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "toolCall", call: { toolCallId: "m3", title: "search", kind: "other", status: "in_progress",
+      rawInput: { pattern: "^", glob: ["**/*.txt"] } } });
+    expect(label(doc)).toContain('Searching for "**/*.txt"');
+  });
+
+  it.each(["execute", "other"])("a powershell row reads as the command it ran (kind %s)", (kind) => {
+    const { window, doc } = bootWebview();
+    settle(window, { toolCallId: "m4", title: "powershell", kind, rawInput: { command: "Get-ChildItem -Recurse docs" } });
+    expect(settledLabel(doc)).toBe("Run Get-ChildItem");
+  });
+});

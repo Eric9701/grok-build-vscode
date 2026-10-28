@@ -23,6 +23,13 @@ describe("Muse permission correlation", () => {
     expect(ask.mock.calls[0][0].toolCall).toEqual({ toolCallId: "call", title, kind: "execute", status: "pending", rawInput });
   });
 
+  it("shows a PowerShell approval as its command, like bash", () => {
+    const ask = vi.fn((_params: any) => new Promise<any>(() => {}));
+    new Approvals(ask, vi.fn(), vi.fn(), vi.fn())
+      .accept("approval/requested", { ...request, toolName: "powershell", rawArgs: '{"command":"Get-ChildItem -Force"}' });
+    expect(ask.mock.calls[0][0].toolCall).toMatchObject({ title: "Get-ChildItem -Force", kind: "execute" });
+  });
+
   it("preserves offered ids and does not advertise a session grant as persistent", () => {
     expect(permissionOptions(request.availableChoices)).toEqual([
       { optionId: once.choiceId, name: "Allow (once)", kind: "allow_once", _meta: { scope: "once" } },
@@ -80,4 +87,42 @@ it("echoes an explicit rejection and surfaces a server refusal", async () => {
   approvals.accept("approval/requested", request);
   await vi.waitFor(() => expect(fail).toHaveBeenCalled());
   expect(decide).toHaveBeenCalledWith(expect.objectContaining({ choiceId: deny.choiceId }));
+});
+
+// #221: Muse starts a subagent in its own On request profile, so under the
+// parent's Allow all every child step still asked.
+describe("a subagent's approval under the parent's Allow all", () => {
+  const child = { ...request, subagentOrigin: { childRunId: "run", childSessionId: "kid", subagentId: "sub" },
+    subject: { kind: "shell", command: "echo hi" }, protectedWrite: false, judgeEscalated: false };
+
+  function run(params: Record<string, unknown>, allowsAll = true) {
+    const ask = vi.fn((_params: any) => new Promise<any>(() => {}));
+    const decide = vi.fn().mockResolvedValue({});
+    const fail = vi.fn();
+    new Approvals(ask, decide, vi.fn(), fail, () => allowsAll).accept("approval/requested", params);
+    return { ask, decide, fail };
+  }
+
+  it("is answered with the offered once-allow, without a card", async () => {
+    const { ask, decide, fail } = run(child);
+    await vi.waitFor(() => expect(decide).toHaveBeenCalledTimes(1));
+    expect(decide).toHaveBeenCalledWith({ sessionId: "session", approvalId: "approval",
+      requirementId: request.currentRequirementId, choiceId: once.choiceId });
+    expect(ask).not.toHaveBeenCalled();
+    expect(fail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the parent is not in Allow all", child, false],
+    ["it is the parent's own approval", { ...child, subagentOrigin: undefined }, true],
+    ["its subject kind is one MSP does not name", { ...child, subject: { kind: "teleport" } }, true],
+    ["it has no subject", { ...child, subject: undefined }, true],
+    ["it is a protected write", { ...child, protectedWrite: true }, true],
+    ["the judge escalated it", { ...child, judgeEscalated: true }, true],
+    ["no once-allow is offered", { ...child, availableChoices: [session, persistent, deny] }, true],
+  ])("still asks the person when %s", async (_label, params, allowsAll) => {
+    const { ask, decide } = run(params as Record<string, unknown>, allowsAll as boolean);
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledTimes(1));
+    expect(decide).not.toHaveBeenCalled();
+  });
 });

@@ -120,6 +120,14 @@ describe("Muse raw notification projection", () => {
     expect(updates[0].rawInput).toEqual(expected);
   });
 
+  it.each([["bash", "execute"], ["powershell", "execute"], ["search", "search"], ["read", "other"], ["hasOwnProperty", "other"]])(
+    "gives Muse's %s tool the %s kind", (tool, kind) => {
+    const updates: any[] = [];
+    const p = new Projection(u => updates.push(u), () => {});
+    p.accept("item/started", { item: { itemId: "tool", kind: "toolCall", tool, revision: 1, status: "inProgress" } });
+    expect(updates[0]).toMatchObject({ title: tool, kind });
+  });
+
   it("projects tool output snapshots and consumes reminder lifecycle without answer text", () => {
     const updates: any[] = [], logs: string[] = [];
     const p = new Projection(u => updates.push(u), m => logs.push(m));

@@ -12610,9 +12610,9 @@
     read_file: "Read", file_read: "Read", view_file: "Read", view: "Read",
     write_file: "Write", file_write: "Write", write: "Write",
     bash: "Run", execute: "Run", run_command: "Run", run_terminal_command: "Run",
-    shell: "Run", run_bash: "Run",
+    shell: "Run", run_bash: "Run", powershell: "Run",
     list_dir: "List", list_directory: "List",
-    search_files: "Search", grep: "Search", ripgrep: "Search",
+    search_files: "Search", grep: "Search", ripgrep: "Search", search: "Search",
     search_replace: "Edit", edit_file: "Edit", str_replace: "Edit",
     web_search: "Web search", search_web: "Web search",
     web_fetch: "Fetch", webfetch: "Fetch",
@@ -12852,8 +12852,21 @@
    */
   function searchPatternText(call) {
     const r = (call && (call.rawInput || call.input)) || {};
-    const p = r.glob_pattern || r.pattern || r.query || r.regex || r.search;
+    const p = searchPattern(r);
     return typeof p === "string" && p.trim() ? clampToolTarget(p.trim()) : "";
+  }
+
+  /**
+   * The pattern a search ran — or, when the pattern matches every line and the
+   * search is really by file name, the globs it filtered on. Muse lists files
+   * that way, `{pattern: "^", glob: ["*.md", "*.txt"]}`, which read "Search ^".
+   */
+  const MATCH_ALL = new Set(["", "^", "$", ".", ".*", ".+", "^.*", "^.*$"]);
+  function searchPattern(r) {
+    const p = r.glob_pattern || r.pattern || r.query || r.regex || r.search;
+    const globs = (Array.isArray(r.glob) ? r.glob : [r.glob]).filter((g) => typeof g === "string" && g.trim());
+    if (globs.length && (typeof p !== "string" || MATCH_ALL.has(p.trim()))) return globs.join(", ");
+    return p;
   }
 
   /**
@@ -12892,7 +12905,7 @@
       return q ? `Searching web for "${q}"` : "Searching web";
     }
     if (/^(web_fetch|webfetch)$/.test(name)) return "Fetching page";
-    if (/^(grep|ripgrep|search_files)$/.test(name) || kind === "search") {
+    if (/^(grep|ripgrep|search_files|search)$/.test(name) || kind === "search") {
       const p = searchPatternText(call);
       const dir = searchDirText(call);
       return (p ? `Searching for "${p}"` : "Searching") + (dir ? ` in ${dir}` : "");
@@ -12904,7 +12917,7 @@
     }
     if (kind === "delete") return filePath ? `Deleting ${prettyPath(filePath)}` : "Deleting file";
     if (kind === "fetch") return "Generating";
-    if (/^(bash|execute|run_command|run_terminal_command|shell|run_bash)$/.test(name) || kind === "execute") {
+    if (/^(bash|execute|run_command|run_terminal_command|shell|run_bash|powershell)$/.test(name) || kind === "execute") {
       return "Running command";
     }
     // A tool we didn't predict still shows — but never echo a long title verbatim.
@@ -12920,7 +12933,7 @@
     const command = r.command || r.cmd;
     const failure = state.toolFailuresById.get(call.toolCallId) || toolFailureText(call);
     if (isMissingPathRead(call, failure)) return `${filePath ? prettyPath(filePath) : isDirectoryListTool(call) ? "Directory" : "File"} — doesn't exist yet`;
-    const pattern = r.glob_pattern || r.pattern || r.query || r.regex || r.search;
+    const pattern = searchPattern(r);
     const url = r.url || r.uri;
     // Collapsed rows read as a scannable summary, not a wall of shell — the
     // full command lives one click away in the IN/OUT detail. (CSS still
@@ -12931,7 +12944,7 @@
     // render the unhelpful "root folder"). Match by kind OR name so it still wins
     // when the first tool_call arrives before grok finalizes `kind`.
     const isSearch =
-      kind === "search" || /\b(grep|glob|ripgrep|search_files|web_search|search_web)\b/i.test(name);
+      kind === "search" || name === "search" || /\b(grep|glob|ripgrep|search_files|web_search|search_web)\b/i.test(name);
 
     let target = "";
     const renamed = toolRenamePaths(call);

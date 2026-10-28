@@ -69,6 +69,12 @@ function museToolFailureMessage(item: Record<string, any>): string {
 }
 
 /** A single session's raw MSP stream, independent of transport and SDK folds. */
+// Muse's shell tool is `bash` or, on Windows, `powershell`; `search` is its grep/glob.
+const MUSE_TOOL_KINDS: Record<string, "execute" | "search"> = { bash: "execute", powershell: "execute", search: "search" };
+function museToolKind(tool: unknown): "execute" | "search" | "other" {
+  return typeof tool === "string" && Object.hasOwn(MUSE_TOOL_KINDS, tool) ? MUSE_TOOL_KINDS[tool] : "other";
+}
+
 export class Projection {
   private readonly items = new Map<string, ItemState>();
   /** The reasoning item that last emitted thinking, if any. */
@@ -189,7 +195,7 @@ export class Projection {
       const visible = status === "completed" ? printed : undefined;
       this.emit({ sessionUpdate: first ? "tool_call" : "tool_call_update",
         toolCallId: state.toolCallId!, title: item.tool || "Muse tool",
-        kind: item.tool === "bash" ? "execute" : "other", status, rawInput: parseToolInput(item.args),
+        kind: museToolKind(item.tool), status, rawInput: parseToolInput(item.args),
         rawOutput: status === "failed" ? { message: museToolFailureMessage(item), output: printed ?? "" }
           : visible !== undefined ? { output: visible } : undefined,
         ...(visible !== undefined ? { content: [{ type: "content", content: { type: "text", text: visible } }] } : {}),

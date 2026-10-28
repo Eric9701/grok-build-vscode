@@ -975,6 +975,26 @@ const museApproval = (turnId: string) => ({ sessionId: "session", approvalId: `a
   toolName: "bash", rawArgs: "{}", currentRequirementId: { approvalId: `approval-${turnId}`, sourceIndex: 0 },
   availableChoices: [{ choiceId: "allow", decision: "approved", scope: "once", label: "Allow" }] });
 
+it("answers a subagent's approval only while Muse confirms Allow all (#221)", async () => {
+  const s = await ready();
+  s.client.request.mockReturnValue(new Promise(() => {}));
+  const child = (id: string) => ({ ...museApproval(id), subagentOrigin: { childRunId: "run", childSessionId: "kid", subagentId: "sub" },
+    subject: { kind: "shell", command: "echo hi" }, protectedWrite: false, judgeEscalated: false });
+  s.command.mockResolvedValueOnce({ status: "accepted", effectiveMode: { mode: "allowAll" } });
+  await s.session.setMode("session", "yolo");
+  s.event("approval/requested", child("allowed"));
+  await new Promise(resolve => setImmediate(resolve));
+  expect(s.command).toHaveBeenCalledWith("approval/decide", expect.objectContaining({ approvalId: "approval-allowed", choiceId: "allow" }));
+  expect(s.client.request).not.toHaveBeenCalled();
+  s.command.mockResolvedValueOnce({ status: "accepted", effectiveMode: { mode: "promptUnmatched" } });
+  await s.session.setMode("session", "agent");
+  s.event("approval/requested", child("asked"));
+  await new Promise(resolve => setImmediate(resolve));
+  expect(s.client.request).toHaveBeenCalledOnce();
+  expect(s.command).not.toHaveBeenCalledWith("approval/decide", expect.objectContaining({ approvalId: "approval-asked" }));
+  expect(s.fatal).not.toHaveBeenCalled();
+});
+
 it("keeps an approval from Muse's own turn answerable while a prompt queues behind it", async () => {
   const s = await ready();
   const answer = deferred<any>(); s.client.request.mockReturnValue(answer.promise);

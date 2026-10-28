@@ -130,6 +130,7 @@ export class MuseSession {
       params => this.connection().command("approval/decide", params),
       () => this.cancel(this.sessionId!),
       error => this.fail(error),
+      () => this.approvalMode === "allowAll",
     );
   }
 

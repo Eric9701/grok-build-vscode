@@ -11,6 +11,27 @@ interface Approval {
   toolName?: string;
   rawArgs?: string;
   turnId?: string;
+  subagentOrigin?: unknown;
+  subject?: { kind?: string };
+  protectedWrite?: boolean;
+  judgeEscalated?: boolean;
+}
+
+// The subject kinds MSP names. An unknown kind is never auto-approved (tdd SS5.2).
+const KNOWN_SUBJECTS = new Set(["shell", "fileAccess", "network", "unixSocket", "process", "tool"]);
+const SHELL_TOOLS = new Set(["bash", "powershell"]);
+
+/**
+ * A subagent's approval the parent's Allow all should answer (#221). Muse starts
+ * every child in its own On request profile and does not pass Allow all down,
+ * so each child step surfaced as a prompt in a conversation set not to ask.
+ * Only a once-allow, and never a protected write, a judge escalation or a
+ * subject kind MSP does not name: those still reach the person.
+ */
+function childAllowance(request: Approval): Choice | undefined {
+  if (!request.subagentOrigin || request.protectedWrite || request.judgeEscalated) return undefined;
+  if (!KNOWN_SUBJECTS.has(request.subject?.kind ?? "")) return undefined;
+  return request.availableChoices.find(choice => choice.decision === "approved" && choice.scope === "once");
 }
 
 export function permissionOptions(choices: Choice[]): PermissionOption[] {
@@ -37,6 +58,8 @@ export class Approvals {
     private readonly decide: (params: Record<string, unknown>) => Promise<unknown>,
     private readonly cancel: () => Promise<void>,
     private readonly fail: (error: unknown) => void,
+    /** True only while Muse has confirmed this session's mode as Allow all. */
+    private readonly allowsAll: () => boolean = () => false,
   ) {}
 
   clear(): void { this.current.clear(); this.offered.clear(); }
@@ -68,14 +91,20 @@ export class Approvals {
     if (this.current.get(request.approvalId) !== request) return;
     const options = permissionOptions(request.availableChoices);
     if (!options.length) throw new Error("Muse offered no supported permission choices");
+    const allowance = this.allowsAll() ? childAllowance(request) : undefined;
+    if (allowance) {
+      await this.decide({ sessionId: request.sessionId, approvalId: request.approvalId,
+        requirementId: request.currentRequirementId, choiceId: allowance.choiceId });
+      return;
+    }
     const rawInput = parseToolInput(request.rawArgs);
     const command = [rawInput?.command, rawInput?.cmd].find(value => typeof value === "string" && value.trim());
     // Existing permission renderers display the title, including older clients.
-    const title = request.toolName === "bash" && typeof command === "string"
-      ? command : request.toolName || "Muse permission";
+    const shell = SHELL_TOOLS.has(request.toolName ?? "");
+    const title = shell && typeof command === "string" ? command : request.toolName || "Muse permission";
     const response = await this.ask({ sessionId: request.sessionId, options,
       toolCall: { toolCallId: request.toolCallId || request.approvalId,
-        title, kind: request.toolName === "bash" ? "execute" : "other", status: "pending",
+        title, kind: shell ? "execute" : "other", status: "pending",
         rawInput } });
     if (this.current.get(request.approvalId) !== request) return;
     const outcome = response.outcome;
