@@ -24044,6 +24044,12 @@ ${fullText}`
   wireClientFontScaleShortcuts();
   window.addEventListener("focus", () => {
     if (takeDesktopLaunchComposerFocus()) return;
+    // A highlight in the transcript leaves focus on <body>, and VS Code's
+    // Ctrl+C / Copy refocuses the webview before it copies (#223, #225).
+    // Claiming the composer here collapsed the highlight, so the copy read
+    // the composer instead.
+    const sel = window.getSelection && window.getSelection();
+    if (sel && !sel.isCollapsed) return;
     const el = document.activeElement;
     if (!el || el === document.body) input.focus({ preventScroll: true });
   });
