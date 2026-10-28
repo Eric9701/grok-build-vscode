@@ -3198,9 +3198,14 @@ button.workflow-step:focus-visible { outline: 1px solid var(--vscode-focusBorder
   transform: rotate(90deg);
 }
 /* Single-line labels: truncate instead of wrapping (long grep patterns,
-   commands); the details block still breaks onto its own full-width row. */
+   commands); the details block still breaks onto its own full-width row.
+   The row wraps, and a wrapping row breaks lines on each item's BASE size, so
+   an `auto` basis put any label wider than the row on a line of its own, under
+   its icon. A zero basis never breaks the line; growing up to max-content
+   keeps a short label hugging its chevron. */
 .tool-item-label, .tool-flat .tool-label {
-  flex: 0 1 auto;
+  flex: 1 1 0;
+  max-width: max-content;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
