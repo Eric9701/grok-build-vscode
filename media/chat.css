@@ -3228,6 +3228,15 @@ button.workflow-step:focus-visible { outline: 1px solid var(--vscode-focusBorder
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* #226: a <button> is one unbreakable box, so under the label's ellipsis a long
+   name collapsed to "Read …". A label holding the link lays out as a row the
+   link can shrink in; the name's start ellipsizes and its tail (end of the
+   name + line range, applyToolLabel) never does. `pre` keeps the space after
+   the verb, which a flex item would drop. */
+.tool-label-split { display: flex; white-space: pre; }
+.tool-label-split > .tool-label-ref { display: flex; flex: 0 1 auto; min-width: 0; }
+.tool-label-ref-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tool-label-ref-tail { flex: 0 0 auto; }
 .tool-item-details {
   flex-basis: 100%;
   min-width: 0;

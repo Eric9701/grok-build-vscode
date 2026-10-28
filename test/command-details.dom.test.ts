@@ -8,6 +8,7 @@
 // dropped. Success is silent (exit 0 = just the output); failure gets an
 // [Error] marker + error tint; a kill is [Cancelled], not an error.
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import { bootWebview, dispatch, click } from "./webview-harness";
 import { normalizeCodexUpdate } from "../src/codex-backend";
 import { commandOutputForToolCall } from "../src/acp-dispatch";
@@ -865,6 +866,42 @@ ${command}` },
     expect(posted.filter((m: any) => m.type === "openFile")).toEqual([
       { type: "openFile", path: "src/deep.ts#L980-L1009" },
     ]);
+  });
+
+  // #226: a <button> is one unbreakable box, so a long name under the row's
+  // ellipsis left "Read …". The name's start gives way; its end and the range
+  // are what tell reads of similar files apart, and never shrink.
+  it("a long name's end and range stay visible, the start ellipsizes (#226)", () => {
+    const { window, doc } = bootWebview();
+    const style = doc.createElement("style");
+    style.textContent = readFileSync(new URL("../media/chat.css", import.meta.url), "utf8");
+    doc.head.appendChild(style);
+    const name = "01a16e38-25ee-7d11-b20e-27cdf621eb3c__t000065-000065__n000.md";
+    const body = Array.from({ length: 5 }, (_, i) => `${i + 10}→line ${i + 10}`).join("\n");
+    dispatch(window, readCall("r1", { target_file: `notes/${name}`, offset: 10, limit: 5 }));
+    dispatch(window, readDone("r1", body, { type: "ReadFile", FileContent: { content: body, offset: 10, limit: 5 } }));
+    dispatch(window, readCall("r2", { target_file: "hello.txt" }));
+    dispatch(window, readDone("r2", "a", { type: "ReadFile", FileContent: { content: "a" } }));
+    close(window);
+
+    const [long, short] = [...doc.querySelectorAll(".tool-label-ref")] as HTMLElement[];
+    // The text is unchanged — copying the row or reading its label still gets
+    // the whole name.
+    expect(long.textContent).toBe(`${name} lines 10-14`);
+    expect(long.querySelector(".tool-label-ref-head")!.textContent).toBe(name.slice(0, -16));
+    expect(long.querySelector(".tool-label-ref-tail")!.textContent).toBe("-000065__n000.md lines 10-14");
+    // A short name has nothing worth splitting.
+    expect(short.textContent).toBe("hello.txt");
+    expect(short.querySelector(".tool-label-ref-tail")).toBeNull();
+
+    const label = long.parentElement as HTMLElement;
+    const css = (el: Element) => window.getComputedStyle(el);
+    expect(label.classList.contains("tool-label-split")).toBe(true);
+    expect(css(label).display).toBe("flex");
+    expect(css(label).whiteSpace).toBe("pre");
+    expect(parseFloat(css(long).minWidth)).toBe(0);
+    expect(css(long.querySelector(".tool-label-ref-head")!).textOverflow).toBe("ellipsis");
+    expect(css(long.querySelector(".tool-label-ref-tail")!).flexShrink).toBe("0");
   });
 
   it("a Read row with no line range on the wire links the file with no fragment (#122)", () => {

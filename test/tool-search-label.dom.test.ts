@@ -66,6 +66,15 @@ describe("a running search names its pattern (#145)", () => {
     expect(text).not.toContain("x".repeat(41));
   });
 
+  it("names the folder when the search was narrowed to one (#220)", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, {
+      type: "toolCall",
+      call: { toolCallId: "s7", kind: "search", title: "Grep", rawInput: { pattern: "useState", path: "src/components" } },
+    });
+    expect(label(doc)).toContain('Searching for "useState" in src/components');
+  });
+
   it("names a web search's query too", () => {
     const { window, doc } = bootWebview();
     dispatch(window, {

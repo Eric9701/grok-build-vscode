@@ -12856,6 +12856,27 @@
     return typeof p === "string" && p.trim() ? clampToolTarget(p.trim()) : "";
   }
 
+  /**
+   * #220: the folder a search looked in, when it narrowed the search. grep
+   * ships `path: "."` and Cursor the workspace root on most calls, so those say
+   * nothing ("in root folder" on every row would be noise). A folder outside
+   * the workspace shows its own name, never a machine path.
+   */
+  function searchDirText(call) {
+    const r = (call && (call.rawInput || call.input)) || {};
+    const p = r.path || r.target_directory || r.directory || r.dir || (Array.isArray(r.paths) ? r.paths[0] : "");
+    if (typeof p !== "string") return "";
+    const s = p.trim().replace(/\\/g, "/").replace(/\/+$/, "").replace(/^\.\//, "");
+    if (!s || s === ".") return "";
+    let shown = workspaceRelPath(s);
+    if (!shown) {
+      const cwd = String(state.cwd || "").replace(/\\/g, "/").replace(/\/+$/, "");
+      if (cwd && s.toLowerCase() === cwd.toLowerCase()) return "";
+      shown = s.split("/").pop() || s;
+    }
+    return middleElide(shown, 40);
+  }
+
   function inProgressLabel(call) {
     const name = toolName(call);
     const kind = toolKind(call);
@@ -12873,7 +12894,8 @@
     if (/^(web_fetch|webfetch)$/.test(name)) return "Fetching page";
     if (/^(grep|ripgrep|search_files)$/.test(name) || kind === "search") {
       const p = searchPatternText(call);
-      return p ? `Searching for "${p}"` : "Searching";
+      const dir = searchDirText(call);
+      return (p ? `Searching for "${p}"` : "Searching") + (dir ? ` in ${dir}` : "");
     }
     if (/^(write_file|file_write|write|edit_file|search_replace|str_replace)$/.test(name) || kind === "edit" || kind === "write") {
       const renamed = toolRenamePaths(call);
@@ -12916,7 +12938,8 @@
     if (renamed && (kind === "edit" || kind === "write" || kind === "delete" || verb === "Edit" || verb === "Write")) {
       target = `${prettyPath(renamed.from)} → ${prettyPath(renamed.to)}`;
     } else if (isSearch && pattern) {
-      target = clamp(pattern);
+      const dir = searchDirText(call);
+      target = clamp(pattern) + (dir ? ` in ${dir}` : "");
     } else if (url) {
       target = clamp(url.replace(/^https?:\/\//i, ""));
     } else if (filePath) {
@@ -12948,6 +12971,29 @@
     return name || "tool";
   }
 
+  // #226: a narrow row ellipsized a long file name from its END, and the link
+  // being one unbreakable box left just "Read …". The end of the name and the
+  // line range are what tell rows apart (reads of similarly named files
+  // otherwise make a column of identical rows), so that tail never shrinks and
+  // the start gives way — the ellipsis lands in the middle (chat.css).
+  const READ_REF_TAIL = 16;
+  function fillReadRefText(link, target) {
+    const range = / lines \d+-\d+$/.exec(target);
+    const name = range ? target.slice(0, range.index) : target;
+    const head = document.createElement("span");
+    head.className = "tool-label-ref-head";
+    if (name.length <= READ_REF_TAIL) {
+      head.textContent = target;
+      link.append(head);
+      return;
+    }
+    head.textContent = name.slice(0, name.length - READ_REF_TAIL);
+    const tail = document.createElement("span");
+    tail.className = "tool-label-ref-tail";
+    tail.textContent = name.slice(name.length - READ_REF_TAIL) + (range ? range[0] : "");
+    link.append(head, tail);
+  }
+
   // Flatten rebuilds the label span (details/chevron nodes move; the label
   // does not), so title has to be painted wherever textContent is set.
   function applyToolLabel(el, call) {
@@ -12957,6 +13003,7 @@
     // Assigning textContent first is what keeps this idempotent across the
     // repaints that call it — it drops any link node an earlier pass appended.
     el.textContent = full;
+    el.classList.remove("tool-label-split");
     const ref = readLinkRef(call);
     const target = ref ? readTargetLabel(call) : "";
     // Split only when the rendered label really ends with the target: a row that
@@ -12972,10 +13019,11 @@
       || el.classList.contains("tool-label");
     if (readLinkMode() !== "file" && !carrierCapable) return;
     el.textContent = full.slice(0, full.length - target.length);
+    el.classList.add("tool-label-split");
     const link = document.createElement("button");
     link.type = "button";
     link.className = "tool-label-ref";
-    link.textContent = target;
+    fillReadRefText(link, target);
     link.title = `Open ${ref.replace(/#L(\d+)-L(\d+)$/, " at lines $1-$2")}`;
     link.onclick = (e) => {
       e.stopPropagation(); // must not toggle the row or the group

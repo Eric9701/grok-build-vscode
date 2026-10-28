@@ -131,6 +131,26 @@ describe("tool-call labels (single-call flat line)", () => {
     expect(flatLabel(doc)).toBe("List root folder");
   });
 
+  // #220: which folder a search looked in — only when it narrowed the search.
+  it("a search in a folder names it; a search of the root does not", () => {
+    const { window, doc } = bootWebview();
+    dispatch(window, { type: "initialState", cwd: "C:\\work\\app" } as any);
+    dispatch(window, tc({ toolCallId: "1", kind: "search", title: "grep", rawInput: { pattern: "useState", path: "." } }));
+    dispatch(window, tc({ toolCallId: "2", kind: "search", title: "grep", rawInput: { pattern: "useState", path: "src/components" } }));
+    dispatch(window, tc({ toolCallId: "3", kind: "search", title: "Glob", rawInput: { glob_pattern: "**/*.test.ts", target_directory: "c:\\work\\app\\packages\\api" } }));
+    dispatch(window, tc({ toolCallId: "4", kind: "search", title: "Glob", rawInput: { glob_pattern: "src/*.ts", target_directory: "c:\\work\\app" } }));
+    dispatch(window, tc({ toolCallId: "5", kind: "search", title: "grep", rawInput: { pattern: "TODO", path: "/home/me/.config/tool" } }));
+    close(window);
+    expect(itemLabels(doc)).toEqual([
+      "Search useState",
+      "Search useState in src/components",
+      "Search **/*.test.ts in packages/api",
+      "Search src/*.ts",
+      // Outside the workspace: the folder's own name, never a machine path.
+      "Search TODO in tool",
+    ]);
+  });
+
   it("read_file with a line range shows 'Read <file> lines a-b'", () => {
     const { window, doc } = bootWebview();
     dispatch(window, tc({ toolCallId: "1", kind: "read", title: "read_file", rawInput: { target_file: "README.md", offset: 1, limit: 30 } }));
