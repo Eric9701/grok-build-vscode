@@ -20,6 +20,7 @@ import {
   isResumeNotFound,
   isMethodNotFoundError,
   isAuthErrorText,
+  foreignEndpointAuthHost,
   isCredentialError,
   isRateLimitError,
   isRateLimitErrorText,
@@ -685,6 +686,46 @@ describe("isAuthErrorText (expired-token auto-recovery gate)", () => {
     expect(isAuthErrorText("")).toBe(false);
     expect(isAuthErrorText(null)).toBe(false);
     expect(isAuthErrorText(undefined)).toBe(false);
+  });
+});
+
+describe("a custom model's own 401 is not the Grok account (#218)", () => {
+  // Measured: grok 1.0.70, a `[model.*]` with base_url + env_key whose endpoint
+  // answers 401 to session/prompt.
+  const CUSTOM_401 = {
+    code: -32603,
+    message: "Internal error",
+    data: {
+      message: "Unauthorized (401) from https://api.commandcode.ai/provider/v1/chat/completions: authentication_error: Invalid 'Authorization' header or token.\n\n  Model:     deepseek/deepseek-v4.1-flash\n  Auth:      ApiKey\n  Version:   1.0.70\n  Available: grok-4.6, grok-4.5, deepseek/deepseek-v4.1-flash",
+      http_status: 401,
+    },
+  };
+
+  it("names the foreign host, and never xAI's own", () => {
+    expect(foreignEndpointAuthHost(CUSTOM_401)).toBe("api.commandcode.ai");
+    expect(foreignEndpointAuthHost("Unauthorized (401) from http://127.0.0.1:63086/provider/v1/chat/completions: nope")).toBe("127.0.0.1");
+    expect(foreignEndpointAuthHost("Forbidden (403) from https://openrouter.ai/api/v1/chat/completions: no")).toBe("openrouter.ai");
+    expect(foreignEndpointAuthHost("Unauthorized (401) from https://api.x.ai/v1/responses: expired")).toBeUndefined();
+    expect(foreignEndpointAuthHost("Unauthorized (401) from https://cli-chat-proxy.grok.com/v1: expired")).toBeUndefined();
+    expect(foreignEndpointAuthHost("401 Unauthorized")).toBeUndefined();
+    expect(foreignEndpointAuthHost({ code: AUTH_REQUIRED_ERROR_CODE, message: "Session expired, run grok login" })).toBeUndefined();
+  });
+
+  it("is neither a credential failure nor a reload trigger, whatever the code", () => {
+    expect(isCredentialError(CUSTOM_401)).toBe(false);
+    expect(isCredentialError({ ...CUSTOM_401, code: AUTH_REQUIRED_ERROR_CODE })).toBe(false);
+    expect(isAuthErrorText(CUSTOM_401.data.message)).toBe(false);
+    // The account's own failures keep their meaning.
+    expect(isCredentialError({ code: AUTH_REQUIRED_ERROR_CODE, message: "Session expired" })).toBe(true);
+    expect(isCredentialError(new Error("401 Unauthorized"))).toBe(true);
+  });
+
+  it("tells the person which endpoint refused and where its key comes from", () => {
+    const text = promptErrorText(CUSTOM_401);
+    expect(text).toMatch(/^Not a Grok sign-in issue/);
+    expect(text).toContain("api.commandcode.ai rejected this model's API key");
+    expect(text).toContain("env_key");
+    expect(text).toContain(CUSTOM_401.data.message);
   });
 });
 

@@ -1171,6 +1171,9 @@ export function isIncompatibleAgentError(err: any): boolean {
 export function isAuthErrorText(msg: unknown): boolean {
   const s = String(msg ?? "");
   if (isRateLimitErrorText(s)) return false;
+  // A custom model's own endpoint refused its key: a fresh process re-reads
+  // the same environment, so a reload cannot fix it (#218).
+  if (foreignEndpointAuthHost(s)) return false;
   if (/\b(401|403)\b|unauthor|forbidden|\bcredential|\bapi[_\s-]?key\b|not (?:signed|logged) ?in|(?:sign|log) ?in again|re-?login|authenticat\w*\s*(?:failed|required|error|expired)|token (?:has )?expired|expired\s+token|session (?:has )?expired/i.test(s)) return true;
   // Other access failures still rebuild the process for the next user turn.
   return /\bpay(?:ment)?\b|\bbilling\b|\bsubscription\b|\bentitl\w+|\bunpaid\b|\bcredits?\s+(?:exhaust|remain|requir)/i.test(s);
@@ -1184,6 +1187,25 @@ export function isAuthErrorText(msg: unknown): boolean {
  * `auth_method.rs`), which makes the code the authoritative credential signal.
  */
 export const AUTH_REQUIRED_ERROR_CODE = -32000;
+
+/**
+ * The host of a non-xAI endpoint that refused a request with 401/403, when the
+ * error names one, else undefined. That is a custom model (`base_url` +
+ * `env_key` in ~/.grok/config.toml) rejecting ITS OWN key, not the Grok
+ * account (#218). grok 1.0.70 sends it as a plain -32603 whose detail reads
+ * `Unauthorized (401) from https://api.example.com/v1/chat/completions: …`
+ * with `http_status: 401`. Signing in to Grok cannot fix it, and marking the
+ * account signed-out locked the model picker on a session that still worked.
+ * Accepts the error or its detail string.
+ */
+export function foreignEndpointAuthHost(errOrDetail: unknown): string | undefined {
+  const s = typeof errOrDetail === "string" ? errOrDetail : errorDetail(errOrDetail);
+  const m = /\((?:401|403)\)\s+from\s+(https?:\/\/\S+)/i.exec(s);
+  if (!m) return undefined;
+  let host: string;
+  try { host = new URL(m[1].replace(/[:.,;]+$/, "")).hostname; } catch { return undefined; }
+  return /(?:^|\.)(?:x\.ai|grok\.com)$/i.test(host) ? undefined : host;
+}
 
 /**
  * True when a turn failure is a genuine CREDENTIAL problem — the thing a
@@ -1200,6 +1222,9 @@ export const AUTH_REQUIRED_ERROR_CODE = -32000;
  */
 export function isCredentialError(err: unknown): boolean {
   const e = err as any;
+  // Ahead of the code: whatever envelope carries it, a 401 from a custom
+  // model's own endpoint is that model's key, never the Grok account (#218).
+  if (foreignEndpointAuthHost(e)) return false;
   if (e?.code === AUTH_REQUIRED_ERROR_CODE) return true;
   const s = errorDetail(e);
   if (isRateLimitErrorText(s)) return false;
@@ -1298,6 +1323,12 @@ export function entitlementNoticeText(err: unknown): string {
 export function promptErrorText(err: unknown): string {
   if (isRateLimitError(err)) return rateLimitNoticeText(err);
   const detail = errorDetail(err);
+  const foreignHost = foreignEndpointAuthHost(detail);
+  if (foreignHost) {
+    return `Not a Grok sign-in issue \u{2014} ${foreignHost} rejected this model's API key. `
+      + "Check the variable its env_key names in ~/.grok/config.toml; one set after VS Code or the app started is only seen after a full restart. "
+      + detail;
+  }
   if (!isCredentialError(err) && isAuthErrorText(detail)) return entitlementNoticeText(err);
   return detail;
 }
